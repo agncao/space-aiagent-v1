@@ -1,0 +1,9 @@
+name: orbit_management
+description: "轨道管理：基于SGP4模型创建卫星轨道、更新轨道显示样式"
+triggers:
+  - 创建轨道
+  - 卫星轨道
+  - SGP4
+  - TLE
+  - 更新轨道颜色
+  - 轨道样式

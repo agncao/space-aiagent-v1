@@ -1,0 +1,31 @@
+application:
+  name: space-aiagent
+  version: 0.1.0
+  description: "航天分析平台智能助手"
+
+server:
+  host: "${SERVER_HOST:0.0.0.0}"
+  port: "${SERVER_PORT:8028}"
+  workers: 1
+  cors_origins:
+    - "*"
+
+logging:
+  level: "${LOG_LEVEL:INFO}"
+  format: json
+  console: true
+  file:
+    enabled: true
+    dir: "${LOG_DIR:./logs}"
+    max_bytes: 10485760    # 10MB
+    backup_count: 10
+    rotation: true
+
+websocket:
+  path: "/ws/space"
+  heartbeat_interval: 30
+
+agent:
+  max_iterations: 10
+  temperature: 0.1
+  streaming: true

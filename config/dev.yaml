@@ -1,0 +1,10 @@
+# 开发环境覆盖配置
+application:
+  env: dev
+
+logging:
+  level: DEBUG
+  format: console    # 开发环境用可读格式，生产用 json
+  console: true
+  file:
+    enabled: false   # 开发环境默认不写文件

@@ -1,0 +1,9 @@
+# 预发布环境覆盖配置
+application:
+  env: staging
+
+logging:
+  level: INFO
+  format: json
+  file:
+    enabled: true

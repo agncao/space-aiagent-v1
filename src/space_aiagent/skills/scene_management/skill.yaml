@@ -1,0 +1,10 @@
+name: scene_management
+description: "场景管理：创建、重命名、清除、查询航天场景"
+triggers:
+  - 创建场景
+  - 打开场景
+  - 新建场景
+  - 重命名场景
+  - 清除场景
+  - 查询场景
+  - 清空场景

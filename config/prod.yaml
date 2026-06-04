@@ -1,0 +1,13 @@
+# 生产环境覆盖配置
+application:
+  env: prod
+
+logging:
+  level: WARNING
+  format: json
+  file:
+    enabled: true
+    backup_count: 30
+
+server:
+  workers: 4
