@@ -1,6 +1,6 @@
 # space-aiagent
 
-航天分析平台智能助手 - 基于 DeepAgent (LangChain) 的多 Agent 系统
+航天分析平台智能助手 - 基于 DeepAgents (LangChain) 的多 Agent 系统
 
 ## 项目背景
 
@@ -18,11 +18,6 @@
 前端调用 Cesium API ← 操作指令 ← WebSocket ← Agent 工具调用
 ```
 
-选择 WebSocket 的原因：
-- 前端需要实时接收 Agent 的多条消息（AI 文本、工具调用指令、结束信号）
-- WebSocket 是唯一能同时支持双向实时通信的方案
-- SSE 只能服务端→客户端，REST 轮询延迟太高
-
 ### 核心业务流程
 
 以"创建卫星"为例：
@@ -32,25 +27,19 @@
 4. 如果没有场景 → 报异常并通知智能体
 5. 如果有场景 → 创建卫星并返回结果
 
-即：创建卫星轨迹、创建实体、查询实体及未来的数据分析都需要基于已创建的场景。
-
 ## 技术选型
 
 | 类别 | 选择 | 理由 |
 |------|------|------|
-| 语言 | Python 3.13 | 当前工程已创建的环境 |
+| 语言 | Python 3.13 | 现代异步生态 |
 | Web 框架 | FastAPI | 异步支持、自动文档、WebSocket 内建 |
-| Agent Harness | deepagents | LangChain 团队开发的 Agent Harness，内置任务规划、子 Agent 生成、长期记忆 |
-| Agent 运行时 | LangGraph | DeepAgent 底层运行时，支持持久化执行、流式输出、Human-in-the-Loop |
+| Agent Harness | [deepagents](https://docs.langchain.com/oss/python/deepagents/overview) | LangChain 团队开发的 Agent Harness，内置任务规划、子 Agent 生成、长期记忆 |
+| Agent 运行时 | LangGraph | DeepAgent 底层运行时，支持持久化执行、流式输出 |
 | LLM 接口 | langchain-openai | OpenAI 兼容接口，统一支持 DeepSeek 和阿里 DashScope（Qwen） |
-| LLM 提供商 | DeepSeek + Qwen | 通过配置切换，开发用 DeepSeek，生产可能用 Qwen |
-| 持久化 | SQLite | 开发阶段使用，后续可迁移 PostgreSQL |
+| 持久化 | SQLite + aiosqlite | 开发阶段使用，后续可迁移 PostgreSQL |
 | 配置管理 | YAML + .env | YAML 放业务配置，.env 放敏感信息（不提交 Git） |
 | 日志 | structlog | 结构化 JSON 日志，控制台 + 文件轮转，可接入 ELK |
-| 包管理 | pyproject.toml + requirements.txt | pyproject.toml 为现代标准，requirements.txt 供国内 CI/CD 使用 |
-| 代码质量 | ruff | 一体化工具（格式化 + lint），用 Rust 编写，速度极快 |
-| Git Hooks | pre-commit | 在 git commit 时自动运行 ruff 检查，防止不规范代码提交 |
-| 测试 | pytest + pytest-asyncio | Python 社区最主流的测试框架 |
+| 代码质量 | ruff + pre-commit | 格式化 + lint + Git hooks |
 
 ## 架构设计
 
@@ -62,9 +51,9 @@
                               ▼
                     ┌─────────────────┐
                     │  Orchestrator   │  主控Agent：意图识别、任务规划
-                    │  (DeepAgent)    │  只知道 Skill 摘要列表
+                    │  (DeepAgents)    │  只知道 Skill 摘要列表
                     └───────┬─────────┘
-                            │ 路由到子Agent
+                            │ subagent 调度
               ┌─────────────┼─────────────┐
               ▼             ▼             ▼
         ┌──────────┐  ┌──────────┐  ┌──────────┐
@@ -89,33 +78,20 @@
          Cesium 前端执行
 ```
 
-### 为什么用多 Agent
+### Agent 职责
 
-| Agent | 职责 | 原因 |
-|-------|------|------|
-| Orchestrator | 意图识别、任务规划、子 Agent 调度 | 降低单 Agent 复杂度，更准确路由 |
-| Scene Agent | 场景创建/重命名/清除/查询 | 场景操作独立性高，有前置依赖检查 |
-| Entity Agent | 实体创建/SGP4轨道/更新 | 实体和轨道操作紧密相关 |
-| Analysis Agent | 数据分析（未来） | 独立领域，单独扩展 |
+| Agent | 职责 | 加载的 Skill |
+|-------|------|-------------|
+| Orchestrator | 意图识别、任务规划、子 Agent 调度 | 无（只持有 Skill 摘要） + memory（AGENTS.md） |
+| Scene Agent | 场景创建/重命名/清除/查询 | scene_management (6 个工具) |
+| Entity Agent | 实体创建/SGP4轨道/样式更新 | entity_management + orbit_management (4 个工具) |
+| Analysis Agent | 数据分析（未来扩展） | data_analysis |
 
-### 为什么用 Skill 渐进式披露
+> 子 Agent 通过 `config/subagents.yaml` 声明式配置，新增 Agent 只需加 YAML 条目 + `prompts/` 加提示词文件。
 
-**传统方式：** 一次性把所有工具绑定给 Agent → 每次 LLM 调用都携带全部工具描述 → Token 浪费 + 工具选择容易出错。
+### 远程工具桥接
 
-**Skill 渐进式披露：** 工具按 Skill 组织，Agent 按需加载 → LLM 只看到当前任务相关的工具 → 更准确 + 更省 Token + 更易扩展。
-
-当前 8 个工具时差异不大，但未来加入数据分析、链路计算等功能后（可能 30-50 个工具），渐进式披露的价值就很大。
-
-### 场景依赖处理策略
-
-采用 **Prompt 规则 + 前端校验兜底**：
-- Orchestrator 的 system prompt 中明确规则："创建实体前必须确保场景已创建"
-- 前端收到工具调用指令时也会检查场景状态，未创建则返回错误
-- 双重保障，不依赖单一环节
-
-### 远程工具桥接（核心设计）
-
-由于工具实际在前端 Cesium 中执行（不是后端），需要 **asyncio.Future 桥接机制**：
+工具在后端定义但实际在前端 Cesium 执行。通过 `asyncio.Future` + `ContextVar` 桥接：
 
 ```
 Agent 调用工具 → bridge.send_tool_call() → WebSocket 发送指令到前端
@@ -123,11 +99,11 @@ Agent 调用工具 → bridge.send_tool_call() → WebSocket 发送指令到前�
 Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前端结果
 ```
 
-每次工具调用创建一个 Future，绑定到唯一的 `tool_call_id`。WebSocket 收到前端的 `tool_result` 时，根据 ID 找到对应 Future 并 resolve。
+- `bridge_var` (ContextVar)：WebSocket handler 在创建 Agent 前注入，工具函数通过 `get()` 获取
+- 每次 `send_tool_call()` 创建 Future 绑定到唯一 `tool_call_id`
+- WebSocket 收到 `tool_result` 时根据 ID resolve 对应 Future
 
 ### WebSocket 消息协议
-
-所有消息为 JSON 格式，通过 `type` 字段区分。
 
 #### 前端 → 后端
 
@@ -189,8 +165,7 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 ```
 前端                          后端
   │  user_input ──────────→  │
-  │  ←──── ai_message       │  Agent 思考中...
-  │  ←──── tool_call        │  Agent 决定调工具
+  │  ←──── tool_call        │  Agent 调用工具
   │  tool_result ─────────→  │  前端执行 Cesium 操作
   │  ←──── ai_message       │  Agent 拿到结果，回复
   │  ←──── end              │  轮次结束
@@ -214,79 +189,74 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 
 参数中 `?` 表示可选字段。`entityType` 支持的值: `place`, `target`, `facility`, `aircraft`, `missile`, `satellite`, `sensor`, `groundVehicle`, `ship`, `launchVehicle`, `lineTarget`, `areaTarget`。
 
-## 环境配置策略
+## 项目结构
+
+```
+src/space_aiagent/
+├── main.py                 # FastAPI 应用入口，初始化配置和日志
+├── cli.py                  # CLI 管理入口（run / skills list / skills show）
+├── api/                    # API 层
+│   ├── routes.py           # REST 端点（invoke / health）
+│   └── websocket.py        # WebSocket 端点，核心消息循环
+├── agents/                 # Agent 层
+│   ├── orchestrator.py     # 主控 Agent（create_deep_agent + subagents + memory）
+│   └── subagents.py        # 子 Agent 加载器（从 YAML 配置构建）
+├── prompts/                # 提示词模板（与代码分离）
+│   ├── orchestrator.md     # 主控 Agent 提示词（含 {skill_summaries} 占位符）
+│   ├── scene_agent.md      # 场景子 Agent 提示词
+│   └── entity_agent.md     # 实体子 Agent 提示词
+├── knowledge/              # 领域知识（通过 FilesystemBackend + memory 加载）
+│   └── AGENTS.md           # TLE 两行根数格式说明
+├── skills/                 # Skill 渐进式披露
+│   ├── registry.py         # Skill 注册表（扫描 skill.yaml）
+│   ├── loader.py           # Skill 动态加载器（importlib 导入 @tool 函数）
+│   ├── scene_management/   # 场景管理技能（6 个工具）
+│   ├── entity_management/  # 实体管理技能（1 个工具）
+│   ├── orbit_management/   # 轨道管理技能（2 个工具）
+│   └── data_analysis/      # 数据分析技能（未来扩展）
+├── models/                 # 数据模型
+│   ├── enums.py            # 枚举（EntityType / WSMessageType / LLMProvider）
+│   ├── schemas.py          # Pydantic 模型（工具参数、API 请求响应）
+│   └── messages.py         # WebSocket 消息类型
+├── bridge/                 # 远程工具桥接层
+│   ├── ws_bridge.py        # WSBridge（Future 桥接 + 消息发送）
+│   ├── session.py          # SessionManager（thread_id → WebSocket 映射）
+│   └── __init__.py         # bridge_var (ContextVar) 导出
+└── infrastructure/         # 基础设施
+    ├── config.py           # 配置管理（YAML + .env + 多环境合并）
+    ├── logging.py          # structlog 结构化日志
+    └── database.py         # SQLite + AsyncSqliteSaver checkpointer
+```
+
+## 环境配置
 
 ### 多环境支持
 
-| 环境 | 配置文件 | 特点 |
-|------|---------|------|
-| dev | `config/dev.yaml` | DEBUG 日志、控制台可读格式、不写文件 |
-| staging | `config/staging.yaml` | INFO 日志、JSON 格式、写文件 |
-| prod | `config/prod.yaml` | WARNING 日志、JSON 格式、30 个备份文件 |
-
 通过 `APP_ENV` 环境变量切换，YAML 中 `${VAR:default}` 语法引用环境变量。
 
-### 敏感信息管理
+| 环境 | 配置文件 | 日志级别 | 格式 | 文件输出 |
+|------|---------|---------|------|---------|
+| dev | `config/dev.yaml` | DEBUG | 控制台可读 | 不写文件 |
+| staging | `config/staging.yaml` | INFO | JSON | 写文件 |
+| prod | `config/prod.yaml` | WARNING | JSON | 写文件，30 个备份 |
 
-- `.env` 文件存放 API Key 等敏感信息，已被 `.gitignore` 排除
-- `.env.example` 作为模板提交到 Git，新开发者复制后填写实际值
-- YAML 配置通过 `${LLM_API_KEY}` 引用 .env 中的值
+### LLM 配置
 
-### 包管理策略
+使用统一的 OpenAI 兼容接口，切换提供商只需修改 `LLM_BASE_URL` 和 `LLM_MODEL`：
 
-- `pyproject.toml` 定义依赖（现代 Python 标准方式）
-- `requirements.txt` 由 `scripts/gen_requirements.py` 从 pyproject.toml 自动生成
-- 国内 CI/CD 流水线（Jenkins 等）习惯用 `pip install -r requirements.txt`，两者兼容
-
-## 工具说明
-
-### ruff（代码质量）
-
-一体化工具，替代 black + isort + flake8 三件套：
-- **格式化**（替代 black）：统一代码风格
-- **import 排序**（替代 isort）：自动整理 import 顺序
-- **语法检查**（替代 flake8）：发现潜在代码问题
-
-国内越来越多团队在切换到 ruff，因为配置更简单、速度更快。
-
-### pre-commit
-
-本地 Git hook 管理器，在 `git commit` 时自动运行 ruff 检查。不是只有 GitHub 能用，任何 Git 平台（GitLab、Gitee）都适用。
-
-### pytest
-
-Python 社区（国内外）最主流的测试框架，没有争议。配合 `pytest-asyncio` 支持异步测试。
-
-## DeepSeek 与 OpenAI 兼容接口
-
-DeepSeek 提供了 OpenAI 兼容接口，意味着代码层面和用 OpenAI 没有区别：
-
-```python
-# 只需更换 base_url 和 api_key
-from langchain_openai import ChatOpenAI
+```bash
+# .env 示例
 
 # DeepSeek
-llm = ChatOpenAI(
-    base_url="https://api.deepseek.com",
-    api_key="your-deepseek-key",
-    model="deepseek-chat",
-)
+LLM_API_KEY=sk-xxx
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-chat
 
-# 阿里 DashScope (Qwen) — 同样兼容
-llm = ChatOpenAI(
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    api_key="your-dashscope-key",
-    model="qwen-plus",
-)
+# 或阿里 Qwen（DashScope）
+# LLM_API_KEY=sk-xxx
+# LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# LLM_MODEL=qwen-plus
 ```
-
-通过配置 `LLM_PROVIDER` 环境变量切换，无需改代码。
-
-## 现有项目参考
-
-- 原有 DEMO 代码：https://gitee.com/910922164/space-aiagent
-- 前端交互代码：`/Users/caojianming/projects/gis/space2024/plugins/sceneAgent`（仅参考，不修改）
-- 本项目定位：在原有 DEMO 基础上，升级为生产级架构，使用 DeepAgent harness
 
 ## 快速开始
 
@@ -302,7 +272,7 @@ source .venv/bin/activate
 # 3. 安装依赖
 pip install -e ".[dev]"
 
-# 4. 生成 requirements.txt
+# 4. 生成 requirements.txt（可选，供 CI/CD 使用）
 python scripts/gen_requirements.py
 
 # 5. 安装 pre-commit hooks
@@ -311,3 +281,36 @@ pre-commit install
 # 6. 启动开发服务器
 python -m space_aiagent.main
 ```
+
+## 常用命令
+
+```bash
+# 激活虚拟环境
+source .venv/bin/activate
+
+# 启动服务器（开发模式，支持热重载）
+python -m space_aiagent.main
+
+# CLI 方式启动
+space-aiagent run --host 0.0.0.0 --port 8028 --reload
+
+# 查看 Skill 列表
+space-aiagent skills list
+
+# 查看 Skill 详情
+space-aiagent skills show scene_management
+
+# 运行测试
+pytest
+
+# 代码检查
+ruff check src/ tests/
+
+# 代码格式化
+ruff format src/ tests/
+```
+
+## 参考
+
+- 原有航天分析助手智能体仓库：https://gitee.com/910922164/space-aiagent
+- 航天分析平台智能体助手前端交互：`https://gitee.com/910922164/space2024/tree/master/plugins/sceneAgent`

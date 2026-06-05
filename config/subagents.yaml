@@ -1,0 +1,13 @@
+agents:
+  - name: scene-agent
+    description: 处理场景相关操作：创建、重命名、清除、查询航天场景。当用户提到场景、新建场景、清除场景时使用此 Agent。
+    skills:
+      - scene_management
+    prompt_file: scene_agent.md
+
+  - name: entity-agent
+    description: 处理实体和轨道相关操作：添加卫星、地面站等实体，创建和更新SGP4轨道。当用户提到添加实体、创建卫星、轨道、TLE时使用此 Agent。
+    skills:
+      - entity_management
+      - orbit_management
+    prompt_file: entity_agent.md

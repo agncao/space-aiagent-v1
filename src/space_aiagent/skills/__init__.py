@@ -17,7 +17,8 @@ Skill 渐进式披露框架
     loader = SkillLoader(registry)
     tools = loader.load_skill("scene_management")  # 按需加载工具
 """
+
 from .loader import SkillLoader
 from .registry import SkillRegistry
 
-__all__ = ["SkillRegistry", "SkillLoader"]
+__all__ = ["SkillLoader", "SkillRegistry"]

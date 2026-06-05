@@ -12,6 +12,7 @@
 - WebSocket 收到前端的 tool_result 时，根据 tool_call_id 找到对应 Future 并 resolve
 - 工具函数 await Future 得到结果
 """
+
 from contextvars import ContextVar
 
 from .session import SessionManager

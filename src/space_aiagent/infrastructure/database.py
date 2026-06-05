@@ -12,22 +12,16 @@
     from space_aiagent.infrastructure.database import get_db
     db = await get_db()
 """
+
+import os
 from pathlib import Path
+
+import aiosqlite
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 
 class Database:
-    """
-    数据库管理器
-
-    TODO: 实现以下功能
-    1. 初始化 SQLite 连接
-    2. 创建必要的表（如果不存在）
-       - checkpoints 表（LangGraph 检查点）
-       - checkpoint_writes 表
-       - checkpoint_blobs 表
-    3. 提供连接获取方法
-    4. 提供关闭方法
-    """
+    """数据库管理器"""
 
     def __init__(self, database_url: str) -> None:
         """
@@ -36,37 +30,47 @@ class Database:
                          SQLite: "sqlite+aiosqlite:///./data/space_aiagent.db"
         """
         self.database_url = database_url
-        # TODO: 解析 database_url，提取数据库文件路径
-        # TODO: 确保数据目录存在
+        # 从 URL 提取文件路径: "sqlite+aiosqlite:///./data/db" -> "./data/db"
+        path = database_url.split("///")[-1]
+        self.db_path = Path(path)
+        self._db: aiosqlite.Connection | None = None
+        self._checkpointer: AsyncSqliteSaver | None = None
 
     async def initialize(self) -> None:
         """
         初始化数据库连接和表结构
-
-        步骤:
-        1. 创建数据目录（如果不存在）
-        2. 创建 SQLite 连接
-        3. 执行建表 SQL（LangGraph checkpoint 相关表）
         """
-        # TODO: 实现
-        pass
+        # 确保数据目录存在
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 打开 SQLite 连接
+        self._db = await aiosqlite.connect(str(self.db_path))
+        self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA foreign_keys=ON")
+
+        # LangGraph checkpoint 表由 AsyncSqliteSaver 自动创建
 
     async def close(self) -> None:
         """关闭数据库连接"""
-        # TODO: 实现
-        pass
+        if self._checkpointer:
+            await self._checkpointer.__aexit__(None, None, None)
+            self._checkpointer = None
+        if self._db:
+            await self._db.close()
+            self._db = None
 
-    def get_checkpointer(self):
+    async def get_checkpointer(self) -> AsyncSqliteSaver:
         """
-        获取 LangGraph 的 checkpointer 实例
-
-        返回: SqliteSaver 或 AsyncSqliteSaver 实例
-
-        TODO: 实现
-        1. 从 langgraph-checkpoint-sqlite 导入 AsyncSqliteSaver
-        2. 用当前连接创建 checkpointer
+        获取 LangGraph 的 AsyncSqliteSaver checkpointer 实例
         """
-        pass
+        if self._checkpointer is None:
+            if self._db is None:
+                await self.initialize()
+            self._checkpointer = AsyncSqliteSaver(conn=self._db)
+            await self._checkpointer.__aenter__()
+            await self._checkpointer.setup()
+        return self._checkpointer
 
 
 _db: Database | None = None
@@ -75,14 +79,12 @@ _db: Database | None = None
 async def get_db() -> Database:
     """
     获取数据库单例
-
-    TODO: 实现
-    1. 如果 _db 不存在，创建并初始化
-    2. 返回 _db
     """
     global _db
     if _db is None:
-        # TODO: 从配置读取 database_url
-        _db = Database("sqlite+aiosqlite:///./data/space_aiagent.db")
+        db_dir = os.path.join(os.getcwd(), "data")
+        os.makedirs(db_dir, exist_ok=True)
+        db_url = f"sqlite+aiosqlite:///{db_dir}/space_aiagent.db"
+        _db = Database(db_url)
         await _db.initialize()
     return _db

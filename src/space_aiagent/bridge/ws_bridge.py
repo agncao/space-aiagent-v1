@@ -13,6 +13,7 @@ WebSocket 远程工具桥接
                                                                   ↓
     Agent得到结果 ← await future ← resolve_tool_result() ← WebSocket收到结果
 """
+
 import asyncio
 import logging
 import uuid
@@ -92,11 +93,13 @@ class WSBridge:
         tool_call_id = result.tool_call_id
         future = self._pending.pop(tool_call_id, None)
         if future and not future.done():
-            future.set_result({
-                "success": result.success,
-                "message": result.message,
-                "data": result.data,
-            })
+            future.set_result(
+                {
+                    "success": result.success,
+                    "message": result.message,
+                    "data": result.data,
+                }
+            )
         else:
             logger.warning("收到未知 tool_result: id=%s", tool_call_id)
 

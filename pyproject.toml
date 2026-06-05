@@ -22,6 +22,9 @@ dependencies = [
     "langchain-core>=0.3.0",
     "langchain-openai>=0.3.0",
 
+    # 数据库
+    "aiosqlite>=0.20.0",
+
     # 配置与数据
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
@@ -52,6 +55,9 @@ space-aiagent = "space_aiagent.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+space_aiagent = ["prompts/*.md", "knowledge/*.md"]
 
 [tool.ruff]
 target-version = "py313"

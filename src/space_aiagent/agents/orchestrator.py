@@ -6,65 +6,63 @@
 2. 根据意图规划需要调用的子 Agent
 3. 通过 DeepAgent 的 subagent 能力委派任务
 4. 汇总子 Agent 结果，返回给用户
-
-实现步骤:
-1. 使用 deepagents.create_deep_agent 创建主 Agent
-2. system prompt 中描述可用 Skill 摘要列表
-3. 配置 LLM（DeepSeek 或 Qwen，通过 ChatOpenAI）
-4. Agent 不直接绑定工具，而是通过 subagent 委派
-
-注意:
-- Orchestrator 不直接操作场景，所有操作通过子 Agent 完成
-- 子 Agent 的选择基于用户意图，由 LLM 判断
 """
-from space_aiagent.infrastructure.config import get_settings
+
+from pathlib import Path
+
+from deepagents import create_deep_agent
+from deepagents.backends import FilesystemBackend
+
+from space_aiagent.agents.subagents import build_model
+from space_aiagent.skills import SkillLoader, SkillRegistry
+
+# 提示词和知识文件路径
+_PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+_KNOWLEDGE_DIR = Path(__file__).parent.parent / "knowledge"
 
 
-def create_orchestrator():
+def _build_skill_summaries(registry: SkillRegistry) -> str:
+    """构建 Skill 摘要文本"""
+    summaries = registry.get_summaries()
+    if not summaries:
+        return "（暂无可用 Skill）"
+    return "\n".join(f"- {s['name']}: {s['description']}" for s in summaries)
+
+
+def _build_system_prompt(registry: SkillRegistry) -> str:
+    """构建系统提示词（不含领域知识，知识通过 memory 加载）"""
+    template = (_PROMPTS_DIR / "orchestrator.md").read_text(encoding="utf-8")
+    return template.format(
+        skill_summaries=_build_skill_summaries(registry),
+    )
+
+
+def create_orchestrator(
+    subagents: list[dict],
+    skill_loader: SkillLoader,
+) -> "CompiledStateGraph":  # noqa: F821
     """
     创建主控 Agent
 
-    步骤:
-    1. 获取配置（LLM provider, model 等）
-    2. 根据 provider 构建 model 字符串
-       - deepseek → "openai:deepseek-chat"（配合 base_url）
-       - dashscope → "openai:qwen-plus"（配合 base_url）
-    3. 加载 Skill 摘要列表，构建 system prompt
-    4. 使用 deepagents.create_deep_agent 创建 Agent
-       from deepagents import create_deep_agent
-       agent = create_deep_agent(
-           model=model_string,
-           tools=[],  # 主控不直接绑定工具
-           system_prompt=system_prompt,
-       )
-    5. 配置 subagent（scene_agent, entity_agent）
-
-    TODO: 实现
+    Args:
+        subagents: 子 Agent 配置字典列表
+        skill_loader: Skill 加载器，用于生成摘要
     """
-    # settings = get_settings()
-    # 1. 构建 model 配置
-    # 2. 构建 system prompt
-    # 3. 创建 deep agent
-    # 4. 注册 subagents
-    pass
+    registry = skill_loader._registry
+    system_prompt = _build_system_prompt(registry)
+    model = build_model()
 
+    # 知识文件通过 FilesystemBackend + memory 加载
+    backend = FilesystemBackend(
+        root_dir=str(_KNOWLEDGE_DIR),
+        virtual_mode=True,
+    )
 
-# system prompt 模板
-ORCHESTRATOR_PROMPT = """你是航天分析平台的智能助手。
-
-你的职责是理解用户的意图，并将任务委派给合适的专业 Agent。
-
-可用的专业能力（Skill）:
-{skill_summaries}
-
-工作流程:
-1. 理解用户意图
-2. 判断需要哪些 Skill
-3. 委派给对应的专业 Agent
-4. 汇总结果返回给用户
-
-重要规则:
-- 创建实体（卫星、地面站等）前，必须确保场景已创建
-- 如果用户要求创建实体但场景不存在，先提醒用户创建场景
-- 用中文回复用户
-"""
+    agent = create_deep_agent(
+        model=model,
+        system_prompt=system_prompt,
+        subagents=subagents,
+        backend=backend,
+        memory=["AGENTS.md"],
+    )
+    return agent

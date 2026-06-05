@@ -13,6 +13,7 @@
     logger = get_logger(__name__)
     logger.info("场景创建成功", scene_name="test", thread_id="xxx")
 """
+
 import logging
 import logging.handlers
 from pathlib import Path
@@ -23,50 +24,27 @@ import structlog
 def _add_caller_info(logger, method, event_dict):
     """
     structlog processor: 添加调用者信息（文件名:行号）
-
-    TODO: 实现此 processor
-    1. 从 event_dict 中获取 record（如果有的话）
-    2. 提取 caller 文件名和行号
-    3. 添加到 event_dict 中
     """
+    record = event_dict.get("_record")
+    if record:
+        event_dict["caller"] = f"{record.filename}:{record.lineno}"
     return event_dict
 
 
 def _setup_console_handler(fmt: str, level: str) -> logging.StreamHandler:
     """
     创建控制台日志处理器
-
-    Args:
-        fmt: 输出格式，"console" 为可读格式，"json" 为 JSON 格式
-        level: 日志级别
-
-    TODO: 实现
-    1. 创建 StreamHandler
-    2. 根据 fmt 选择 structlog 的 renderer
-       - console: 使用 ConsoleRenderer(colors=True)
-       - json: 使用 JSONRenderer()
-    3. 设置日志级别
     """
     handler = logging.StreamHandler()
     handler.setLevel(getattr(logging, level.upper(), logging.INFO))
     return handler
 
 
-def _setup_file_handler(log_dir: str, max_bytes: int, backup_count: int, level: str) -> logging.handlers.RotatingFileHandler:
+def _setup_file_handler(
+    log_dir: str, max_bytes: int, backup_count: int, level: str
+) -> logging.handlers.RotatingFileHandler:
     """
     创建文件日志处理器（带轮转）
-
-    Args:
-        log_dir: 日志目录
-        max_bytes: 单个日志文件最大字节数
-        backup_count: 保留的备份文件数量
-        level: 日志级别
-
-    TODO: 实现
-    1. 确保日志目录存在
-    2. 创建 RotatingFileHandler
-    3. 文件名格式: space-aiagent.log
-    4. 设置 maxBytes 和 backupCount
     """
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
@@ -92,27 +70,64 @@ def setup_logging(
     """
     初始化日志系统
 
-    步骤:
-    1. 配置标准库 logging 的 root logger
-    2. 配置 structlog 的 processors
-    3. 根据参数添加 console handler 和/或 file handler
-    4. 设置 structlog 为全局日志工厂
-
-    TODO: 完整实现
-    1. 配置 structlog processors 链:
-       - add_log_level
-       - format_exc_info
-       - UnicodeDecoder
-       - _add_caller_info
-       - TimestampFormatter (ISO 8601)
-       - Renderer (根据 fmt 选择)
-    2. 配置 standard library logging:
-       - 获取 root logger
-       - 设置 level
-       - 添加 handlers
-    3. 调用 structlog.configure()
+    配置 structlog processors 链和 standard library logging handlers。
     """
-    pass
+    # 选择 renderer
+    renderer = structlog.dev.ConsoleRenderer(colors=True) if fmt == "console" else structlog.processors.JSONRenderer()
+
+    # structlog 共享 processors
+    shared_processors = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        _add_caller_info,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+    ]
+
+    # 配置 structlog
+    structlog.configure(
+        processors=[
+            *shared_processors,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+    # 配置 standard library root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+
+    # 清除已有 handlers
+    root_logger.handlers.clear()
+
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            renderer,
+        ],
+    )
+
+    if console:
+        console_handler = _setup_console_handler(fmt, level)
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
+
+    if file_enabled:
+        file_handler = _setup_file_handler(file_dir, file_max_bytes, file_backup_count, level)
+        file_formatter = structlog.stdlib.ProcessorFormatter(
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.processors.JSONRenderer(),
+            ],
+        )
+        file_handler.setFormatter(file_formatter)
+        root_logger.addHandler(file_handler)
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:

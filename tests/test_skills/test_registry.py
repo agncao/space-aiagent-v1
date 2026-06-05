@@ -4,6 +4,7 @@
 def test_registry_init():
     """测试注册表初始化"""
     from space_aiagent.skills.registry import SkillRegistry
+
     registry = SkillRegistry()
     assert registry.list_skill_names() == []
 

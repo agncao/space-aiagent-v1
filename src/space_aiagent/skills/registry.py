@@ -3,16 +3,8 @@ Skill 注册表
 
 扫描 skills/ 目录下的所有子目录，加载每个 Skill 的 skill.yaml，
 构建 Skill 摘要列表供 Agent 查询。
-
-skill.yaml 格式示例:
-    name: scene_management
-    description: "场景管理：创建、重命名、清除、查询航天场景"
-    triggers:
-      - 创建场景
-      - 打开场景
-      - 清除场景
-      - 查询场景
 """
+
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +19,7 @@ SKILLS_DIR = Path(__file__).parent
 @dataclass
 class SkillInfo:
     """单个 Skill 的元信息"""
+
     name: str
     description: str
     triggers: list[str] = field(default_factory=list)
@@ -35,16 +28,7 @@ class SkillInfo:
 
 
 class SkillRegistry:
-    """
-    Skill 注册表
-
-    TODO: 实现以下功能
-    1. 扫描 skills/ 目录下的所有子目录
-    2. 读取每个子目录中的 skill.yaml
-    3. 解析为 SkillInfo 对象并缓存
-    4. 提供按名称查询的方法
-    5. 提供获取所有 Skill 摘要的方法（给 Agent 的 system prompt 用）
-    """
+    """Skill 注册表"""
 
     def __init__(self) -> None:
         self._skills: dict[str, SkillInfo] = {}
@@ -53,14 +37,40 @@ class SkillRegistry:
         """
         扫描并注册所有 Skill
 
-        步骤:
-        1. 遍历 SKILLS_DIR 下的所有子目录
-        2. 检查是否包含 skill.yaml
-        3. 解析 skill.yaml 为 SkillInfo
-        4. 注册到 _skills 字典
+        遍历 SKILLS_DIR 下的所有子目录，检查是否包含 skill.yaml，
+        解析为 SkillInfo 并注册。
         """
-        # TODO: 实现
-        pass
+        if not SKILLS_DIR.is_dir():
+            logger.warning("skills 目录不存在: %s", SKILLS_DIR)
+            return
+
+        for child in sorted(SKILLS_DIR.iterdir()):
+            if not child.is_dir():
+                continue
+            if child.name.startswith("_"):
+                continue
+
+            yaml_path = child / "skill.yaml"
+            if not yaml_path.exists():
+                continue
+
+            try:
+                with open(yaml_path, encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+
+                name = data.get("name", child.name)
+                info = SkillInfo(
+                    name=name,
+                    description=data.get("description", ""),
+                    triggers=data.get("triggers", []),
+                    skill_dir=child,
+                )
+                self._skills[name] = info
+                logger.debug("注册 Skill: %s (%s)", name, child.name)
+            except Exception:
+                logger.exception("加载 skill.yaml 失败: %s", yaml_path)
+
+        logger.info("共注册 %d 个 Skill: %s", len(self._skills), list(self._skills.keys()))
 
     def get_skill(self, name: str) -> SkillInfo | None:
         """按名称获取 Skill"""
@@ -73,17 +83,10 @@ class SkillRegistry:
         返回格式:
         [
             {"name": "scene_management", "description": "..."},
-            {"name": "entity_management", "description": "..."},
             ...
         ]
-
-        用途: 注入到 Agent 的 system prompt 中，
-              让 Agent 知道有哪些 Skill 可用
         """
-        return [
-            {"name": info.name, "description": info.description}
-            for info in self._skills.values()
-        ]
+        return [{"name": info.name, "description": info.description} for info in self._skills.values()]
 
     def list_skill_names(self) -> list[str]:
         """列出所有已注册的 Skill 名称"""

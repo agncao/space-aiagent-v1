@@ -6,6 +6,7 @@
 桥接注入: 使用 bridge.bridge_var (ContextVar) 在会话级别注入 bridge 实例，
          由 websocket handler 在创建 Agent 前设置，工具函数通过 get() 获取。
 """
+
 import logging
 
 from langchain_core.tools import tool
@@ -73,7 +74,7 @@ async def rename_scenario(name: str) -> dict:
         logger.error("bridge 未注入，无法发送 renameScenario 指令")
         return {"success": False, "message": "bridge 未注入，无法发送指令"}
 
-    # 前端对应方法: SceneTools.renameScenerio(arg)
+    # 前端对应方法: SceneTools.renameScenario(arg)
     # 前端内部调用: yyastk.CurrentScenario.rename(name)
     result = await bridge.send_tool_call(
         tool_func="renameScenario",

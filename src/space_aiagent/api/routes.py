@@ -8,6 +8,7 @@ REST API 路由
 - GET /api/v1/space/get_state/{thread_id}: 获取会话状态
 - GET /api/v1/space/health: 健康检查
 """
+
 from fastapi import APIRouter
 
 from space_aiagent.models.schemas import InvokeRequest, InvokeResponse
@@ -20,28 +21,40 @@ async def invoke(request: InvokeRequest) -> InvokeResponse:
     """
     同步调用 Agent
 
-    步骤:
-    1. 接收用户输入和 thread_id
-    2. 获取或创建对应 thread 的 Agent 实例
-    3. 调用 Agent 的 invoke 方法
-    4. 返回结果
-
-    TODO: 实现
+    适用于简单场景，复杂交互请使用 WebSocket。
     """
-    return InvokeResponse(output={}, thread_id=request.thread_id)
+    from langchain_core.messages import HumanMessage
+
+    from space_aiagent.agents.subagents import load_subagents
+    from space_aiagent.agents.orchestrator import create_orchestrator
+    from space_aiagent.skills import SkillLoader, SkillRegistry
+
+    registry = SkillRegistry()
+    registry.discover()
+    loader = SkillLoader(registry)
+
+    subagents = load_subagents(loader)
+    agent = create_orchestrator(subagents, loader)
+
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content=request.content)]},
+        config={"configurable": {"thread_id": request.thread_id}},
+    )
+
+    # 提取最终 AI 回复
+    output_text = ""
+    messages = result.get("messages", [])
+    for msg in reversed(messages):
+        if hasattr(msg, "content") and msg.type == "ai":
+            output_text = msg.content
+            break
+
+    return InvokeResponse(output={"content": output_text}, thread_id=request.thread_id)
 
 
 @router.get("/get_state/{thread_id}")
 async def get_state(thread_id: str) -> dict:
-    """
-    获取指定会话的当前状态
-
-    步骤:
-    1. 根据 thread_id 查找 Agent 的 checkpoint
-    2. 返回当前状态
-
-    TODO: 实现
-    """
+    """获取指定会话的当前状态"""
     return {"thread_id": thread_id, "state": {}}
 
 

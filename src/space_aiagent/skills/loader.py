@@ -10,32 +10,26 @@ Skill 动态加载器
 4. 提取所有 @tool 装饰的函数
 5. 返回工具列表给 Agent 绑定
 """
-import importlib
+
 import importlib.util
 import logging
 from pathlib import Path
 
-from .registry import SkillInfo, SkillRegistry
+from langchain_core.tools import BaseTool
+
+from .registry import SkillRegistry
 
 logger = logging.getLogger(__name__)
 
 
 class SkillLoader:
-    """
-    Skill 动态加载器
-
-    TODO: 实现以下功能
-    1. 根据技能名从注册表获取 SkillInfo
-    2. 动态导入 tools.py 模块
-    3. 提取工具函数
-    4. 支持通过 bridge 包装工具（远程执行模式）
-    """
+    """Skill 动态加载器"""
 
     def __init__(self, registry: SkillRegistry) -> None:
         self._registry = registry
-        self._loaded: dict[str, list] = {}  # skill_name -> tools
+        self._loaded: dict[str, list[BaseTool]] = {}
 
-    def load_skill(self, skill_name: str) -> list:
+    def load_skill(self, skill_name: str) -> list[BaseTool]:
         """
         加载指定 Skill 的所有工具
 
@@ -45,59 +39,69 @@ class SkillLoader:
         3. 动态导入 tools.py
         4. 提取 @tool 装饰的函数
         5. 缓存并返回
-
-        Returns:
-            工具函数列表
         """
-        # TODO: 实现
-        return []
+        if skill_name in self._loaded:
+            return self._loaded[skill_name]
 
-    def load_skills(self, skill_names: list[str]) -> list:
+        info = self._registry.get_skill(skill_name)
+        if info is None:
+            logger.warning("Skill 未注册: %s", skill_name)
+            return []
+
+        module = self._import_tools_module(info.skill_dir, skill_name)
+        if module is None:
+            return []
+
+        tools = self._extract_tools(module)
+        self._loaded[skill_name] = tools
+        logger.info("加载 Skill [%s]: %d 个工具", skill_name, len(tools))
+        return tools
+
+    def load_skills(self, skill_names: list[str]) -> list[BaseTool]:
         """
         批量加载多个 Skill 的工具
-
-        Args:
-            skill_names: Skill 名称列表
-
-        Returns:
-            合并后的工具函数列表
         """
-        tools = []
+        tools: list[BaseTool] = []
         for name in skill_names:
             tools.extend(self.load_skill(name))
         return tools
 
     def unload_skill(self, skill_name: str) -> None:
-        """
-        卸载 Skill（从缓存移除）
-
-        TODO: 实现
-        """
+        """卸载 Skill（从缓存移除）"""
         self._loaded.pop(skill_name, None)
 
     def _import_tools_module(self, skill_dir: Path, skill_name: str):
         """
         动态导入 tools.py 模块
-
-        步骤:
-        1. 构建 tools.py 的完整路径
-        2. 使用 importlib.util.spec_from_file_location 创建模块规格
-        3. 创建并执行模块
-        4. 返回模块对象
         """
-        # TODO: 实现
-        pass
+        tools_path = skill_dir / "tools.py"
+        if not tools_path.exists():
+            logger.warning("Skill [%s] 没有 tools.py: %s", skill_name, tools_path)
+            return None
 
-    def _extract_tools(self, module) -> list:
+        module_name = f"space_aiagent.skills.{skill_dir.name}.tools"
+        spec = importlib.util.spec_from_file_location(module_name, str(tools_path))
+        if spec is None or spec.loader is None:
+            logger.warning("无法创建模块规格: %s", tools_path)
+            return None
+
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+            return module
+        except Exception:
+            logger.exception("导入 tools.py 失败: %s", tools_path)
+            return None
+
+    def _extract_tools(self, module) -> list[BaseTool]:
         """
         从模块中提取所有工具函数
 
-        步骤:
-        1. 遍历模块的所有属性
-        2. 筛选被 @tool 或 @StructuredTool 装饰的函数
-        3. 返回工具列表
-
-        提示: 可以检查函数是否有 .name 属性（LangChain tool 的特征）
+        遍历模块的所有属性，筛选被 @tool 装饰的函数（BaseTool 实例）。
         """
-        # TODO: 实现
-        return []
+        tools: list[BaseTool] = []
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if isinstance(attr, BaseTool):
+                tools.append(attr)
+        return tools

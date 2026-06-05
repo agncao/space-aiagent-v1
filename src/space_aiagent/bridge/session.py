@@ -4,6 +4,7 @@
 管理 WebSocket 连接与 thread_id 的映射关系。
 每个前端连接对应一个 thread_id，Agent 处理时需要找到对应的 WS 连接发送指令。
 """
+
 import logging
 
 from fastapi import WebSocket
