@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
         file_dir=settings.logging.file_dir,
         file_max_bytes=settings.logging.file_max_bytes,
         file_backup_count=settings.logging.file_backup_count,
+        loggers=settings.logging.loggers,
     )
 
     app = FastAPI(

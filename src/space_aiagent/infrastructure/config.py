@@ -107,6 +107,7 @@ class LoggingConfig(BaseSettings):
     file_max_bytes: int = 10 * 1024 * 1024
     file_backup_count: int = 10
     file_rotation: bool = True
+    loggers: dict[str, str] = Field(default_factory=dict)
 
 
 class LLMConfig(BaseSettings):
@@ -176,10 +177,21 @@ def _apply_yaml_to_settings(yaml_config: dict[str, Any]) -> Settings:
         file_max_bytes=file_cfg.get("max_bytes", 10 * 1024 * 1024),
         file_backup_count=file_cfg.get("backup_count", 10),
         file_rotation=file_cfg.get("rotation", True),
+        loggers=log_cfg.get("loggers", {}),
     )
 
     flat["app_env"] = os.getenv("APP_ENV", "dev")
     flat["agent"] = AgentConfig(max_iterations=yaml_config.get("agent", {}).get("max_iterations", 10))
+
+    # LLM 配置从环境变量直接读取（.env 中的 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL）
+    agent_cfg = yaml_config.get("agent", {})
+    flat["llm"] = LLMConfig(
+        api_key=os.getenv("LLM_API_KEY", ""),
+        base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
+        model=os.getenv("LLM_MODEL", "deepseek-chat"),
+        temperature=float(os.getenv("LLM_TEMPERATURE", str(agent_cfg.get("temperature", 0.1)))),
+        streaming=os.getenv("LLM_STREAMING", str(agent_cfg.get("streaming", True))).lower() == "true",
+    )
 
     return Settings(**flat)
 

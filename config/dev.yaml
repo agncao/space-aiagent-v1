@@ -3,8 +3,15 @@ application:
   env: dev
 
 logging:
-  level: DEBUG
-  format: console    # 开发环境用可读格式，生产用 json
+  level: INFO                                     # 全局默认级别
+  format: console                                 # 开发环境用可读格式，生产用 json
   console: true
   file:
-    enabled: false   # 开发环境默认不写文件
+    enabled: false                                # 开发环境默认不写文件
+  loggers:                                        # 按包名单独控制日志级别
+    space_aiagent: DEBUG                          # 自己项目代码 DEBUG
+    openai: WARNING
+    httpx: WARNING
+    httpcore: WARNING
+    langchain_core: WARNING
+    deepagents: WARNING

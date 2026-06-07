@@ -236,7 +236,7 @@ src/space_aiagent/
 
 | 环境 | 配置文件 | 日志级别 | 格式 | 文件输出 |
 |------|---------|---------|------|---------|
-| dev | `config/dev.yaml` | DEBUG | 控制台可读 | 不写文件 |
+| dev | `config/dev.yaml` | INFO (项目包 DEBUG) | Spring 风格控制台 | 不写文件 |
 | staging | `config/staging.yaml` | INFO | JSON | 写文件 |
 | prod | `config/prod.yaml` | WARNING | JSON | 写文件，30 个备份 |
 

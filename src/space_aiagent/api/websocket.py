@@ -12,6 +12,7 @@ WebSocket 端点
 WebSocket 路径: /ws/space
 """
 
+import asyncio
 import json
 import logging
 
@@ -70,19 +71,44 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     """
     WebSocket 主处理函数
 
-    步骤:
-    1. 接受连接
-    2. 等待前端发送 user_input 获取 thread_id
-    3. 注册到 SessionManager
-    4. 进入消息循环:
-       a. 收到 user_input → 注入 bridge → 调用 Agent
-       b. 收到 tool_result → resolve bridge future → Agent 继续
-    5. 连接断开 → 清理
+    设计要点：agent 执行在后台 asyncio.Task 中进行，主循环只负责接收消息，
+    避免 agent 等待 tool_result 时阻塞 receive_text() 造成死锁。
+
+    消息流:
+    1. 前端发送 user_input → 主循环收到后启动后台 agent_task
+    2. agent 调用工具 → bridge.send_tool_call() → ws.send_json() 发送到前端
+    3. 前端执行后发 tool_result → 主循环收到 → bridge.resolve_tool_result()
+    4. agent_task 拿到结果继续执行 → 发送 ai_message + end 到前端
     """
     await websocket.accept()
     logger.info("WebSocket 连接已建立")
 
     current_thread_id: str | None = None
+    agent_tasks: set[asyncio.Task] = set()
+
+    async def run_agent(bridge, token, user_msg: UserInputMessage) -> None:
+        """后台执行 agent，不阻塞消息接收循环"""
+        try:
+            agent = _get_or_create_agent(user_msg.thread_id)
+
+            result = await agent.ainvoke(
+                {"messages": [HumanMessage(content=user_msg.content)]},
+                config={"configurable": {"thread_id": user_msg.thread_id}},
+            )
+
+            messages = result.get("messages", [])
+            for msg in reversed(messages):
+                if hasattr(msg, "content") and msg.type == "ai":
+                    await bridge.send_ai_message(msg.content)
+                    break
+
+            await bridge.send_end()
+
+        except Exception as e:
+            logger.exception("Agent 执行出错: thread_id=%s", user_msg.thread_id)
+            await bridge.send_error(str(e))
+        finally:
+            bridge_var.reset(token)
 
     try:
         while True:
@@ -94,34 +120,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 user_msg = UserInputMessage(**data)
                 current_thread_id = user_msg.thread_id
 
-                # 创建 bridge 并注入到 ContextVar
                 bridge = session_manager.register(current_thread_id, websocket)
                 token = bridge_var.set(bridge)
 
-                try:
-                    agent = _get_or_create_agent(current_thread_id)
-
-                    # 调用 Agent
-                    result = await agent.ainvoke(
-                        {"messages": [HumanMessage(content=user_msg.content)]},
-                        config={"configurable": {"thread_id": current_thread_id}},
-                    )
-
-                    # 提取最终 AI 回复
-                    messages = result.get("messages", [])
-                    # 找到最后一条 AI 消息
-                    for msg in reversed(messages):
-                        if hasattr(msg, "content") and msg.type == "ai":
-                            await bridge.send_ai_message(msg.content)
-                            break
-
-                    await bridge.send_end()
-
-                except Exception as e:
-                    logger.exception("Agent 执行出错: thread_id=%s", current_thread_id)
-                    await bridge.send_error(str(e))
-                finally:
-                    bridge_var.reset(token)
+                # 后台执行 agent，不阻塞 receive 循环
+                task = asyncio.create_task(run_agent(bridge, token, user_msg))
+                agent_tasks.add(task)
+                task.add_done_callback(agent_tasks.discard)
 
             elif msg_type == WSMessageType.TOOL_RESULT:
                 tool_result = ToolResultMessage(**data)
@@ -147,6 +152,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         except Exception:
             pass
     finally:
+        # 等待所有后台 agent 任务完成
+        for task in agent_tasks:
+            task.cancel()
+        if agent_tasks:
+            await asyncio.gather(*agent_tasks, return_exceptions=True)
+
         if current_thread_id:
             bridge = session_manager.get_bridge(current_thread_id)
             if bridge:

@@ -41,7 +41,7 @@ class ToolResultMessage(WSMessage):
     tool_func: str = Field(description="工具函数名")
     args: dict = Field(default_factory=dict, description="工具参数")
     tool_call_id: str = Field(default="", description="工具调用ID")
-    success: bool = Field(description="是否成功")
+    success: bool = Field(default=True, description="是否成功")
     message: str = Field(default="", description="结果消息")
     data: dict | list | None = Field(default=None, description="返回数据")
 

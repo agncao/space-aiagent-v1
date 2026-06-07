@@ -72,7 +72,7 @@ class WSBridge:
             tool_call_id=tool_call_id,
         )
         await self._ws.send_json(message.model_dump())
-        logger.debug("发送 tool_call: %s(%s), id=%s", tool_func, args, tool_call_id)
+        logger.debug("发送 tool_call: %s(%s), id=%s, thread_id=%s", tool_func, args, tool_call_id, self._thread_id)
 
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
