@@ -10,6 +10,11 @@ WebSocket 端点
 4. Agent 完成 → 发送 ai_message + end
 
 WebSocket 路径: /ws/space
+
+会话持久化:
+使用 AsyncSqliteSaver（基于 SQLite）持久化 LangGraph checkpoint，
+确保跨轮次会话记忆不丢失。与 MemorySaver 不同，SQLite 持久化不受
+进程重启、热重载影响。
 """
 
 import asyncio
@@ -22,6 +27,7 @@ from langchain_core.messages import HumanMessage
 from space_aiagent.agents.subagents import load_subagents
 from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.bridge import SessionManager, bridge_var
+from space_aiagent.infrastructure.database import get_db
 from space_aiagent.models.enums import WSMessageType
 from space_aiagent.models.messages import (
     ErrorMessage,
@@ -43,6 +49,9 @@ _agent_cache: dict[str, object] = {}
 _registry: SkillRegistry | None = None
 _skill_loader: SkillLoader | None = None
 
+# 数据库 checkpointer（全局共享，SQLite 持久化）
+_checkpointer = None
+
 
 def _get_skill_loader() -> SkillLoader:
     """获取全局 SkillLoader（延迟初始化）"""
@@ -54,15 +63,27 @@ def _get_skill_loader() -> SkillLoader:
     return _skill_loader
 
 
-def _get_or_create_agent(thread_id: str):
+async def _get_checkpointer():
+    """获取或初始化全局 AsyncSqliteSaver checkpointer（延迟初始化）"""
+    global _checkpointer
+    if _checkpointer is None:
+        db = await get_db()
+        _checkpointer = await db.get_checkpointer()
+        logger.info("AsyncSqliteSaver checkpointer 已初始化（SQLite 持久化）")
+    return _checkpointer
+
+
+async def _get_or_create_agent(thread_id: str):
     """获取或创建指定 thread 的 Agent 实例"""
     if thread_id in _agent_cache:
         return _agent_cache[thread_id]
 
     loader = _get_skill_loader()
     subagents = load_subagents(loader)
-    agent = create_orchestrator(subagents, loader)
+    checkpointer = await _get_checkpointer()
+    agent = create_orchestrator(subagents, loader, checkpointer)
     _agent_cache[thread_id] = agent
+    logger.info("Agent 实例已创建: thread_id=%s", thread_id)
     return agent
 
 
@@ -86,11 +107,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     current_thread_id: str | None = None
     agent_tasks: set[asyncio.Task] = set()
 
-    async def run_agent(bridge, token, user_msg: UserInputMessage) -> None:
+    async def run_agent(bridge, user_msg: UserInputMessage) -> None:
         """后台执行 agent，不阻塞消息接收循环"""
+        token = bridge_var.set(bridge)
         try:
-            agent = _get_or_create_agent(user_msg.thread_id)
-
+            agent = await _get_or_create_agent(user_msg.thread_id)
+            logger.info("收到用户请求: %s",user_msg)
             result = await agent.ainvoke(
                 {"messages": [HumanMessage(content=user_msg.content)]},
                 config={"configurable": {"thread_id": user_msg.thread_id}},
@@ -121,10 +143,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 current_thread_id = user_msg.thread_id
 
                 bridge = session_manager.register(current_thread_id, websocket)
-                token = bridge_var.set(bridge)
 
                 # 后台执行 agent，不阻塞 receive 循环
-                task = asyncio.create_task(run_agent(bridge, token, user_msg))
+                task = asyncio.create_task(run_agent(bridge, user_msg))
                 agent_tasks.add(task)
                 task.add_done_callback(agent_tasks.discard)
 

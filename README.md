@@ -265,9 +265,9 @@ LLM_MODEL=deepseek-chat
 cp .env.example .env
 # 编辑 .env 填写实际的 API Key
 
-# 2. 创建虚拟环境
-python3.13 -m venv .venv
-source .venv/bin/activate
+# 2. 创建 conda 环境
+conda create -n space-aiagent-v1 python=3.13 -y
+conda activate space-aiagent-v1
 
 # 3. 安装依赖
 pip install -e ".[dev]"
@@ -285,8 +285,8 @@ python -m space_aiagent.main
 ## 常用命令
 
 ```bash
-# 激活虚拟环境
-source .venv/bin/activate
+# 激活 conda 环境
+conda activate space-aiagent-v1
 
 # 启动服务器（开发模式，支持热重载）
 python -m space_aiagent.main

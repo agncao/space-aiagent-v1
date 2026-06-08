@@ -12,6 +12,7 @@ from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
+from langgraph.types import Checkpointer
 
 from space_aiagent.agents.subagents import build_model
 from space_aiagent.skills import SkillLoader, SkillRegistry
@@ -40,6 +41,7 @@ def _build_system_prompt(registry: SkillRegistry) -> str:
 def create_orchestrator(
     subagents: list[dict],
     skill_loader: SkillLoader,
+    checkpointer: Checkpointer,
 ) -> "CompiledStateGraph":  # noqa: F821
     """
     创建主控 Agent
@@ -47,6 +49,7 @@ def create_orchestrator(
     Args:
         subagents: 子 Agent 配置字典列表
         skill_loader: Skill 加载器，用于生成摘要
+        checkpointer: LangGraph Checkpointer 实例（持久化会话状态）
     """
     registry = skill_loader._registry
     system_prompt = _build_system_prompt(registry)
@@ -64,5 +67,6 @@ def create_orchestrator(
         subagents=subagents,
         backend=backend,
         memory=["AGENTS.md"],
+        checkpointer=checkpointer,
     )
     return agent

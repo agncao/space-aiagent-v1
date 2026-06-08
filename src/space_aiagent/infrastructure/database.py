@@ -54,7 +54,6 @@ class Database:
     async def close(self) -> None:
         """关闭数据库连接"""
         if self._checkpointer:
-            await self._checkpointer.__aexit__(None, None, None)
             self._checkpointer = None
         if self._db:
             await self._db.close()
@@ -68,7 +67,6 @@ class Database:
             if self._db is None:
                 await self.initialize()
             self._checkpointer = AsyncSqliteSaver(conn=self._db)
-            await self._checkpointer.__aenter__()
             await self._checkpointer.setup()
         return self._checkpointer
 
