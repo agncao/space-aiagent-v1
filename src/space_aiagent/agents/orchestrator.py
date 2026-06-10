@@ -12,9 +12,12 @@ from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
+from langchain.agents.structured_output import ToolStrategy
 from langgraph.types import Checkpointer
 
 from space_aiagent.agents.subagents import build_model
+from space_aiagent.middleware import LoggingMiddleware
+from space_aiagent.models.response_schema import AgentResponse
 from space_aiagent.skills import SkillLoader, SkillRegistry
 
 # 提示词和知识文件路径
@@ -42,6 +45,7 @@ def create_orchestrator(
     subagents: list[dict],
     skill_loader: SkillLoader,
     checkpointer: Checkpointer,
+    thread_id: str = "",
 ) -> "CompiledStateGraph":  # noqa: F821
     """
     创建主控 Agent
@@ -50,6 +54,7 @@ def create_orchestrator(
         subagents: 子 Agent 配置字典列表
         skill_loader: Skill 加载器，用于生成摘要
         checkpointer: LangGraph Checkpointer 实例（持久化会话状态）
+        thread_id: 当前会话线程 ID，用于日志追踪
     """
     registry = skill_loader._registry
     system_prompt = _build_system_prompt(registry)
@@ -68,5 +73,7 @@ def create_orchestrator(
         backend=backend,
         memory=["AGENTS.md"],
         checkpointer=checkpointer,
+        response_format=ToolStrategy(AgentResponse),
+        middleware=[LoggingMiddleware(thread_id=thread_id)],
     )
     return agent

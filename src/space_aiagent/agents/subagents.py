@@ -29,6 +29,9 @@ def build_model() -> ChatOpenAI:
         openai_api_base=llm.base_url,
         temperature=llm.temperature,
         streaming=llm.streaming,
+        extra_body={
+            "enable_thinking": False,
+        },
     )
 
 

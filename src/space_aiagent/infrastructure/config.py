@@ -114,8 +114,8 @@ class LLMConfig(BaseSettings):
     """LLM 配置（适用于所有 OpenAI 兼容接口）"""
 
     api_key: str = ""
-    base_url: str = "https://api.deepseek.com"
-    model: str = "deepseek-chat"
+    base_url: str|None
+    model: str|None
     temperature: float = 0.1
     streaming: bool = True
 

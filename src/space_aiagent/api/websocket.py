@@ -24,9 +24,10 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from langchain_core.messages import HumanMessage
 
-from space_aiagent.agents.subagents import load_subagents
 from space_aiagent.agents.orchestrator import create_orchestrator
+from space_aiagent.agents.subagents import load_subagents
 from space_aiagent.bridge import SessionManager, bridge_var
+from space_aiagent.bridge.response_renderer import ResponseRenderer
 from space_aiagent.infrastructure.database import get_db
 from space_aiagent.models.enums import WSMessageType
 from space_aiagent.models.messages import (
@@ -34,6 +35,7 @@ from space_aiagent.models.messages import (
     ToolResultMessage,
     UserInputMessage,
 )
+from space_aiagent.models.response_schema import AgentResponse
 from space_aiagent.skills import SkillLoader, SkillRegistry
 
 logger = logging.getLogger(__name__)
@@ -42,8 +44,64 @@ router = APIRouter()
 
 session_manager = SessionManager()
 
+
+def _truncate(obj, max_len: int = 200) -> str:
+    """截断过长字符串，用于日志输出"""
+    s = str(obj)
+    if len(s) <= max_len:
+        return s
+    return s[:max_len] + f"...[截断, 总长{len(s)}]"
+
+
+# 工具名 → 用户可见的中文名称
+_TOOL_DISPLAY: dict[str, str] = {
+    "task": "正在分析并处理您的请求",
+    "write_todos": "正在规划任务",
+    "ls": "正在读取文件列表",
+    "read_file": "正在读取文件",
+    "write_file": "正在写入文件",
+    "edit_file": "正在编辑文件",
+    "glob": "正在搜索文件",
+    "grep": "正在搜索代码",
+}
+
+# 子 Agent 类型 → 中文标签
+_SUBTASK_LABELS: dict[str, str] = {
+    "scene-agent": "正在调用场景管理",
+    "entity-agent": "正在调用实体管理",
+}
+
+
+def _make_progress_message(tool_name: str, tool_input: dict) -> str | None:
+    """根据工具名和参数生成用户可见的进度提示，无意义时返回 None"""
+    pass
+    # 暂时不用，如果需要把以下注解放开
+    # # task 工具：提取子 Agent 类型，生成有意义的提示
+    # if tool_name == "task":
+    #     subagent_type = tool_input.get("subagent_type", "")
+    #     description = tool_input.get("description", "")
+    #     label = _SUBTASK_LABELS.get(subagent_type, "处理任务")
+    #     if description:
+    #         return f"{label}：{description[:80]}"
+    #     return f"{label}..."
+    #
+    # return _TOOL_DISPLAY.get(tool_name)
+
+
 # Agent 实例缓存: thread_id -> compiled graph
 _agent_cache: dict[str, object] = {}
+
+# 响应渲染器（全局共享）
+_renderer: ResponseRenderer | None = None
+
+
+def _get_renderer() -> ResponseRenderer:
+    """获取全局 ResponseRenderer（延迟初始化）"""
+    global _renderer
+    if _renderer is None:
+        _renderer = ResponseRenderer()
+    return _renderer
+
 
 # Skill 加载器（全局共享）
 _registry: SkillRegistry | None = None
@@ -81,7 +139,7 @@ async def _get_or_create_agent(thread_id: str):
     loader = _get_skill_loader()
     subagents = load_subagents(loader)
     checkpointer = await _get_checkpointer()
-    agent = create_orchestrator(subagents, loader, checkpointer)
+    agent = create_orchestrator(subagents, loader, checkpointer, thread_id=thread_id)
     _agent_cache[thread_id] = agent
     logger.info("Agent 实例已创建: thread_id=%s", thread_id)
     return agent
@@ -108,21 +166,72 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     agent_tasks: set[asyncio.Task] = set()
 
     async def run_agent(bridge, user_msg: UserInputMessage) -> None:
-        """后台执行 agent，不阻塞消息接收循环"""
+        """后台执行 agent（流式），不阻塞消息接收循环"""
         token = bridge_var.set(bridge)
         try:
             agent = await _get_or_create_agent(user_msg.thread_id)
-            logger.info("收到用户请求: %s",user_msg)
-            result = await agent.ainvoke(
-                {"messages": [HumanMessage(content=user_msg.content)]},
-                config={"configurable": {"thread_id": user_msg.thread_id}},
-            )
+            structured_response: AgentResponse | None = None
 
-            messages = result.get("messages", [])
-            for msg in reversed(messages):
-                if hasattr(msg, "content") and msg.type == "ai":
-                    await bridge.send_ai_message(msg.content)
-                    break
+            async for event in agent.astream_events(
+                {"messages": [HumanMessage(content=user_msg.content)]},
+                config={
+                    "configurable": {"thread_id": user_msg.thread_id},
+                    "recursion_limit": 100,
+                },
+                version="v2",
+            ):
+                kind = event["event"]
+                name = event.get("name", "")
+                data = event.get("data", {})
+
+                if kind == "on_tool_start":
+                    if name == "AgentResponse":
+                        continue
+                    # 生成有意义的进度提示
+                    tool_input = data.get("input", {})
+                    display = _make_progress_message(name, tool_input)
+                    if display:
+                        await bridge.send_ai_message(display)
+
+                elif kind == "on_chat_model_end":
+                    # ToolStrategy(AgentResponse) 在 model node 内部被 _handle_model_output
+                    # 拦截，不会走 ToolNode，因此 on_tool_end 收不到。需要从模型输出的
+                    # AIMessage.tool_calls 中提取。
+                    output = data.get("output")
+                    if hasattr(output, "tool_calls") and output.tool_calls:
+                        for tc in output.tool_calls:
+                            if tc.get("name") == "AgentResponse":
+                                try:
+                                    structured_response = AgentResponse(**tc["args"])
+                                    logger.info(
+                                        "AgentResponse: status=%s, summary=%s",
+                                        structured_response.status,
+                                        _truncate(structured_response.summary, 100),
+                                    )
+                                except Exception as e:
+                                    logger.warning("解析 AgentResponse 失败: %s", e)
+
+                elif kind == "on_tool_end":
+                    if name == "AgentResponse":
+                        output = data.get("output")
+                        if isinstance(output, AgentResponse):
+                            structured_response = output
+                        elif isinstance(output, dict):
+                            structured_response = AgentResponse(**output)
+                        logger.info(
+                            "AgentResponse: status=%s, summary=%s",
+                            structured_response.status if structured_response else "?",
+                            _truncate(structured_response.summary if structured_response else "", 100),
+                        )
+
+            # 渲染并发送最终回复
+            if structured_response is not None:
+                renderer = _get_renderer()
+                content = renderer.render(structured_response)
+                await bridge.send_ai_message(content)
+            else:
+                logger.warning("未获取到 structured_response")
+                await bridge.send_ai_message("处理完成。")
 
             await bridge.send_end()
 
@@ -135,6 +244,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
+            logger.info("收到用户请求: %s",raw)
             data = json.loads(raw)
             msg_type = data.get("type")
 
