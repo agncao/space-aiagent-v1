@@ -31,6 +31,7 @@ logs/
 # 数据库
 *.db
 *.sqlite3
+**/data/
 
 # OS
 .DS_Store

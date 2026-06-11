@@ -36,8 +36,7 @@ DEFAULT_TEMPLATES: dict[tuple[str, str], str] = {
         "{entity_list}"
     ),
     ("success", "SCENE_CREATED"): (
-        "场景 **「{name}」** 已创建成功！\n\n"
-        "中心天体: {central_body}\n"
+        "场景 **「{scene_name}」** 已创建成功！\n\n"
         "现在可以在此场景中添加实体了。\n\n"
         "**接下来您可以：**\n"
         "- 添加卫星 — 提供 TLE 两行根数，我会帮您创建轨道\n"
@@ -85,10 +84,7 @@ class ResponseRenderer:
             try:
                 result = template.format_map(_SafeDict(details))
                 logger.debug("模板 (%s, %s)渲染成功: %s", response.status, response.code, result)
-                # 如果渲染结果中仍有未填充的占位符，降级到 summary 模式
-                if "{" not in result:
-                    return result
-                logger.debug("模板存在未填充变量: (%s, %s)", response.status, response.code)
+                return result
             except Exception:
                 logger.debug("模板渲染失败: (%s, %s)", response.status, response.code)
 
