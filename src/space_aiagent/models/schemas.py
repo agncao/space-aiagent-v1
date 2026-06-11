@@ -14,7 +14,7 @@ from .enums import EntityType
 class ScenarioConfig(BaseModel):
     """创建场景的参数"""
 
-    name: str = Field(default="新建场景", description="场景名称")
+    scene_name: str = Field(default="新建场景", description="场景名称")
     central_body: str = Field(default="Earth", description="中心天体")
     start_time: str | None = Field(default=None, description="开始时间（ISO 8601）")
     end_time: str | None = Field(default=None, description="结束时间（ISO 8601）")
@@ -44,7 +44,8 @@ class EntityConfig(BaseModel):
 class SGP4Param(BaseModel):
     """SGP4 轨道参数"""
 
-    name: str = Field(description="卫星名称")
+    name: str | None= Field(default=None, description="在航天任务分析平台展示的卫星名称")
+    satellite_number: str | None = Field(default=None, description="卫星编号")
     tles: list[str] = Field(description="TLE 两行根数")
     start: str | None = Field(default=None, description="开始时间")
     end: str | None = Field(default=None, description="结束时间")

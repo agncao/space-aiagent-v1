@@ -34,10 +34,14 @@ def _truncate(obj, max_len: int = 200) -> str:
 def _msg_preview(msg: BaseMessage, max_len: int = 120) -> dict:
     """提取消息预览信息"""
     content = str(getattr(msg, "content", ""))
-    return {
+    preview: dict[str, Any] = {
         "type": getattr(msg, "type", "?"),
         "content": content[:max_len] + ("..." if len(content) > max_len else ""),
     }
+    tool_calls = getattr(msg, "tool_calls", None)
+    if tool_calls:
+        preview["tool_calls"] = [tc.get("name", "?") for tc in tool_calls]
+    return preview
 
 
 class LoggingMiddleware(AgentMiddleware):

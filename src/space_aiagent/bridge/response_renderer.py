@@ -17,36 +17,35 @@ logger = logging.getLogger(__name__)
 # 模板变量用 {key} 表示，从 AgentResponse.details 中取值
 DEFAULT_TEMPLATES: dict[tuple[str, str], str] = {
     ("error", "NO_SCENE"): (
-        "当前**尚未创建任何场景**，因此场景中没有任何实体（卫星、地面站、传感器等）。\n\n"
-        "场景是所有航天任务实体的载体，需要先创建场景才能添加和管理实体。\n\n"
+        "还没有打开的场景。你需要先打开场景，或者你也可以创建新的场景，这样你才能进行航天任务分析。\n\n"
         "**接下来您可以：**\n"
         '- **创建场景** — 告诉我「创建场景」或「新建一个场景」，我会帮您处理\n'
         "- 场景创建后，即可添加卫星（基于 TLE）、地面站、传感器等实体\n\n"
         "请问需要先创建一个场景吗？"
     ),
     ("info", "ENTITIES_EMPTY"): (
-        "当前场景中没有任何实体。\n\n"
+        "当前场景 **「{sceneName}」** 中没有任何实体。\n\n"
         "**接下来您可以：**\n"
         "- 添加卫星（提供 TLE 两行根数）\n"
         "- 添加地面站、传感器等实体\n"
         "请告诉我您需要添加什么类型的实体。"
     ),
     ("success", "ENTITIES_LIST"): (
-        "当前场景 **{scene_name}** 共有 **{count}** 个实体：\n\n"
+        "当前场景 **{sceneName}** 共有 **{count}** 个实体：\n\n"
         "{entity_list}"
     ),
     ("success", "SCENE_CREATED"): (
-        "场景 **「{scene_name}」** 已创建成功！\n\n"
+        "场景 **「{sceneName}」** 已创建成功！\n\n"
         "现在可以在此场景中添加实体了。\n\n"
         "**接下来您可以：**\n"
         "- 添加卫星 — 提供 TLE 两行根数，我会帮您创建轨道\n"
         "- 添加地面站、传感器等实体 — 告诉我类型和位置即可"
     ),
-    ("success", "SCENE_CLEARED"): (
-        "场景 **{scene_name}** 已清除所有内容。当前场景为空，可以重新创建实体。"
+    ("success", "ALL_ENTITIES_CLEARED"): (
+        "已清除场景中所有的实体。当前场景为空，可以重新创建实体。"
     ),
     ("success", "ENTITY_ADDED"): (
-        "实体 **「{name}」**（类型: {entity_type}）已成功添加到场景 **{scene_name}** 中。"
+        "实体 **「{name}」**（类型: {entity_type}）已成功添加到场景 **{sceneName}** 中。"
     ),
 }
 
@@ -72,28 +71,20 @@ class ResponseRenderer:
     def render(self, response: AgentResponse) -> str:
         """
         将结构化响应渲染为自然语言
-
-        优先匹配模板，未命中时用 summary 降级展示。
         """
-        key = (response.status, response.code)
-        template = self._templates.get(key)
-        logger.debug("命中模板: (%s, %s)", response.status, response.code)
+        # key = (response.status, response.code)
+        # template = self._templates.get(key)
+        # logger.debug("命中模板: (%s, %s)", response.status, response.code)
+        #
+        # if template is not None:
+        #     details = response.details or {}
+        #     try:
+        #         result = template.format_map(_SafeDict(details))
+        #         logger.debug("模板 (%s, %s)渲染成功: %s", response.status, response.code, result)
+        #         return result
+        #     except Exception:
+        #         logger.debug("模板渲染失败: (%s, %s)", response.status, response.code)
 
-        if template is not None:
-            details = response.details or {}
-            try:
-                result = template.format_map(_SafeDict(details))
-                logger.debug("模板 (%s, %s)渲染成功: %s", response.status, response.code, result)
-                return result
-            except Exception:
-                logger.debug("模板渲染失败: (%s, %s)", response.status, response.code)
-
-        # 降级: 用 summary + suggestions 组装
-        parts = [response.summary]
-        logger.debug("未命中模板， 组装降级回复: (%s|%s)", response.summary, response.suggestions)
-        if response.suggestions:
-            parts.append("\n\n**接下来您可以：**")
-            for s in response.suggestions:
-                parts.append(f"- {s}")
-
-        return "\n".join(parts)
+        # 降级: 用 summary 组装
+        logger.debug("未命中模板， 组装降级回复: (%s)", response.summary)
+        return response.summary

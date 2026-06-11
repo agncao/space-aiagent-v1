@@ -34,7 +34,9 @@
 | 语言 | Python 3.13 | 现代异步生态 |
 | Web 框架 | FastAPI | 异步支持、自动文档、WebSocket 内建 |
 | Agent Harness | [deepagents](https://docs.langchain.com/oss/python/deepagents/overview) | LangChain 团队开发的 Agent Harness，内置任务规划、子 Agent 生成、长期记忆 |
-| Agent 运行时 | LangGraph | DeepAgent 底层运行时，支持持久化执行、流式输出 |
+| Agent 运行时 | LangGraph | DeepAgent 底层运行时，支持持久化执行、流式输出（astream_events） |
+| 结构化输出 | ToolStrategy | 利用模型 tool calling API 强制输出 AgentResponse 结构，保证回复一致性 |
+| 可观测性 | LoggingMiddleware | Agent 中间件，记录 LLM 调用决策和工具执行过程 |
 | LLM 接口 | langchain-openai | OpenAI 兼容接口，统一支持 DeepSeek 和阿里 DashScope（Qwen） |
 | 持久化 | SQLite + aiosqlite | 开发阶段使用，后续可迁移 PostgreSQL |
 | 配置管理 | YAML + .env | YAML 放业务配置，.env 放敏感信息（不提交 Git） |
@@ -52,6 +54,9 @@
                     ┌─────────────────┐
                     │  Orchestrator   │  主控Agent：意图识别、任务规划
                     │  (DeepAgents)    │  只知道 Skill 摘要列表
+                    │  + ToolStrategy │  结构化输出 AgentResponse
+                    │  + LoggingMW    │  执行日志中间件
+                    │  + astream      │  流式事件驱动
                     └───────┬─────────┘
                             │ subagent 调度
               ┌─────────────┼─────────────┐
@@ -80,12 +85,12 @@
 
 ### Agent 职责
 
-| Agent | 职责 | 加载的 Skill |
-|-------|------|-------------|
-| Orchestrator | 意图识别、任务规划、子 Agent 调度 | 无（只持有 Skill 摘要） + memory（AGENTS.md） |
-| Scene Agent | 场景创建/重命名/清除/查询 | scene_management (6 个工具) |
-| Entity Agent | 实体创建/SGP4轨道/样式更新 | entity_management + orbit_management (4 个工具) |
-| Analysis Agent | 数据分析（未来扩展） | data_analysis |
+| Agent | 职责                         | 加载的 Skill |
+|-------|----------------------------|-------------|
+| Orchestrator | 意图识别、任务规划、子 Agent 调度、结构化输出 | ToolStrategy(AgentResponse) + memory（AGENTS.md） + LoggingMiddleware |
+| Scene Agent | 场景创建/重命名/删除/查询             | scene_management (6 个工具) |
+| Entity Agent | 实体创建/SGP4轨道/样式更新           | entity_management + orbit_management (4 个工具) |
+| Analysis Agent | 数据分析（未来扩展）                 | data_analysis |
 
 > 子 Agent 通过 `config/subagents.yaml` 声明式配置，新增 Agent 只需加 YAML 条目 + `prompts/` 加提示词文件。
 
@@ -165,27 +170,30 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 ```
 前端                          后端
   │  user_input ──────────→  │
+  │  ←──── ai_message       │  流式状态："正在执行 queryScenarioEntities..."
   │  ←──── tool_call        │  Agent 调用工具
   │  tool_result ─────────→  │  前端执行 Cesium 操作
-  │  ←──── ai_message       │  Agent 拿到结果，回复
+  │  ←──── ai_message       │  Agent 结构化回复（ResponseRenderer 渲染）
   │  ←──── end              │  轮次结束
 ```
+
+> 流式执行：后端使用 `astream_events` 驱动 Agent，在工具调用前发送 `ai_message` 状态提示，前端可实时感知进度。最终回复由 `ToolStrategy(AgentResponse)` 结构化输出经 `ResponseRenderer` 模板渲染生成。
 
 ### 工具清单
 
 前端需要实现以下 `tool_func` 对应的方法：
 
-| 工具函数名 (`tool_func`) | 所属 Skill | 参数 (`tool_func_args`) | 说明 |
-|--------------------------|-----------|------------------------|------|
-| `createScenario` | scene_management | `{name, centralBody, startTime?, endTime?, description?}` | 创建场景 |
-| `renameScenario` | scene_management | `{name}` | 重命名场景 |
-| `clearScene` | scene_management | `{}` | 清除场景 |
-| `clearEntities` | scene_management | `{}` | 清除所有实体 |
-| `queryScenario` | scene_management | `{sceneName?}` | 查询场景信息 |
-| `queryScenarioEntities` | scene_management | `{}` | 查询实体列表 |
-| `addPointEntity` | entity_management | `{entityType, name, position: {longitude, latitude, height}, properties?}` | 添加点实体 |
+| 工具函数名 (`tool_func`) | 所属 Skill | 参数 (`tool_func_args`) | 说明         |
+|--------------------------|-----------|------------------------|------------|
+| `createScenario` | scene_management | `{name, centralBody, startTime?, endTime?, description?}` | 创建场景       |
+| `renameScenario` | scene_management | `{name}` | 重命名场景      |
+| `deleteScene` | scene_management | `{}` | 删除场景       |
+| `clearEntities` | scene_management | `{}` | 清除所有实体     |
+| `queryScenario` | scene_management | `{sceneName?}` | 查询场景信息     |
+| `queryScenarioEntities` | scene_management | `{}` | 查询实体列表     |
+| `addPointEntity` | entity_management | `{entityType, name, position: {longitude, latitude, height}, properties?}` | 添加点实体      |
 | `createSGP4Orbit` | orbit_management | `{name, tles, start?, end?}` | 创建 SGP4 轨道 |
-| `updateSGP4Orbit` | orbit_management | `{name, color?, glowPower?, taperPower?}` | 更新轨道样式 |
+| `updateSGP4Orbit` | orbit_management | `{name, color?, glowPower?, taperPower?}` | 更新轨道样式     |
 
 参数中 `?` 表示可选字段。`entityType` 支持的值: `place`, `target`, `facility`, `aircraft`, `missile`, `satellite`, `sensor`, `groundVehicle`, `ship`, `launchVehicle`, `lineTarget`, `areaTarget`。
 
@@ -197,10 +205,12 @@ src/space_aiagent/
 ├── cli.py                  # CLI 管理入口（run / skills list / skills show）
 ├── api/                    # API 层
 │   ├── routes.py           # REST 端点（invoke / health）
-│   └── websocket.py        # WebSocket 端点，核心消息循环
+│   └── websocket.py        # WebSocket 端点（astream_events 流式事件驱动）
 ├── agents/                 # Agent 层
-│   ├── orchestrator.py     # 主控 Agent（create_deep_agent + subagents + memory）
+│   ├── orchestrator.py     # 主控 Agent（create_deep_agent + subagents + memory + ToolStrategy）
 │   └── subagents.py        # 子 Agent 加载器（从 YAML 配置构建）
+├── middleware/              # Agent 中间件
+│   └── logging.py          # LoggingMiddleware（LLM 调用/工具执行可观测性）
 ├── prompts/                # 提示词模板（与代码分离）
 │   ├── orchestrator.md     # 主控 Agent 提示词（含 {skill_summaries} 占位符）
 │   ├── scene_agent.md      # 场景子 Agent 提示词
@@ -217,9 +227,11 @@ src/space_aiagent/
 ├── models/                 # 数据模型
 │   ├── enums.py            # 枚举（EntityType / WSMessageType / LLMProvider）
 │   ├── schemas.py          # Pydantic 模型（工具参数、API 请求响应）
-│   └── messages.py         # WebSocket 消息类型
+│   ├── messages.py         # WebSocket 消息类型
+│   └── response_schema.py  # AgentResponse 结构化响应模型（ToolStrategy 输出格式）
 ├── bridge/                 # 远程工具桥接层
 │   ├── ws_bridge.py        # WSBridge（Future 桥接 + 消息发送）
+│   ├── response_renderer.py # 响应渲染器（AgentResponse 模板 → 自然语言）
 │   ├── session.py          # SessionManager（thread_id → WebSocket 映射）
 │   └── __init__.py         # bridge_var (ContextVar) 导出
 └── infrastructure/         # 基础设施

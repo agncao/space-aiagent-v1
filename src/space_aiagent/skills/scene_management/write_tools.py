@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 @tool(args_schema=ScenarioConfig)
 async def create_scenario(
-    name: str = "新建场景",
+    scene_name: str = "新建场景",
     central_body: str = "Earth",
     start_time: str | None = None,
     end_time: str | None = None,
@@ -37,7 +37,7 @@ async def create_scenario(
         return {"success": False, "message": "bridge 未注入，无法发送指令"}
 
     args: dict = {
-        "name": name,
+        "sceneName": scene_name,
         "centralBody": central_body,
     }
     if start_time:
@@ -55,12 +55,12 @@ async def create_scenario(
 
 
 @tool
-async def rename_scenario(name: str) -> dict:
+async def rename_scenario(scene_name: str) -> dict:
     """
     重命名当前场景。
 
     参数:
-    - name: 新的场景名称
+    - scene_name: 新的场景名称
     """
     bridge = bridge_var.get()
     if bridge is None:
@@ -69,23 +69,23 @@ async def rename_scenario(name: str) -> dict:
 
     result = await bridge.send_tool_call(
         tool_func="renameScenario",
-        args={"name": name},
+        args={"sceneName": scene_name},
     )
     return result
 
 
 @tool
-async def clear_scene() -> dict:
+async def delete_scene() -> dict:
     """
     清除当前场景的所有内容，包括场景本身和其中所有实体。
     """
     bridge = bridge_var.get()
     if bridge is None:
-        logger.error("bridge 未注入，无法发送 clearScene 指令")
+        logger.error("bridge 未注入，无法发送 deleteScene 指令")
         return {"success": False, "message": "bridge 未注入，无法发送指令"}
 
     result = await bridge.send_tool_call(
-        tool_func="clearScene",
+        tool_func="deleteScene",
         args={},
     )
     return result

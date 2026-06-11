@@ -1,6 +1,6 @@
 agents:
   - name: scene-agent
-    description: 处理场景相关操作：创建、重命名、清除、查询航天场景。当用户提到场景、新建场景、清除场景时使用此 Agent。
+    description: 处理场景相关操作：创建、重命名、删除、查询航天场景。当用户提到场景、新建场景、删除场景时使用此 Agent。
     skills:
       - scene_management
     prompt_file: scene_agent.md

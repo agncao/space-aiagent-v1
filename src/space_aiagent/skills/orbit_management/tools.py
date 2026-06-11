@@ -22,18 +22,14 @@ logger = logging.getLogger(__name__)
 
 @tool(args_schema=SGP4Param)
 async def create_sgp4_orbit(
-    name: str,
     tles: list[str],
+    name: str | None = None,
+    satellite_number: str | None = None,
     start: str | None = None,
     end: str | None = None,
 ) -> dict:
     """
-    基于 SGP4 模型创建卫星轨道。需要提供卫星名称和 TLE 两行根数。
-
-    参数说明:
-    - name: 卫星名称
-    - tles: TLE 两行根数（列表，通常2个元素）
-    - start/end: 可选的轨道计算时间范围
+    基于 SGP4 模型创建卫星轨道。
     """
     # 获取当前会话的 bridge 实例
     bridge = bridge_var.get()
@@ -43,13 +39,16 @@ async def create_sgp4_orbit(
 
     # 构建 SGP4 轨道参数
     args: dict = {
-        "name": name,
         "tles": tles,
     }
     if start:
         args["start"] = start
     if end:
         args["end"] = end
+    if  name:
+        args["name"] = name
+    if satellite_number:
+        args["satelliteNumber"] = satellite_number
 
     # 前端对应方法: SceneTools.createSGP4Orbit(par)
     # 前端执行流程:

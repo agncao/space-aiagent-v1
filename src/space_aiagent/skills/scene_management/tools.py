@@ -9,7 +9,7 @@ SkillLoader 从此文件加载所有工具。实际实现按读写分类:
 from .read_tools import query_scenario, query_scenario_entities  # noqa: F401
 from .write_tools import (  # noqa: F401
     clear_entities,
-    clear_scene,
+    delete_scene,
     create_scenario,
     rename_scenario,
 )
