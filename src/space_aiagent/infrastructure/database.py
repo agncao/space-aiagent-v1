@@ -19,6 +19,8 @@ from pathlib import Path
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from space_aiagent.infrastructure.config import PROJECT_ROOT
+
 
 class Database:
     """数据库管理器"""
@@ -30,7 +32,6 @@ class Database:
                          SQLite: "sqlite+aiosqlite:///./data/space_aiagent.db"
         """
         self.database_url = database_url
-        # 从 URL 提取文件路径: "sqlite+aiosqlite:///./data/db" -> "./data/db"
         path = database_url.split("///")[-1]
         self.db_path = Path(path)
         self._db: aiosqlite.Connection | None = None
@@ -80,7 +81,7 @@ async def get_db() -> Database:
     """
     global _db
     if _db is None:
-        db_dir = os.path.join(os.getcwd(), "data")
+        db_dir = os.path.join(PROJECT_ROOT, "data")
         os.makedirs(db_dir, exist_ok=True)
         db_url = f"sqlite+aiosqlite:///{db_dir}/space_aiagent.db"
         _db = Database(db_url)

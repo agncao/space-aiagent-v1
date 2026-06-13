@@ -57,7 +57,7 @@ space-aiagent = "space_aiagent.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-space_aiagent = ["prompts/*.md", "knowledge/*.md"]
+space_aiagent = ["prompts/*.md"]
 
 [tool.ruff]
 target-version = "py313"

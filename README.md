@@ -39,7 +39,7 @@
 | 可观测性 | LoggingMiddleware | Agent 中间件，记录 LLM 调用决策和工具执行过程 |
 | LLM 接口 | langchain-openai | OpenAI 兼容接口，统一支持 DeepSeek 和阿里 DashScope（Qwen） |
 | 持久化 | SQLite + aiosqlite | 开发阶段使用，后续可迁移 PostgreSQL |
-| 配置管理 | YAML + .env | YAML 放业务配置，.env 放敏感信息（不提交 Git） |
+| 配置管理 | YAML + .env | YAML 放业务配置，.env 放敏感信息（不提交 Git），knowledge 外部化到 config/ 可动态修改 |
 | 日志 | structlog | 结构化 JSON 日志，控制台 + 文件轮转，可接入 ELK |
 | 代码质量 | ruff + pre-commit | 格式化 + lint + Git hooks |
 
@@ -215,8 +215,6 @@ src/space_aiagent/
 │   ├── orchestrator.md     # 主控 Agent 提示词（含 {skill_summaries} 占位符）
 │   ├── scene_agent.md      # 场景子 Agent 提示词
 │   └── entity_agent.md     # 实体子 Agent 提示词
-├── knowledge/              # 领域知识（通过 FilesystemBackend + memory 加载）
-│   └── AGENTS.md           # TLE 两行根数格式说明
 ├── skills/                 # Skill 渐进式披露
 │   ├── registry.py         # Skill 注册表（扫描 skill.yaml）
 │   ├── loader.py           # Skill 动态加载器（importlib 导入 @tool 函数）

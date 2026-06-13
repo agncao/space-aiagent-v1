@@ -16,13 +16,15 @@ from langchain.agents.structured_output import ToolStrategy
 from langgraph.types import Checkpointer
 
 from space_aiagent.agents.subagents import build_model
+from space_aiagent.infrastructure.config import PROJECT_ROOT
 from space_aiagent.middleware import LoggingMiddleware
 from space_aiagent.models.response_schema import AgentResponse
 from space_aiagent.skills import SkillLoader, SkillRegistry
 
-# 提示词和知识文件路径
+# 提示词路径（打包在包内）
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
-_KNOWLEDGE_DIR = Path(__file__).parent.parent / "knowledge"
+# 知识文件路径（外部化到 config/，生产环境可动态修改）
+_KNOWLEDGE_DIR = PROJECT_ROOT / "config" / "knowledge"
 
 
 def _build_skill_summaries(registry: SkillRegistry) -> str:
