@@ -65,23 +65,3 @@ async def add_point_entity(
         args=args,
     )
     return result
-
-
-@tool
-async def query_scenario_entities() -> dict:
-    """
-    查询当前场景中的所有实体名称列表。
-    """
-    # 获取当前会话的 bridge 实例
-    bridge = bridge_var.get()
-    if bridge is None:
-        logger.error("bridge 未注入，无法发送 queryScenarioEntities 指令")
-        return {"success": False, "message": "bridge 未注入，无法发送指令"}
-
-    # 前端对应方法: SceneTools.queryScenarioEntities(config)
-    # 前端内部调用: 遍历 currentScenario.dataSource.entities.values 提取实体名称
-    result = await bridge.send_tool_call(
-        tool_func="queryScenarioEntities",
-        args={},
-    )
-    return result

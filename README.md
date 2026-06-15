@@ -45,7 +45,7 @@
 
 ## 架构设计
 
-### 多 Agent + Skill 渐进式披露
+### 多 Agent + 工具组管理
 
 ```
                         用户输入(WebSocket)
@@ -53,7 +53,7 @@
                               ▼
                     ┌─────────────────┐
                     │  Orchestrator   │  主控Agent：意图识别、任务规划
-                    │  (DeepAgents)    │  只知道 Skill 摘要列表
+                    │  (DeepAgents)    │  只知道工具组摘要列表
                     │  + ToolStrategy │  结构化输出 AgentResponse
                     │  + LoggingMW    │  执行日志中间件
                     │  + astream      │  流式事件驱动
@@ -67,11 +67,11 @@
         └────┬─────┘  └────┬─────┘  └──────────┘
              │              │
      ┌───────┴──┐    ┌─────┴──────────┐
-     │ Skill:   │    │ Skill:          │
+     │ 工具组:   │    │ 工具组:          │
      │ scene    │    │ entity          │
      │ manage   │    │ manage          │
      └──────────┘    ├─────────────────┤
-                     │ Skill:          │
+                     │ 工具组:          │
                      │ orbit           │
                      │ manage          │
                      └─────────────────┘
@@ -85,14 +85,14 @@
 
 ### Agent 职责
 
-| Agent | 职责                         | 加载的 Skill |
+| Agent | 职责                         | 加载的工具组 |
 |-------|----------------------------|-------------|
 | Orchestrator | 意图识别、任务规划、子 Agent 调度、结构化输出 | ToolStrategy(AgentResponse) + memory（AGENTS.md） + LoggingMiddleware |
 | Scene Agent | 场景创建/重命名/删除/查询             | scene_management (6 个工具) |
 | Entity Agent | 实体创建/SGP4轨道/样式更新           | entity_management + orbit_management (4 个工具) |
-| Analysis Agent | 数据分析（未来扩展）                 | data_analysis |
+| Analysis Agent | 数据分析（未来扩展）                 | （未来扩展） |
 
-> 子 Agent 通过 `config/subagents.yaml` 声明式配置，新增 Agent 只需加 YAML 条目 + `prompts/` 加提示词文件。
+> 子 Agent 通过 `config/subagents.yaml` 声明式配置，新增 Agent 只需加 YAML 条目 + `prompts/` 加提示词文件 + `tools/registry.py` 注册工具组。
 
 ### 远程工具桥接
 
@@ -183,7 +183,7 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 
 前端需要实现以下 `tool_func` 对应的方法：
 
-| 工具函数名 (`tool_func`) | 所属 Skill | 参数 (`tool_func_args`) | 说明         |
+| 工具函数名 (`tool_func`) | 所属工具组 | 参数 (`tool_func_args`) | 说明         |
 |--------------------------|-----------|------------------------|------------|
 | `createScenario` | scene_management | `{name, centralBody, startTime?, endTime?, description?}` | 创建场景       |
 | `renameScenario` | scene_management | `{name}` | 重命名场景      |
@@ -202,7 +202,7 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 ```
 src/space_aiagent/
 ├── main.py                 # FastAPI 应用入口，初始化配置和日志
-├── cli.py                  # CLI 管理入口（run / skills list / skills show）
+├── cli.py                  # CLI 管理入口（run / tools list / tools show）
 ├── api/                    # API 层
 │   ├── routes.py           # REST 端点（invoke / health）
 │   └── websocket.py        # WebSocket 端点（astream_events 流式事件驱动）
@@ -212,16 +212,14 @@ src/space_aiagent/
 ├── middleware/              # Agent 中间件
 │   └── logging.py          # LoggingMiddleware（LLM 调用/工具执行可观测性）
 ├── prompts/                # 提示词模板（与代码分离）
-│   ├── orchestrator.md     # 主控 Agent 提示词（含 {skill_summaries} 占位符）
+│   ├── orchestrator.md     # 主控 Agent 提示词（含 {tool_summaries} 占位符）
 │   ├── scene_agent.md      # 场景子 Agent 提示词
 │   └── entity_agent.md     # 实体子 Agent 提示词
-├── skills/                 # Skill 渐进式披露
-│   ├── registry.py         # Skill 注册表（扫描 skill.yaml）
-│   ├── loader.py           # Skill 动态加载器（importlib 导入 @tool 函数）
-│   ├── scene_management/   # 场景管理技能（6 个工具）
-│   ├── entity_management/  # 实体管理技能（1 个工具）
-│   ├── orbit_management/   # 轨道管理技能（2 个工具）
-│   └── data_analysis/      # 数据分析技能（未来扩展）
+├── tools/                  # 工具组管理
+│   ├── registry.py         # 静态工具注册表（标准 import + 按组分组）
+│   ├── scene_management/   # 场景管理工具组（6 个工具）
+│   ├── entity_management/  # 实体管理工具组（2 个工具）
+│   └── orbit_management/   # 轨道管理工具组（2 个工具）
 ├── models/                 # 数据模型
 │   ├── enums.py            # 枚举（EntityType / WSMessageType / LLMProvider）
 │   ├── schemas.py          # Pydantic 模型（工具参数、API 请求响应）
@@ -304,11 +302,11 @@ python -m space_aiagent.main
 # CLI 方式启动
 space-aiagent run --host 0.0.0.0 --port 8028 --reload
 
-# 查看 Skill 列表
-space-aiagent skills list
+# 查看工具组列表
+space-aiagent tools list
 
-# 查看 Skill 详情
-space-aiagent skills show scene_management
+# 查看工具组详情
+space-aiagent tools show scene_management
 
 # 运行测试
 pytest

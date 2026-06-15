@@ -19,7 +19,6 @@ from space_aiagent.agents.subagents import build_model
 from space_aiagent.infrastructure.config import PROJECT_ROOT
 from space_aiagent.middleware import LoggingMiddleware
 from space_aiagent.models.response_schema import AgentResponse
-from space_aiagent.skills import SkillLoader, SkillRegistry
 
 # 提示词路径（打包在包内）
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -27,25 +26,23 @@ _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 _KNOWLEDGE_DIR = PROJECT_ROOT / "config" / "knowledge"
 
 
-def _build_skill_summaries(registry: SkillRegistry) -> str:
-    """构建 Skill 摘要文本"""
-    summaries = registry.get_summaries()
-    if not summaries:
-        return "（暂无可用 Skill）"
-    return "\n".join(f"- {s['name']}: {s['description']}" for s in summaries)
+def _build_subagent_summaries(subagents: list[dict]) -> str:
+    """构建子 Agent 摘要文本（数据来自 subagents.yaml 的 agents[].description）"""
+    if not subagents:
+        return "（暂无可用子 Agent）"
+    return "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
 
 
-def _build_system_prompt(registry: SkillRegistry) -> str:
+def _build_system_prompt(subagents: list[dict]) -> str:
     """构建系统提示词（不含领域知识，知识通过 memory 加载）"""
     template = (_PROMPTS_DIR / "orchestrator.md").read_text(encoding="utf-8")
     return template.format(
-        skill_summaries=_build_skill_summaries(registry),
+        agent_summaries=_build_subagent_summaries(subagents),
     )
 
 
 def create_orchestrator(
     subagents: list[dict],
-    skill_loader: SkillLoader,
     checkpointer: Checkpointer,
     thread_id: str = "",
 ) -> "CompiledStateGraph":  # noqa: F821
@@ -54,12 +51,10 @@ def create_orchestrator(
 
     Args:
         subagents: 子 Agent 配置字典列表
-        skill_loader: Skill 加载器，用于生成摘要
         checkpointer: LangGraph Checkpointer 实例（持久化会话状态）
         thread_id: 当前会话线程 ID，用于日志追踪
     """
-    registry = skill_loader._registry
-    system_prompt = _build_system_prompt(registry)
+    system_prompt = _build_system_prompt(subagents)
     model = build_model()
 
     # 知识文件通过 FilesystemBackend + memory 加载

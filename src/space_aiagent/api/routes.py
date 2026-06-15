@@ -25,16 +25,11 @@ async def invoke(request: InvokeRequest) -> InvokeResponse:
     """
     from langchain_core.messages import HumanMessage
 
-    from space_aiagent.agents.subagents import load_subagents
     from space_aiagent.agents.orchestrator import create_orchestrator
-    from space_aiagent.skills import SkillLoader, SkillRegistry
+    from space_aiagent.agents.subagents import load_subagents
 
-    registry = SkillRegistry()
-    registry.discover()
-    loader = SkillLoader(registry)
-
-    subagents = load_subagents(loader)
-    agent = create_orchestrator(subagents, loader)
+    subagents = load_subagents()
+    agent = create_orchestrator(subagents, checkpointer=None)
 
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content=request.content)]},

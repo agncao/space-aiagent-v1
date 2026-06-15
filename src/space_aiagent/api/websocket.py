@@ -36,7 +36,6 @@ from space_aiagent.models.messages import (
     UserInputMessage,
 )
 from space_aiagent.models.response_schema import AgentResponse
-from space_aiagent.skills import SkillLoader, SkillRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -104,21 +103,8 @@ def _get_renderer() -> ResponseRenderer:
 
 
 # Skill 加载器（全局共享）
-_registry: SkillRegistry | None = None
-_skill_loader: SkillLoader | None = None
-
 # 数据库 checkpointer（全局共享，SQLite 持久化）
 _checkpointer = None
-
-
-def _get_skill_loader() -> SkillLoader:
-    """获取全局 SkillLoader（延迟初始化）"""
-    global _registry, _skill_loader
-    if _skill_loader is None:
-        _registry = SkillRegistry()
-        _registry.discover()
-        _skill_loader = SkillLoader(_registry)
-    return _skill_loader
 
 
 async def _get_checkpointer():
@@ -136,10 +122,9 @@ async def _get_or_create_agent(thread_id: str):
     if thread_id in _agent_cache:
         return _agent_cache[thread_id]
 
-    loader = _get_skill_loader()
-    subagents = load_subagents(loader)
+    subagents = load_subagents()
     checkpointer = await _get_checkpointer()
-    agent = create_orchestrator(subagents, loader, checkpointer, thread_id=thread_id)
+    agent = create_orchestrator(subagents, checkpointer, thread_id=thread_id)
     _agent_cache[thread_id] = agent
     logger.info("Agent 实例已创建: thread_id=%s", thread_id)
     return agent

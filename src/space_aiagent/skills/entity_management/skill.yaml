@@ -1,8 +1,0 @@
-name: entity_management
-description: "实体管理：在场景中添加、查询实体（卫星、地面站、传感器等）"
-triggers:
-  - 添加实体
-  - 创建卫星
-  - 添加地面站
-  - 添加传感器
-  - 创建点实体

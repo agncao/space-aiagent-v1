@@ -1,7 +1,0 @@
-name: data_analysis
-description: "数据分析：航天数据统计、覆盖率分析、可见性分析等（未来扩展）"
-triggers:
-  - 数据分析
-  - 覆盖率
-  - 可见性分析
-  - 统计

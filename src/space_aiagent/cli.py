@@ -6,8 +6,8 @@ space-aiagent CLI 入口
 用法:
     space-aiagent --help
     space-aiagent run              # 启动服务器
-    space-aiagent skills list      # 列出所有 Skill
-    space-aiagent skills show <n>  # 查看某个 Skill 的详情
+    space-aiagent tools list       # 列出所有工具组
+    space-aiagent tools show <n>   # 查看某个工具组的详情
 """
 
 import click
@@ -37,51 +37,67 @@ def run(host: str, port: int, reload: bool) -> None:
 
 
 @main.group()
-def skills() -> None:
-    """Skill 管理命令"""
+def tools() -> None:
+    """工具组管理命令"""
     pass
 
 
-@skills.command("list")
-def skills_list() -> None:
-    """列出所有已注册的 Skill"""
-    from space_aiagent.skills import SkillRegistry
+def _build_group_descriptions_from_yaml() -> dict[str, str]:
+    """
+    从 subagents.yaml 反查 group → description 映射
 
-    registry = SkillRegistry()
-    registry.discover()
-    summaries = registry.get_summaries()
-    if not summaries:
-        click.echo("暂无已注册的 Skill")
+    一个组可能被多个 agent 引用，取首个匹配的 agent description
+    （实际项目里通常 1:1，多:1 时取首个对 CLI 展示足够）
+    """
+    import yaml
+
+    from space_aiagent.infrastructure.config import CONFIG_DIR
+
+    config_path = CONFIG_DIR / "subagents.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    group_desc: dict[str, str] = {}
+    for agent in config.get("agents", []):
+        for group in agent.get("tools", []):
+            if group not in group_desc:
+                group_desc[group] = agent.get("description", "")
+    return group_desc
+
+
+@tools.command("list")
+def tools_list() -> None:
+    """列出所有已注册工具组"""
+    from space_aiagent.tools.registry import get_all_groups
+
+    groups = get_all_groups()
+    group_desc = _build_group_descriptions_from_yaml()
+    if not groups:
+        click.echo("暂无已注册的工具组")
         return
-    for summary in summaries:
-        click.echo(f"  {summary['name']}: {summary['description']}")
+    for name, tool_list in groups.items():
+        desc = group_desc.get(name, "（描述见 subagents.yaml）")
+        click.echo(f"  {name} ({len(tool_list)} 个工具): {desc}")
 
 
-@skills.command("show")
+@tools.command("show")
 @click.argument("name")
-def skills_show(name: str) -> None:
-    """查看指定 Skill 的详细信息"""
-    from space_aiagent.skills import SkillLoader, SkillRegistry
+def tools_show(name: str) -> None:
+    """查看指定工具组的详细信息"""
+    from space_aiagent.tools.registry import get_all_groups
 
-    registry = SkillRegistry()
-    registry.discover()
-    info = registry.get_skill(name)
-    if info is None:
-        click.echo(f"Skill 不存在: {name}")
-        click.echo(f"可用 Skill: {', '.join(registry.list_skill_names())}")
+    groups = get_all_groups()
+    if name not in groups:
+        click.echo(f"工具组不存在: {name}")
+        click.echo(f"可用工具组: {', '.join(groups.keys())}")
         return
 
-    click.echo(f"名称: {info.name}")
-    click.echo(f"描述: {info.description}")
-    click.echo(f"触发词: {', '.join(info.triggers)}")
-    click.echo(f"目录: {info.skill_dir}")
+    group_desc = _build_group_descriptions_from_yaml()
+    click.echo(f"名称: {name}")
+    click.echo(f"描述: {group_desc.get(name, '（描述见 subagents.yaml）')}")
 
-    # 加载工具列表
-    loader = SkillLoader(registry)
-    tools = loader.load_skill(name)
-    if tools:
-        click.echo(f"工具 ({len(tools)} 个):")
-        for t in tools:
+    tool_list = groups[name]
+    if tool_list:
+        click.echo(f"工具 ({len(tool_list)} 个):")
+        for t in tool_list:
             click.echo(f"  - {t.name}: {t.description}")
     else:
         click.echo("工具: （无）")
