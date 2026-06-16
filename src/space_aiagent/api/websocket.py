@@ -26,7 +26,7 @@ from langchain_core.messages import HumanMessage
 
 from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.agents.subagents import load_subagents
-from space_aiagent.bridge import SessionManager, bridge_var
+from space_aiagent.bridge import SessionManager, bridge_var, current_scene_name_var
 from space_aiagent.bridge.response_renderer import ResponseRenderer
 from space_aiagent.infrastructure.database import get_db
 from space_aiagent.models.enums import WSMessageType
@@ -152,7 +152,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     async def run_agent(bridge, user_msg: UserInputMessage) -> None:
         """后台执行 agent（流式），不阻塞消息接收循环"""
-        token = bridge_var.set(bridge)
+        bridge_token = bridge_var.set(bridge)
+        scene_token = current_scene_name_var.set(user_msg.current_scene_name)
         try:
             agent = await _get_or_create_agent(user_msg.thread_id)
             structured_response: AgentResponse | None = None
@@ -224,7 +225,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             logger.exception("Agent 执行出错: thread_id=%s", user_msg.thread_id)
             await bridge.send_error(str(e))
         finally:
-            bridge_var.reset(token)
+            bridge_var.reset(bridge_token)
+            current_scene_name_var.reset(scene_token)
 
     try:
         while True:

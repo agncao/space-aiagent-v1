@@ -4,14 +4,10 @@
 直接执行，无前后置流程。
 """
 
-import logging
-
 from langchain_core.tools import tool
 
-from space_aiagent.bridge import bridge_var
+from space_aiagent.bridge import bridge_var, current_scene_name_var
 from space_aiagent.models.schemas import ScenarioConfig
-
-logger = logging.getLogger(__name__)
 
 
 @tool(args_schema=ScenarioConfig)
@@ -30,12 +26,11 @@ async def create_scenario(
     - central_body: 中心天体，默认"Earth"
     - start_time/end_time: 可选的时间范围（ISO 8601）
     - description: 可选的场景描述
+
+    注意：本工具用于初始化场景。创建成功后，下一轮对话（前端再次携带 current_scene_name）
+    才会建立场景上下文，本轮内不能立即调用其他场景操作工具（如 add_point_entity）。
     """
     bridge = bridge_var.get()
-    if bridge is None:
-        logger.error("bridge 未注入，无法发送 createScenario 指令")
-        return {"success": False, "message": "bridge 未注入，无法发送指令"}
-
     args: dict = {
         "sceneName": scene_name,
         "centralBody": central_body,
@@ -47,10 +42,13 @@ async def create_scenario(
     if description:
         args["description"] = description
 
-    result = await bridge.send_tool_call(
+    result  = await bridge.send_tool_call(
         tool_func="createScenario",
         args=args,
     )
+    if result["success"]:
+        data : dict =result["data"]
+        current_scene_name_var.set(data["scene_name"])
     return result
 
 
@@ -63,14 +61,13 @@ async def rename_scenario(scene_name: str) -> dict:
     - scene_name: 新的场景名称
     """
     bridge = bridge_var.get()
-    if bridge is None:
-        logger.error("bridge 未注入，无法发送 renameScenario 指令")
-        return {"success": False, "message": "bridge 未注入，无法发送指令"}
-
     result = await bridge.send_tool_call(
         tool_func="renameScenario",
         args={"sceneName": scene_name},
     )
+    if result["success"]:
+        data : dict =result["data"]
+        current_scene_name_var.set(data["scene_name"])
     return result
 
 
@@ -80,14 +77,12 @@ async def delete_scene() -> dict:
     清除当前场景的所有内容，包括场景本身和其中所有实体。
     """
     bridge = bridge_var.get()
-    if bridge is None:
-        logger.error("bridge 未注入，无法发送 deleteScene 指令")
-        return {"success": False, "message": "bridge 未注入，无法发送指令"}
-
-    result = await bridge.send_tool_call(
+    result  = await bridge.send_tool_call(
         tool_func="deleteScene",
         args={},
     )
+    if result["success"]:
+        current_scene_name_var.set(None)
     return result
 
 
@@ -97,12 +92,7 @@ async def clear_entities() -> dict:
     清除当前场景中的所有实体，但保留场景本身。
     """
     bridge = bridge_var.get()
-    if bridge is None:
-        logger.error("bridge 未注入，无法发送 clearEntities 指令")
-        return {"success": False, "message": "bridge 未注入，无法发送指令"}
-
-    result = await bridge.send_tool_call(
+    return await bridge.send_tool_call(
         tool_func="clearEntities",
         args={},
     )
-    return result

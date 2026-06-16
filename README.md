@@ -21,11 +21,13 @@
 ### 核心业务流程
 
 以"创建卫星"为例：
-1. 用户输入"我要创建卫星"
-2. 智能体识别意图，发出创建卫星指令
-3. 前端检查是否已创建场景
-4. 如果没有场景 → 报异常并通知智能体
-5. 如果有场景 → 创建卫星并返回结果
+1. 用户输入"我要创建卫星"，前端携带 `current_scene_name`（来自 Cesium CurrentScenario）
+2. 智能体识别意图，调用 entity 工具
+3. 后端 `ToolValidationMiddleware` 检查 `current_scene_name`：
+   - 如果为 null → 工具直接 fail-fast 返回失败，**不向前端发送 tool_call**，LLM 看到错误后决定创建场景或向用户解释
+   - 如果非 null → 工具通过 WebSocket 发指令到前端
+4. 前端收到指令后调用 Cesium API 执行创建卫星
+5. 前端返回结果给后端，由 ResponseRenderer 渲染为统一格式回复
 
 ## 技术选型
 
@@ -87,9 +89,9 @@
 
 | Agent | 职责                         | 加载的工具组 |
 |-------|----------------------------|-------------|
-| Orchestrator | 意图识别、任务规划、子 Agent 调度、结构化输出 | ToolStrategy(AgentResponse) + memory（AGENTS.md） + LoggingMiddleware |
-| Scene Agent | 场景创建/重命名/删除/查询             | scene_management (6 个工具) |
-| Entity Agent | 实体创建/SGP4轨道/样式更新           | entity_management + orbit_management (4 个工具) |
+| Orchestrator | 意图识别、任务规划、子 Agent 调度、结构化输出 | ToolStrategy(AgentResponse) + memory（AGENTS.md） + LoggingMiddleware + ToolValidationMiddleware |
+| Scene Agent | 场景创建/重命名/删除/查询             | scene_management (6 个工具) + ToolValidationMiddleware |
+| Entity Agent | 实体创建/SGP4轨道/样式更新           | entity_management + orbit_management (4 个工具) + ToolValidationMiddleware |
 | Analysis Agent | 数据分析（未来扩展）                 | （未来扩展） |
 
 > 子 Agent 通过 `config/subagents.yaml` 声明式配置，新增 Agent 只需加 YAML 条目 + `prompts/` 加提示词文件 + `tools/registry.py` 注册工具组。
@@ -118,9 +120,12 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
   "type": "user_input",
   "thread_id": "abc-123",
   "content": "帮我创建一个场景",
-  "message_id": "msg-001"
+  "message_id": "msg-001",
+  "current_scene_name": "测试场景"
 }
 ```
+
+`current_scene_name` 由前端从 `yyastk.CurrentScenario?.dataSource?.name` 携带，无场景时为 `null`。后端 `ToolValidationMiddleware` 据此做 fail-fast 校验：除场景创建工具外，无场景上下文时直接返回失败，不向前端发送 tool_call。
 
 **工具执行结果 (`tool_result`)** — 前端执行完 Cesium 操作后返回
 ```json
@@ -210,7 +215,8 @@ src/space_aiagent/
 │   ├── orchestrator.py     # 主控 Agent（create_deep_agent + subagents + memory + ToolStrategy）
 │   └── subagents.py        # 子 Agent 加载器（从 YAML 配置构建）
 ├── middleware/              # Agent 中间件
-│   └── logging.py          # LoggingMiddleware（LLM 调用/工具执行可观测性）
+│   ├── logging.py          # LoggingMiddleware（LLM 调用/工具执行可观测性）
+│   └── tool_validation.py  # ToolValidationMiddleware（bridge + 场景上下文 fail-fast 校验）
 ├── prompts/                # 提示词模板（与代码分离）
 │   ├── orchestrator.md     # 主控 Agent 提示词（含 {tool_summaries} 占位符）
 │   ├── scene_agent.md      # 场景子 Agent 提示词

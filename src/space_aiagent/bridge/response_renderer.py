@@ -86,5 +86,12 @@ class ResponseRenderer:
         #         logger.debug("模板渲染失败: (%s, %s)", response.status, response.code)
 
         # 降级: 用 summary 组装
-        logger.debug("未命中模板， 组装降级回复: (%s)", response.summary)
+        logger.debug("ai agent回复: (%s)", response.summary)
+        parts = [response.summary]
+        if response.suggestions:
+            if response.status  == 'error' and response.code=='NO_SCENE':
+                parts.append("您可以：")
+                for s in response.suggestions:
+                    parts.append(f"- {s}")
+                return  "\n".join(parts)
         return response.summary

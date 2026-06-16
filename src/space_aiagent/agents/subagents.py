@@ -11,6 +11,7 @@ import yaml
 from langchain_openai import ChatOpenAI
 
 from space_aiagent.infrastructure.config import CONFIG_DIR, get_settings
+from space_aiagent.middleware import ToolValidationMiddleware
 from space_aiagent.tools.registry import get_tools
 
 # 路径常量
@@ -58,6 +59,7 @@ def load_subagents() -> list[dict]:
             "model": model,
             "tools": tools,
             "system_prompt": prompt,
+            "middleware": [ToolValidationMiddleware()],
         })
 
     return subagents

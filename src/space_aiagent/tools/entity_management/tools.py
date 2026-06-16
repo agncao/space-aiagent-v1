@@ -7,18 +7,14 @@
 桥接注入: 使用 bridge.bridge_var (ContextVar) 在会话级别注入 bridge 实例，
          由 websocket handler 在创建 Agent 前设置，工具函数通过 get() 获取。
 
-前置条件: 场景必须已创建（前端会校验，未创建场景会返回错误）
+前置条件: 场景必须已创建（由 ToolValidationMiddleware 在工具调用前校验）
 """
-
-import logging
 
 from langchain_core.tools import tool
 
 from space_aiagent.bridge import bridge_var
 from space_aiagent.models.enums import EntityType
 from space_aiagent.models.schemas import EntityConfig, EntityPosition
-
-logger = logging.getLogger(__name__)
 
 
 @tool(args_schema=EntityConfig)
@@ -36,13 +32,9 @@ async def add_point_entity(
                    sensor(传感器), groundVehicle(地面车), ship(船),
                    launchVehicle(火箭), lineTarget(线目标), areaTarget(区域目标)
 
-    前置条件: 必须先有场景，否则前端会返回错误。
+    前置条件: 必须先有场景，否则 ToolValidationMiddleware 会直接返回失败。
     """
-    # 获取当前会话的 bridge 实例
     bridge = bridge_var.get()
-    if bridge is None:
-        logger.error("bridge 未注入，无法发送 addPointEntity 指令")
-        return {"success": False, "message": "bridge 未注入，无法发送指令"}
 
     # 构建前端 addPointEntity 所需参数（camelCase 与前端对接）
     args = {
@@ -60,8 +52,7 @@ async def add_point_entity(
     # 通过 bridge 发送 tool_call 到前端，await Future 等待执行结果
     # 前端对应方法: SceneTools.addPointEntity(input)
     # 前端内部调用: ProtoTreeData.addEntityByData(data) 创建 CZML 兼容实体
-    result = await bridge.send_tool_call(
+    return await bridge.send_tool_call(
         tool_func="addPointEntity",
         args=args,
     )
-    return result
