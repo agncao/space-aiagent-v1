@@ -15,8 +15,8 @@ from deepagents.backends import FilesystemBackend
 from langchain.agents.structured_output import ToolStrategy
 from langgraph.types import Checkpointer
 
-from space_aiagent.agents.subagents import build_model
 from space_aiagent.infrastructure.config import PROJECT_ROOT
+from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.middleware import LoggingMiddleware
 from space_aiagent.models.response_schema import AgentResponse
 
