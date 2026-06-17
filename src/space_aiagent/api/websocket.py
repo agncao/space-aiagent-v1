@@ -27,7 +27,7 @@ from langchain_core.messages import HumanMessage
 from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.agents.subagents import load_subagents
 from space_aiagent.bridge import SessionManager, bridge_var, current_scene_name_var
-from space_aiagent.bridge.response_renderer import ResponseRenderer, enrich, normalize
+from space_aiagent.bridge.response_renderer import ResponseRenderer, normalize
 from space_aiagent.infrastructure.database import get_db
 from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.enums import WSMessageType
