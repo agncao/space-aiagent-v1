@@ -27,7 +27,7 @@ from langchain_core.messages import HumanMessage
 from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.agents.subagents import load_subagents
 from space_aiagent.bridge import SessionManager, bridge_var, current_scene_name_var
-from space_aiagent.bridge.response_renderer import ResponseRenderer, normalize
+from space_aiagent.bridge.response_renderer import ResponseRenderer, enrich, normalize
 from space_aiagent.infrastructure.database import get_db
 from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.enums import WSMessageType
@@ -61,6 +61,10 @@ _SUBTASK_LABELS: dict[str, str] = {
     "scene-agent": "正在调用场景管理",
     "entity-agent": "正在调用实体管理",
 }
+
+# 死循环兜底阈值：同一轮内 task 工具连续调用达到此值视为死循环，强制中断
+# (A 方案 prompt 约束 orchestrator 不重复 task，B 方案在 LLM 偶发不遵守时硬兜底)
+LOOP_THRESHOLD = 2
 
 
 def _make_progress_message(tool_name: str, tool_input: dict) -> str | None:
@@ -150,6 +154,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             agent = await _get_or_create_agent(user_msg.thread_id)
             structured_response: AgentResponse | None = None
 
+            # 循环检测：同一轮内 task 工具连续调用计数器
+            task_call_count = 0
+
             async for event in agent.astream_events(
                 {"messages": [HumanMessage(content=user_msg.content)]},
                 config={
@@ -165,6 +172,24 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 if kind == "on_tool_start":
                     if name == "AgentResponse":
                         continue
+
+                    # 循环检测：orchestrator 受 prompt 约束不应连续调用 task（A 方案），
+                    # 偶发不遵守时这里硬兜底，避免 astream_events 死循环
+                    if name == "task":
+                        task_call_count += 1
+                        if task_call_count >= LOOP_THRESHOLD:
+                            logger.warning(
+                                "检测到 task 连续调用 %d 次，疑似死循环，强制中断: thread_id=%s",
+                                task_call_count,
+                                user_msg.thread_id,
+                            )
+                            await bridge.send_ai_message(
+                                "我多次尝试处理您的请求但似乎卡住了。"
+                                "请提供更具体的信息，例如：要修改的实体名称、目标属性等。"
+                            )
+                            await bridge.send_end()
+                            return
+
                     # 生成有意义的进度提示
                     tool_input = data.get("input", {})
                     display = _make_progress_message(name, tool_input)
@@ -224,7 +249,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
-            logger.info("收到用户请求: %s",raw)
+            logger.info("收到用户请求: %s", raw)
             data = json.loads(raw)
             msg_type = data.get("type")
 

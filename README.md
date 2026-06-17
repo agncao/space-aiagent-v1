@@ -154,7 +154,7 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
   "type": "tool_call",
   "thread_id": "abc-123",
   "tool_func": "createScenario",
-  "tool_func_args": {"name": "测试场景", "centralBody": "Earth"},
+  "tool_func_args": {"sceneName": "测试场景", "centralBody": "Earth"},
   "tool_call_id": "uuid-xxx",
   "message_id": ""
 }
@@ -190,8 +190,8 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 
 | 工具函数名 (`tool_func`) | 所属工具组 | 参数 (`tool_func_args`) | 说明         |
 |--------------------------|-----------|------------------------|------------|
-| `createScenario` | scene_management | `{name, centralBody, startTime?, endTime?, description?}` | 创建场景       |
-| `renameScenario` | scene_management | `{name}` | 重命名场景      |
+| `createScenario` | scene_management | `{sceneName, centralBody, startTime?, endTime?, description?}` | 创建场景       |
+| `renameScenario` | scene_management | `{sceneName}` | 重命名场景      |
 | `deleteScene` | scene_management | `{}` | 删除场景       |
 | `clearEntities` | scene_management | `{}` | 清除所有实体     |
 | `queryScenario` | scene_management | `{sceneName?}` | 查询场景信息     |
