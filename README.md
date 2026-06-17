@@ -24,10 +24,10 @@
 1. 用户输入"我要创建卫星"，前端携带 `current_scene_name`（来自 Cesium CurrentScenario）
 2. 智能体识别意图，调用 entity 工具
 3. 后端 `ToolValidationMiddleware` 检查 `current_scene_name`：
-   - 如果为 null → 工具直接 fail-fast 返回失败，**不向前端发送 tool_call**，LLM 看到错误后决定创建场景或向用户解释
+   - 如果为 null → **A 方案短路**：中间件返回 `Command(goto=END)` 携带 NO_SCENE 的 ToolMessage，强制终止子 Agent 图（跳过"解释工具结果"那次 LLM 调用），ToolMessage 内容回流到 orchestrator，由 orchestrator LLM 生成 AgentResponse，**状态由 LangGraph 自动持久化**保证多轮对话上下文完整
    - 如果非 null → 工具通过 WebSocket 发指令到前端
 4. 前端收到指令后调用 Cesium API 执行创建卫星
-5. 前端返回结果给后端，由 ResponseRenderer 渲染为统一格式回复
+5. 前端返回结果给后端，由 ResponseRenderer 渲染为统一格式回复（B 方案 `normalize()` 兜底：LLM 偶发把已知 code 标成错误 status 时强制归一化）
 
 ## 技术选型
 
@@ -125,7 +125,7 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 }
 ```
 
-`current_scene_name` 由前端从 `yyastk.CurrentScenario?.dataSource?.name` 携带，无场景时为 `null`。后端 `ToolValidationMiddleware` 据此做 fail-fast 校验：除场景创建工具外，无场景上下文时直接返回失败，不向前端发送 tool_call。
+`current_scene_name` 由前端从 `yyastk.CurrentScenario?.dataSource?.name` 携带，无场景时为 `null`。后端 `ToolValidationMiddleware` 据此做 fail-fast 校验：除场景创建工具外，无场景上下文时返回 `Command(goto=END)`（携带 NO_SCENE 的 ToolMessage），终止子 Agent 图——ToolMessage 关闭 tool_call（LLM API 协议要求），Command(goto=END) 跳过子 Agent 后续 LLM 调用，状态由 LangGraph 持久化到 checkpointer。
 
 **工具执行结果 (`tool_result`)** — 前端执行完 Cesium 操作后返回
 ```json
@@ -233,7 +233,8 @@ src/space_aiagent/
 │   └── response_schema.py  # AgentResponse 结构化响应模型（ToolStrategy 输出格式）
 ├── bridge/                 # 远程工具桥接层
 │   ├── ws_bridge.py        # WSBridge（Future 桥接 + 消息发送）
-│   ├── response_renderer.py # 响应渲染器（AgentResponse 模板 → 自然语言）
+│   ├── response_renderer.py # 响应渲染器（YAML 模板渲染 + normalize 状态归一化）
+│   ├── response_shortcut.py # A 方案：预构建 AgentResponse 注册表（被中间件转成 ToolMessage 配合 Command 用）
 │   ├── session.py          # SessionManager（thread_id → WebSocket 映射）
 │   └── __init__.py         # bridge_var (ContextVar) 导出
 └── infrastructure/         # 基础设施

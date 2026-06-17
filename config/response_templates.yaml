@@ -1,0 +1,57 @@
+# AgentResponse 模板与状态映射（单一数据源）
+#
+# 每个 code 同时定义:
+# - status: 该 code 应当对应的响应状态（B 方案 normalize 据此防止 LLM 漂移）
+# - template: 渲染模板（{key} 占位符从 AgentResponse.details 取值）
+#
+# 加载入口: space_aiagent.bridge.response_renderer._load_template_config()
+# 修改本文件后无需重启 Python 进程之外的操作（import 时读取一次）。
+
+NO_SCENE:
+  status: error
+  template: |-
+    还没有打开的场景。你需要先打开场景，或者你也可以创建新的场景，这样你才能进行航天任务分析。
+
+    **接下来您可以：**
+    - **创建场景** — 告诉我「创建场景」或「新建一个场景」，我会帮您处理
+    - 场景创建后，即可添加卫星（基于 TLE）、地面站、传感器等实体
+
+    请问需要先创建一个场景吗？
+
+SCENE_CREATED:
+  status: success
+  template: |-
+    场景 **「{sceneName}」** 已创建成功！
+
+    现在可以在此场景中添加实体了。
+
+    **接下来您可以：**
+    - 添加卫星 — 提供 TLE 两行根数，我会帮您创建轨道
+    - 添加地面站、传感器等实体 — 告诉我类型和位置即可
+
+ENTITIES_EMPTY:
+  status: info
+  template: |-
+    当前场景 **「{sceneName}」** 中没有任何实体。
+
+    **接下来您可以：**
+    - 添加卫星（提供 TLE 两行根数）
+    - 添加地面站、传感器等实体
+    请告诉我您需要添加什么类型的实体。
+
+ENTITIES_LIST:
+  status: success
+  template: |-
+    当前场景 **{sceneName}** 共有 **{count}** 个实体：
+
+    {entity_list}
+
+ENTITY_ADDED:
+  status: success
+  template: |-
+    实体 **「{name}」**（类型: {entity_type}）已成功添加到场景 **{sceneName}** 中。
+
+ALL_ENTITIES_CLEARED:
+  status: success
+  template: |-
+    已清除场景中所有的实体。当前场景为空，可以重新创建实体。

@@ -27,8 +27,9 @@ from langchain_core.messages import HumanMessage
 from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.agents.subagents import load_subagents
 from space_aiagent.bridge import SessionManager, bridge_var, current_scene_name_var
-from space_aiagent.bridge.response_renderer import ResponseRenderer
+from space_aiagent.bridge.response_renderer import ResponseRenderer, normalize
 from space_aiagent.infrastructure.database import get_db
+from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.enums import WSMessageType
 from space_aiagent.models.messages import (
     ErrorMessage,
@@ -42,15 +43,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 session_manager = SessionManager()
-
-
-def _truncate(obj, max_len: int = 200) -> str:
-    """截断过长字符串，用于日志输出"""
-    s = str(obj)
-    if len(s) <= max_len:
-        return s
-    return s[:max_len] + f"...[截断, 总长{len(s)}]"
-
 
 # 工具名 → 用户可见的中文名称
 _TOOL_DISPLAY: dict[str, str] = {
@@ -177,6 +169,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     tool_input = data.get("input", {})
                     display = _make_progress_message(name, tool_input)
                     if display:
+                        logger.info("发送进度提示(send_ai_message): %s, %s", kind, display)
                         await bridge.send_ai_message(display)
 
                 elif kind == "on_chat_model_end":
@@ -188,11 +181,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         for tc in output.tool_calls:
                             if tc.get("name") == "AgentResponse":
                                 try:
-                                    structured_response = AgentResponse(**tc["args"])
+                                    structured_response = normalize(AgentResponse(**tc["args"]))
                                     logger.info(
                                         "AgentResponse: status=%s, summary=%s",
                                         structured_response.status,
-                                        _truncate(structured_response.summary, 100),
+                                        string_util.truncate(structured_response.summary, 100),
                                     )
                                 except Exception as e:
                                     logger.warning("解析 AgentResponse 失败: %s", e)
@@ -201,13 +194,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     if name == "AgentResponse":
                         output = data.get("output")
                         if isinstance(output, AgentResponse):
-                            structured_response = output
+                            structured_response = normalize(output)
                         elif isinstance(output, dict):
-                            structured_response = AgentResponse(**output)
+                            structured_response = normalize(AgentResponse(**output))
                         logger.info(
                             "AgentResponse: status=%s, summary=%s",
                             structured_response.status if structured_response else "?",
-                            _truncate(structured_response.summary if structured_response else "", 100),
+                            string_util.truncate(structured_response.summary if structured_response else "", 100),
                         )
 
             # 渲染并发送最终回复

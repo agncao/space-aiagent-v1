@@ -3,12 +3,13 @@
 
 在工具执行前统一校验前置条件，避免每个工具函数重复样板检查。
 当前校验项:
-- bridge 注入：所有远程工具都需要 bridge 实例
-- 场景上下文：除白名单外，工具调用时必须有 current_scene_name
-
-校验失败时返回 ToolMessage（与 @tool 函数返回 dict 后由 ToolNode 自动包装的行为一致）。
-不能返回裸 dict —— deepagents 的 FilesystemMiddleware 等基础栈中间件只接受
-ToolMessage | Command，裸 dict 会触发 _aintercept_large_tool_result 的 AssertionError。
+- bridge 注入：所有远程工具都需要 bridge 实例。失败时返回 ToolMessage（系统级错误，
+  让 LLM 兜底回复）
+- 场景上下文：除白名单外，工具调用时必须有 current_scene_name。失败时返回
+  Command(goto=END)，update 里塞一条携带 NO_SCENE 错误的 ToolMessage——
+  ToolMessage 是 LLM API 协议层的"关闭 tool_call"动作（不能省），Command(goto=END)
+  则强制终止子 Agent 图，跳过"解释工具结果"那次 LLM 调用。状态由 LangGraph
+  自动持久化到 checkpointer，多轮对话能正确恢复上下文。
 
 未来可扩展: 参数校验、权限、限流、审计等
 """
@@ -20,9 +21,12 @@ from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from langchain_core.messages import ToolMessage
+from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
+from langgraph.types import Command
 
 from space_aiagent.bridge import bridge_var, current_scene_name_var
+from space_aiagent.bridge.response_shortcut import _SHORTCUT_RESPONSES
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +50,7 @@ class ToolValidationMiddleware(AgentMiddleware):
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[Any]],
-    ) -> ToolMessage | Any:
+    ) -> ToolMessage | Command[Any] | Any:
         tool_name = request.tool_call.get("name", "")
         tool_call_id = request.tool_call.get("id", "")
 
@@ -61,18 +65,30 @@ class ToolValidationMiddleware(AgentMiddleware):
                 tool_call_id=tool_call_id,
             )
 
-        # 校验 2: 场景上下文（白名单外）
+        # 校验 2: 场景上下文（白名单外）→ 返回 Command(goto=END) 终止子 Agent 图
+        # ToolMessage 关闭 AI 的 tool_call（LLM API 协议要求），Command(goto=END)
+        # 跳过子 Agent 后续 LLM 调用，state 含 NO_SCENE ToolMessage 持久化
         if tool_name not in self._SCENE_EXEMPT_TOOLS and not current_scene_name_var.get():
             logger.warning("%s 校验失败: 无场景上下文", tool_name)
-            return ToolMessage(
-                content=json.dumps(
-                    {
-                        "success": False,
-                        "message": "当前会话没有场景上下文，请先新建或打开一个场景",
-                    },
-                    ensure_ascii=False,
-                ),
-                tool_call_id=tool_call_id,
+            shortcut = _SHORTCUT_RESPONSES["no_scene"]
+            return Command(
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps(
+                                {
+                                    "success": False,
+                                    "code": shortcut.code,
+                                    "status": shortcut.status,
+                                    "message": shortcut.summary,
+                                },
+                                ensure_ascii=False,
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ]
+                },
+                goto=END,
             )
 
         # 未来扩展点: 参数校验、权限、限流等

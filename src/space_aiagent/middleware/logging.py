@@ -20,16 +20,9 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AIMessage, BaseMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
+from space_aiagent.infrastructure.utils import string_util
+
 logger = logging.getLogger(__name__)
-
-
-def _truncate(obj, max_len: int = 200) -> str:
-    """截断过长字符串，用于日志输出"""
-    s = str(obj)
-    if len(s) <= max_len:
-        return s
-    return s[:max_len] + f"...[截断, 总长{len(s)}]"
-
 
 def _msg_preview(msg: BaseMessage, max_len: int = 120) -> dict:
     """提取消息预览信息"""
@@ -98,7 +91,7 @@ class LoggingMiddleware(AgentMiddleware):
                         "[步骤 %d] LLM 决定调用工具: %s(%s)",
                         self.step_count,
                         tc.get("name", "?"),
-                        _truncate(tc.get("args", {}), 200),
+                        string_util.truncate(tc.get("args", {}), 200),
                     )
 
         return response
@@ -118,7 +111,7 @@ class LoggingMiddleware(AgentMiddleware):
             "[工具 %d] 开始: %s, 参数: %s",
             self.tool_call_count,
             tool_name,
-            _truncate(tool_args, 300),
+            string_util.truncate(tool_args, 300),
         )
 
         result = await handler(request)
@@ -127,7 +120,7 @@ class LoggingMiddleware(AgentMiddleware):
             "[工具 %d] 完成: %s, 结果: %s",
             self.tool_call_count,
             tool_name,
-            _truncate(result, 200),
+            string_util.truncate(result, 200),
         )
 
         return result
