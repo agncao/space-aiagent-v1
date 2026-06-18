@@ -21,7 +21,7 @@ NO_SCENE:
 SCENE_CREATED:
   status: success
   template: |-
-    场景 **「{sceneName}」** 已创建成功！
+    场景 **「{scene_name}」** 已创建成功！
 
     现在可以在此场景中添加实体了。
 
@@ -32,7 +32,7 @@ SCENE_CREATED:
 ENTITIES_EMPTY:
   status: info
   template: |-
-    当前场景 **「{sceneName}」** 中没有任何实体。
+    当前场景 **「{scene_name}」** 中没有任何实体。
 
     **接下来您可以：**
     - 添加卫星（提供 TLE 两行根数）
@@ -42,14 +42,16 @@ ENTITIES_EMPTY:
 ENTITIES_LIST:
   status: success
   template: |-
-    当前场景 **{sceneName}** 共有 **{count}** 个实体：
+    当前场景 **{scene_name}** 共有 **{count}** 个实体：
 
     {entity_list}
+  key_aliases:
+    entities: entity_list
 
 ENTITY_ADDED:
   status: success
   template: |-
-    实体 **「{name}」**（类型: {entity_type}）已成功添加到场景 **{sceneName}** 中。
+    实体 **「{name}」**（类型: {entity_type}）已成功添加到场景 **{scene_name}** 中。
 
 ALL_ENTITIES_CLEARED:
   status: success

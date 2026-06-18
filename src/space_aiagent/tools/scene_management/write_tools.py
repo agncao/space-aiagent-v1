@@ -47,8 +47,9 @@ async def create_scenario(
         args=args,
     )
     if result["success"]:
-        data : dict =result["data"]
-        current_scene_name_var.set(data["scene_name"])
+        data : dict =result.get("data") or {}
+        current_scene_name_var.set(data.get("scene_name"))
+
     return result
 
 
@@ -66,8 +67,8 @@ async def rename_scenario(scene_name: str) -> dict:
         args={"sceneName": scene_name},
     )
     if result["success"]:
-        data : dict =result["data"]
-        current_scene_name_var.set(data["scene_name"])
+        data : dict =result.get("data") or {}
+        current_scene_name_var.set(data.get("scene_name"))
     return result
 
 
