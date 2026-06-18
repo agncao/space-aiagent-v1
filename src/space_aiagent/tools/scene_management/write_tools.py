@@ -85,15 +85,3 @@ async def delete_scene() -> dict:
     if result["success"]:
         current_scene_name_var.set(None)
     return result
-
-
-@tool
-async def clear_entities() -> dict:
-    """
-    清除当前场景中的所有实体，但保留场景本身。
-    """
-    bridge = bridge_var.get()
-    return await bridge.send_tool_call(
-        tool_func="clearEntities",
-        args={},
-    )

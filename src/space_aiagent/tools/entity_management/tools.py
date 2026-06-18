@@ -56,3 +56,26 @@ async def add_point_entity(
         tool_func="addPointEntity",
         args=args,
     )
+
+
+@tool
+async def query_scenario_entities() -> dict:
+    """
+    查询/统计当前场景中的所有实体名称列表及总数。
+    """
+    bridge = bridge_var.get()
+    return await bridge.send_tool_call(
+        tool_func="queryScenarioEntities",
+        args={},
+    )
+
+@tool
+async def clear_entities() -> dict:
+    """
+    清除当前场景中的所有实体，但保留场景本身。
+    """
+    bridge = bridge_var.get()
+    return await bridge.send_tool_call(
+        tool_func="clearEntities",
+        args={},
+    )

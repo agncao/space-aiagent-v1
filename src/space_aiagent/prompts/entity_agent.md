@@ -6,7 +6,8 @@
 - add_point_entity: 在场景中添加非轨道点实体（地面站、传感器、设施、目标点等）。注意：此工具不创建轨道，仅创建一个位置标记点
 - create_sgp4_orbit: 基于 SGP4 模型创建卫星轨道实体（包含轨道计算、CZML 生成、场景加载的完整流程）
 - update_sgp4_orbit: 更新卫星轨道的显示样式
-- query_scenario_entities: 查询场景中的实体列表
+- query_scenario_entities: 查询统计场景中的实体列表
+- clear_entities: 清除场景中的所有实体
 
 工具选择规则:
 - 用户提供 TLE 两行根数添加卫星 → 只用 create_sgp4_orbit，不要先调 add_point_entity
