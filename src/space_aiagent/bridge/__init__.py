@@ -14,11 +14,12 @@
 """
 
 from contextvars import ContextVar
+from typing import Any
 
 from .session import SessionManager
 from .ws_bridge import WSBridge
 
-__all__ = ["SessionManager", "WSBridge", "bridge_var", "current_scene_name_var"]
+__all__ = ["SessionManager", "WSBridge", "bridge_var", "current_scene_name_var","tools_results_var"]
 
 # 会话级别的 bridge 实例，由 websocket handler 在创建 Agent 前通过 bridge_var.set() 注入
 # 工具函数通过 bridge_var.get() 获取当前会话的 bridge，实现远程工具调用
@@ -27,3 +28,6 @@ bridge_var: ContextVar[WSBridge | None] = ContextVar("bridge_var", default=None)
 # 会话级别的当前场景名，由 websocket handler 从 UserInputMessage.current_scene_name 注入
 # 工具前置校验中间件通过 current_scene_name_var.get() 判断是否有场景上下文
 current_scene_name_var: ContextVar[str | None] = ContextVar("current_scene_name_var", default=None)
+
+#工具结果缓存: [{tool_func:"create_scenario", args:{scene_name:"一个场景"}, agent_name:"scene-agent", code:"SCENE_CREATED", status: "success", data:{scene_name:"一个场景"}}]
+tools_results_var: ContextVar[list[dict[str, Any]] | None] = ContextVar("tools_results_var", default=None)

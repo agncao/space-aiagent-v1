@@ -48,6 +48,7 @@ class ToolResultMessage(WSMessage):
     success: bool = Field(default=True, description="是否成功")
     message: str = Field(default="", description="结果消息")
     data: dict | list | None = Field(default=None, description="返回数据")
+    code:  str = Field(default="", description="消息码")
 
 
 class AIMessage(WSMessage):

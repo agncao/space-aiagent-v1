@@ -11,7 +11,7 @@ import yaml
 
 from space_aiagent.infrastructure.config import CONFIG_DIR
 from space_aiagent.infrastructure.llm import build_model
-from space_aiagent.middleware import ToolValidationMiddleware
+from space_aiagent.middleware import ResponseStabilizationMiddleware, ToolValidationMiddleware
 from space_aiagent.tools.registry import get_tools
 
 # 路径常量
@@ -36,13 +36,18 @@ def load_subagents() -> list[dict]:
         tools = get_tools(agent_cfg["tools"])
         prompt = (_PROMPTS_DIR / agent_cfg["prompt_file"]).read_text(encoding="utf-8")
 
-        subagents.append({
-            "name": agent_cfg["name"],
-            "description": agent_cfg["description"],
-            "model": model,
-            "tools": tools,
-            "system_prompt": prompt,
-            "middleware": [ToolValidationMiddleware()],
-        })
+        subagents.append(
+            {
+                "name": agent_cfg["name"],
+                "description": agent_cfg["description"],
+                "model": model,
+                "tools": tools,
+                "system_prompt": prompt,
+                "middleware": [
+                    ToolValidationMiddleware(),
+                    ResponseStabilizationMiddleware(agent_name=agent_cfg["name"]),
+                ],
+            }
+        )
 
     return subagents

@@ -23,17 +23,17 @@ class AgentResponse(BaseModel):
         description="场景编码，用于匹配渲染模板。如 NO_SCENE, ENTITIES_LIST, SCENE_CREATED"
     )
     summary: str = Field(description="一句话摘要，模板未命中时作为降级展示")
-    details: dict | None = Field(
+    args: dict | None = Field(
         default=None,
-        description="结构化数据对象，用于填充模板变量（如 {'count': 5, 'entities': [...]}），"
-        "请直接使用 JSON 对象格式，不要序列化为字符串",
+        description="JSON格式的数据对象，用于填充模板变量（如 {'count': 5, 'entities': [...]}），"
+        "当命中模板时，请与模板变量的命名保持一致",
     )
     suggestions: list[str] = Field(
         default_factory=list,
         description="给用户的下一步建议列表",
     )
 
-    @field_validator("details", mode="before")
+    @field_validator("args", mode="before")
     @classmethod
     def _parse_details(cls, v: dict | str | None) -> dict | None:
         """容错解析 details 字段，LLM 可能输出 JSON 字符串而非对象"""

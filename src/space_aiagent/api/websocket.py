@@ -26,17 +26,15 @@ from langchain_core.messages import HumanMessage
 
 from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.agents.subagents import load_subagents
-from space_aiagent.bridge import SessionManager, bridge_var, current_scene_name_var
-from space_aiagent.bridge.response_renderer import ResponseRenderer, normalize
+from space_aiagent.bridge import SessionManager, bridge_var, current_scene_name_var, tools_results_var
+from space_aiagent.bridge.response_renderer import ResponseRenderer
 from space_aiagent.infrastructure.database import get_db
-from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.enums import WSMessageType
 from space_aiagent.models.messages import (
     ErrorMessage,
     ToolResultMessage,
     UserInputMessage,
 )
-from space_aiagent.models.response_schema import AgentResponse
 
 logger = logging.getLogger(__name__)
 
@@ -85,18 +83,6 @@ def _make_progress_message(tool_name: str, tool_input: dict) -> str | None:
 
 # Agent 实例缓存: thread_id -> compiled graph
 _agent_cache: dict[str, object] = {}
-
-# 响应渲染器（全局共享）
-_renderer: ResponseRenderer | None = None
-
-
-def _get_renderer() -> ResponseRenderer:
-    """获取全局 ResponseRenderer（延迟初始化）"""
-    global _renderer
-    if _renderer is None:
-        _renderer = ResponseRenderer()
-    return _renderer
-
 
 # Skill 加载器（全局共享）
 # 数据库 checkpointer（全局共享，SQLite 持久化）
@@ -150,9 +136,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         """后台执行 agent（流式），不阻塞消息接收循环"""
         bridge_token = bridge_var.set(bridge)
         scene_token = current_scene_name_var.set(user_msg.current_scene_name)
+        tools_results_token = tools_results_var.set([])
         try:
             agent = await _get_or_create_agent(user_msg.thread_id)
-            structured_response: AgentResponse | None = None
 
             # 循环检测：同一轮内 task 工具连续调用计数器
             task_call_count = 0
@@ -197,46 +183,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         logger.info("发送进度提示(send_ai_message): %s, %s", kind, display)
                         await bridge.send_ai_message(display)
 
-                elif kind == "on_chat_model_end":
-                    # ToolStrategy(AgentResponse) 在 model node 内部被 _handle_model_output
-                    # 拦截，不会走 ToolNode，因此 on_tool_end 收不到。需要从模型输出的
-                    # AIMessage.tool_calls 中提取。
+                elif kind == "on_chain_end":
                     output = data.get("output")
-                    if hasattr(output, "tool_calls") and output.tool_calls:
-                        for tc in output.tool_calls:
-                            if tc.get("name") == "AgentResponse":
-                                try:
-                                    structured_response = normalize(AgentResponse(**tc["args"]))
-                                    logger.info(
-                                        "AgentResponse: status=%s, summary=%s",
-                                        structured_response.status,
-                                        string_util.truncate(structured_response.summary, 100),
-                                    )
-                                except Exception as e:
-                                    logger.warning("解析 AgentResponse 失败: %s", e)
+                    if output is None or not isinstance(output, dict):
+                        continue
+                    agent_response = output.get("structured_response")
+                    if agent_response is None:
+                        continue
+                    renderer= ResponseRenderer()
+                    await bridge.send_ai_message(renderer.render(agent_response))
+                    await bridge.send_end()
+                    return
 
-                elif kind == "on_tool_end":
-                    if name == "AgentResponse":
-                        output = data.get("output")
-                        if isinstance(output, AgentResponse):
-                            structured_response = normalize(output)
-                        elif isinstance(output, dict):
-                            structured_response = normalize(AgentResponse(**output))
-                        logger.info(
-                            "AgentResponse: status=%s, summary=%s",
-                            structured_response.status if structured_response else "?",
-                            string_util.truncate(structured_response.summary if structured_response else "", 100),
-                        )
-
-            # 渲染并发送最终回复
-            if structured_response is not None:
-                renderer = _get_renderer()
-                content = renderer.render(structured_response)
-                await bridge.send_ai_message(content)
-            else:
-                logger.warning("未获取到 structured_response")
-                await bridge.send_ai_message("处理完成。")
-
+            logger.warning("流结束未收到 AgentResponse on_chain_end 事件: thread_id=%s", user_msg.thread_id)
+            await bridge.send_ai_message("处理完成。")
             await bridge.send_end()
 
         except Exception as e:
@@ -245,6 +205,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         finally:
             bridge_var.reset(bridge_token)
             current_scene_name_var.reset(scene_token)
+            tools_results_var.reset(tools_results_token)
 
     try:
         while True:

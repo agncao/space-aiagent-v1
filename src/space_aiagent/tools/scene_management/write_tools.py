@@ -3,10 +3,10 @@
 
 直接执行，无前后置流程。
 """
-
+import inspect
 from langchain_core.tools import tool
-
 from space_aiagent.bridge import bridge_var, current_scene_name_var
+from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.schemas import ScenarioConfig
 
 
@@ -31,19 +31,11 @@ async def create_scenario(
     才会建立场景上下文，本轮内不能立即调用其他场景操作工具（如 add_point_entity）。
     """
     bridge = bridge_var.get()
-    args: dict = {
-        "sceneName": scene_name,
-        "centralBody": central_body,
-    }
-    if start_time:
-        args["startTime"] = start_time
-    if end_time:
-        args["endTime"] = end_time
-    if description:
-        args["description"] = description
+    tool_func = inspect.currentframe().f_code.co_name
+    args: dict = string_util.args_to_camel(create_scenario,locals())
 
     result  = await bridge.send_tool_call(
-        tool_func="createScenario",
+        tool_func=string_util.snake_to_camel(tool_func),
         args=args,
     )
     if result["success"]:
@@ -56,15 +48,18 @@ async def create_scenario(
 @tool
 async def rename_scenario(scene_name: str) -> dict:
     """
-    重命名当前场景。
+    重命名/修改当前场景。
 
     参数:
     - scene_name: 新的场景名称
     """
     bridge = bridge_var.get()
+    tool_func = inspect.currentframe().f_code.co_name
+    args: dict = string_util.args_to_camel(rename_scenario,locals())
+
     result = await bridge.send_tool_call(
-        tool_func="renameScenario",
-        args={"sceneName": scene_name},
+        tool_func=string_util.snake_to_camel(tool_func),
+        args=args,
     )
     if result["success"]:
         data : dict =result.get("data") or {}
@@ -78,8 +73,10 @@ async def delete_scene() -> dict:
     清除当前场景的所有内容，包括场景本身和其中所有实体。
     """
     bridge = bridge_var.get()
+    tool_func = inspect.currentframe().f_code.co_name
+
     result  = await bridge.send_tool_call(
-        tool_func="deleteScene",
+        tool_func=string_util.snake_to_camel(tool_func),
         args={},
     )
     if result["success"]:

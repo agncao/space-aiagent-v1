@@ -1793,6 +1793,351 @@ astream_events(input, config, version="v3")
        └─ 再内部调用 self.astream()
 ```
 
+### 9.5 astream_events 事件体系深度解析
+
+本节回答一个项目里真实踩过的坑：**为什么 `on_chat_model_end` 事件里的 `AIMessage.content` 是空字符串，明明中间件已经写了渲染文本？** 要讲清楚这个问题，必须理解 astream_events 事件体系与 AgentMiddleware 钩子的时序关系。
+
+#### 9.5.1 事件按 Runnable 调用栈分层
+
+LangChain 里所有事物都是 `Runnable`：ChatModel 是 Runnable，Tool 是 Runnable，整个 Agent 图也是 Runnable。`astream_events` 本质是把整个调用栈里**每个 Runnable 的开始/结束/流式 chunk**都广播出来。
+
+事件命名遵循 `on_<组件类型>_<动作>` 模式：
+
+| 事件 | 触发时机 | `data` 字段 |
+|------|---------|------------|
+| `on_chain_start` | 任何 Runnable 开始 | `{"input": ...}` |
+| `on_chain_end` | 任何 Runnable 结束 | `{"output": ...}` |
+| `on_chain_stream` | Runnable 流式产出 chunk | `{"chunk": ...}` |
+| `on_chat_model_start` | LLM 调用前 | `{"input": messages, "prompts": [...]}` |
+| `on_chat_model_stream` | LLM 每个 token | `{"chunk": AIMessageChunk}` |
+| `on_chat_model_end` | LLM 调用结束 | `{"output": AIMessage, "input": ...}` |
+| `on_tool_start` | 工具调用前 | `{"input": tool_args_dict}` |
+| `on_tool_end` | 工具调用结束 | `{"output": ToolMessage}` |
+| `on_text` | 任意文本输出（如 prompt 渲染） | `{"text": str}` |
+| `on_retriever_start` / `on_retriever_end` | 检索器调用 | 类比上面 |
+
+每个事件还携带这些元字段（不在 `data` 里）：
+
+```python
+{
+    "event": "on_tool_end",
+    "name": "createScenario",          # 组件名
+    "data": {...},                      # 上表所列
+    "run_id": "uuid-xxx",              # 本次执行的唯一 ID
+    "tags": ["production"],            # Runnable tagging
+    "metadata": {"langgraph_node": "tools"},
+    "parent_ids": ["uuid-parent-xxx"], # 调用栈父级 ID（嵌套追踪）
+}
+```
+
+#### 9.5.2 Agent 图里的事件流（实战 dump）
+
+用 `astream_events(version="v2")` 跑 deepagents 的 orchestrator 委派 scene-agent 创建场景，事件流大致长这样（简化版）：
+
+```
+on_chain_start  name="LangGraph"              # 顶层图启动
+on_chain_start  name="agent"                  # orchestrator 的 model node 启动
+  on_chat_model_start name="ChatOpenAI"       # LLM 调用前
+    on_chat_model_stream × N                  # token 流（被 LLM 输出风格决定）
+  on_chat_model_end   name="ChatOpenAI"       # LLM 调用结束（输出原始 AIMessage）
+on_chain_end    name="agent"                  # model node 完成
+on_chain_start  name="tools"                  # tools node 启动（执行 task 工具）
+  on_tool_start name="task"                   # task 工具启动（task 内部委派子 agent）
+    on_chain_start  name="LangGraph"          # 子 agent 图启动（subgraph）
+    ... 子 agent 内部的事件流 ...
+    on_chain_end    name="LangGraph"          # 子 agent 图完成
+  on_tool_end   name="task"                   # task 工具完成（输出 ToolMessage）
+on_chain_end    name="tools"                  # tools node 完成
+on_chain_start  name="agent"                  # orchestrator 再次进 model node（基于工具结果生成最终回复）
+  on_chat_model_start ...
+  on_chat_model_end   ...
+on_chain_end    name="agent"                  # 最终 model node 完成（输出含 AgentResponse 的 AIMessage）
+on_chain_end    name="LangGraph"              # 顶层图完成
+```
+
+观察关键点：
+- **每个 node 完成时都发射 `on_chain_end`** —— name 区分是哪个 node
+- **`on_chat_model_end` 在 `on_chain_end`（agent node）内部触发** —— 早于 agent node 完成
+- **子图（subagent）是嵌套的 `LangGraph`** —— 自己有完整的 chain/chat_model/tool 事件流
+
+#### 9.5.3 中间件（AgentMiddleware）介入时机：核心陷阱
+
+deepagents/LangGraph 的 `AgentMiddleware` 提供几个钩子包装 LLM 调用和工具调用：
+
+| 钩子 | 作用 |
+|------|------|
+| `awrap_model_call(request, handler)` | 包装整个 model node 内部的 LLM 调用，可改输入/输出 |
+| `awrap_tool_call(request, handler)` | 包装工具调用，可改输入/输出 |
+| `a_before_model(state, runtime)` | model 调用**前**注入命令（如短路） |
+| `a_after_model(state, runtime)` | model 调用**后**修改 state |
+| `amodify_model_request(request)` | 改 LLM 请求（消息列表、tools） |
+
+本项目 `ResponseStabilizationMiddleware` 用 `awrap_model_call`：
+
+```python
+class ResponseStabilizationMiddleware(AgentMiddleware):
+    async def awrap_model_call(self, request, handler):
+        # 1. 调 handler 内部触发 on_chat_model_start/stream/end 事件
+        response = await handler(request)
+        # 2. 后置处理：把渲染文本写回 AIMessage.content
+        return self._stabilize(response)
+```
+
+`handler` 内部的调用链：`handler(request)` → `_execute_model_async` → `model.ainvoke(messages)` → 触发 `on_chat_model_*` 事件 → 返回 `ModelResponse`。
+
+**关键陷阱**：`on_chat_model_end` 事件由 `model.ainvoke()` 自己发射，**时机早于 handler 返回**。也就是说：
+
+```
+awrap_model_call 调用栈
+├─ 前置处理
+├─ await handler(request)
+│   ├─ model.ainvoke(messages)
+│   │   ├─ on_chat_model_start        ← 事件
+│   │   ├─ on_chat_model_stream × N   ← 事件
+│   │   └─ on_chat_model_end          ← 事件 (此时输出原始 AIMessage，content="")
+│   └─ 返回 ModelResponse（原始）
+├─ 后置处理：self._stabilize(response)  ← 这里才把 content 改成渲染文本
+└─ 返回改后的 ModelResponse
+```
+
+所以**从 `on_chat_model_end` 事件里读到的 `output.content` 永远是 LLM 原始输出**（空字符串或 LLM 自带的文本），中间件写回的渲染文本进不去这个事件。中间件改后的 AIMessage 只会进 LangGraph state，由后续的 `on_chain_end` 事件携带。
+
+#### 9.5.4 哪些事件能拿到中间件改后的消息？
+
+| 事件 | 拿得到中间件改后的 AIMessage 吗 | 原因 |
+|------|----------------------------|------|
+| `on_chat_model_start` / `on_chat_model_stream` | ❌ | LLM 调用前/中，中间件还没运行 |
+| `on_chat_model_end` | ❌ | LLM 调用刚结束，中间件后置处理还没运行 |
+| `on_tool_start` / `on_tool_end`（业务工具） | ✅（针对 `awrap_tool_call`） | 同样的时序原理，但工具中间件的后置处理也早于 on_tool_end？**实际不一定**——见下表 |
+| `on_chain_end`（model node） | ✅ | node 整体完成才发射，中间件后置处理已结束，state 已含改后的消息 |
+| `on_chain_end`（顶层 graph） | ✅ | 整个图跑完，state 是最终状态 |
+
+> ⚠️ **关于 on_tool_end**：项目早期版本曾监听 `on_tool_end` 拿 `AgentResponse`（ToolStrategy 把结构化输出当工具调用），但实际验证收不到——因为 deepagents 把 `ToolStrategy(AgentResponse)` 在 model node 内部直接拦截转成结构化响应，**不会走 ToolsNode**，自然没有 `on_tool_end`。代码注释里也明确写了这一点。
+
+#### 9.5.5 实战：用 on_chain_end 提取 AgentResponse 含渲染文本
+
+项目 `src/space_aiagent/api/websocket.py` 的最终实现：
+
+```python
+async for event in agent.astream_events(
+    {"messages": [HumanMessage(content=user_msg.content)]},
+    config={"configurable": {"thread_id": ...}, "recursion_limit": 100},
+    version="v2",
+):
+    kind = event["event"]
+    name = event.get("name", "")
+    data = event.get("data", {})
+
+    if kind == "on_tool_start":
+        # 1. 工具进度提示 + task 死循环兜底
+        if name == "task":
+            task_call_count += 1
+            if task_call_count >= LOOP_THRESHOLD:
+                await bridge.send_ai_message("...")
+                await bridge.send_end()
+                return
+        # ...
+
+    elif kind == "on_chain_end":
+        # 2. model node 完成，AIMessage.content 已被中间件写入渲染文本
+        output = data.get("output")
+        if not isinstance(output, dict):
+            continue
+        for msg in output.get("messages", []):
+            if not isinstance(msg, AIMessage) or not msg.tool_calls:
+                continue
+            agent_response_tc = next(
+                (tc for tc in msg.tool_calls if tc.get("name") == "AgentResponse"),
+                None,
+            )
+            if agent_response_tc is None:
+                continue
+            # msg.content 是 ResponseStabilizationMiddleware._stabilize 写的渲染文本
+            # 不需要出口处再 render 一次
+            await bridge.send_ai_message(msg.content)
+            await bridge.send_end()
+            return
+```
+
+**为什么不在循环出口处再 render 一次？** 因为同一条 AIMessage 已经被中间件 render 过：
+- 中间件 `_stabilize` 调 `ResponseRenderer().render()` → 写入 `AIMessage.content`
+- `AIMessage` 进 state.messages → 被 checkpointer 持久化（供下一轮 LLM 看见 cross-turn 上下文）
+- `on_chain_end` 事件携带 state delta，里面的 `AIMessage.content` 就是渲染文本
+
+websocket 在 `on_chain_end` 里读 `msg.content` 直接发前端即可，不需要重复 render。两次 render 必然产生相同结果（renderer 是纯函数），所以保留一次就够。
+
+### 9.6 astream(stream_mode=...) 体系
+
+`astream` 是 LangGraph 原生的流式 API，比 `astream_events` 更底层。它通过 `stream_mode` 参数控制 chunk 的形状。
+
+#### 9.6.1 五种 stream_mode 速查
+
+| stream_mode | chunk 内容 | 典型用途 |
+|------------|-----------|---------|
+| `"values"` | 每步后**完整 state 快照** | 看每步后状态全貌（消息历史越长越大） |
+| `"updates"` | 每步的 **state 增量** `{node_name: delta}` | 看每步改了什么（最常用） |
+| `"messages"` | `(AIMessageChunk, metadata)` 元组 | token 级流式，前端打字机效果 |
+| `"custom"` | 节点内 `writer(...)` 自定义数据 | 节点内部往外抛自定义事件 |
+| `"debug"` | 调试信息（task/state/object） | 验证图结构 |
+
+五种 mode 可以**单选**也可以**组合**（列表传参）。
+
+#### 9.6.2 updates 模式 chunk 格式
+
+```python
+async for chunk in agent.astream(
+    {"messages": [HumanMessage(content="创建场景")]},
+    config={"configurable": {"thread_id": "abc"}, "recursion_limit": 100},
+    stream_mode="updates",
+):
+    print(chunk)
+```
+
+输出（简化）：
+
+```python
+# orchestrator 的 model node 完成
+{
+    "agent": {
+        "messages": [
+            AIMessage(content="", tool_calls=[{"name": "task", "args": {...}}])
+        ]
+    }
+}
+
+# orchestrator 的 tools node 完成（执行了 task）
+{
+    "tools": {
+        "messages": [
+            ToolMessage(content="场景创建成功", tool_call_id="call_xxx")
+        ]
+    }
+}
+
+# orchestrator 再次进 model node，输出最终 AgentResponse
+{
+    "agent": {
+        "messages": [
+            AIMessage(
+                content="场景「新建场景」已创建成功！...",  # ← 中间件 _stabilize 已写入
+                tool_calls=[{"name": "AgentResponse", "args": {...}}]
+            )
+        ]
+    }
+}
+```
+
+每个 chunk 都是 `{node_name: state_delta}`。**这里的 `AIMessage.content` 是中间件 `_stabilize` 写入后的渲染文本**——因为 chunk 是 node 完成后才发射，中间件后置处理早已执行。
+
+#### 9.6.3 subgraphs=True：子图（subagent）流式
+
+默认 `astream` 只收**顶层图**的 chunk。subagent 是 subgraph，要在 chunk 里看到它，必须 `subgraphs=True`：
+
+```python
+async for chunk in agent.astream(
+    input,
+    config=config,
+    stream_mode="updates",
+    subgraphs=True,  # ← 启用子图流
+):
+    # chunk 现在是 (namespace_tuple, mode, data) 三元组
+    ns, mode, data = chunk
+    print(ns, mode, data)
+```
+
+输出示例：
+
+```python
+# 顶层 orchestrator 的 model node
+((), "updates", {"agent": {"messages": [AIMessage(...)]}})
+
+# 子 agent（scene-agent）启动后的事件
+(("scene-agent:...",), "updates", {"agent": {"messages": [AIMessage(...)]}})
+#  ↑ namespace 元组，空 () 表顶层，非空表子图层级（多级嵌套会变长）
+
+# 子 agent 内部的工具调用
+(("scene-agent:...",), "updates", {"tools": {"messages": [ToolMessage(...)]}})
+```
+
+namespace 元组的长度反映嵌套深度。`()` 是顶层，`("scene-agent:xxx",)` 是一层子图，`("scene-agent:xxx", "sub-sub:yyy",)` 是两层嵌套。
+
+#### 9.6.4 多模式组合：stream_mode=[...]
+
+实际场景常常需要同时拿多种数据。例如既要 token 流（前端打字机效果），又要 node 级 state delta（更新 UI）：
+
+```python
+async for chunk in agent.astream(
+    input,
+    config=config,
+    stream_mode=["messages", "updates"],  # ← 列表传参
+    subgraphs=True,
+):
+    # chunk 是 (namespace, mode, data) 三元组（多模式时永远三元组，即使 subgraphs=False）
+    ns, mode, data = chunk
+
+    if mode == "messages":
+        msg_chunk, msg_meta = data
+        # msg_chunk 是 AIMessageChunk，含增量 token
+        # msg_meta 含 langgraph_node 等信息
+        print(f"[token] {msg_chunk.content}", end="", flush=True)
+
+    elif mode == "updates":
+        for node, delta in data.items():
+            print(f"[{node}] 更新了 {list(delta.keys())}")
+```
+
+**注意**：当 `stream_mode` 是列表时，即使 `subgraphs=False`，chunk 也是 `(namespace, mode, data)` 三元组。当 `stream_mode` 是单值时，chunk 就是 data 本身（无 namespace 包装），除非 `subgraphs=True`。
+
+#### 9.6.5 custom 模式：节点内往外抛自定义事件
+
+```python
+from langgraph.config import get_stream_writer
+
+async def my_node(state):
+    writer = get_stream_writer()
+    writer({"progress": "50%", "step": "正在查询"})  # ← 自定义数据
+    # ... 业务逻辑 ...
+    writer({"progress": "100%", "step": "完成"})
+    return {"messages": [...]}
+
+# 消费侧
+async for chunk in agent.astream(input, stream_mode="custom"):
+    print(chunk)  # {"progress": "50%", "step": "正在查询"}
+```
+
+适合做精细进度提示（比 `_make_progress_message` 这种基于 `on_tool_start` 的方案更灵活）。
+
+### 9.7 on_chain_end（astream_events）vs updates（astream）选型
+
+项目里真实讨论过的选型问题。结论：本项目选 `on_chain_end`，理由按重要度排：
+
+| 维度 | `astream_events` + `on_chain_end` | `astream(stream_mode="updates")` |
+|------|----------------------------------|----------------------------------|
+| **API 互斥** | 保留所有 `on_*` 事件（tool/chat_model/retriever...） | 放弃 `astream_events` 整套事件协议 |
+| **loop 检测时机** | `on_tool_start` 工具**开始前**计数，第 2 次立刻中断 | 只能从 ToolMessage 反推，**工具完成后**才计数（task subagent 可能跑几十秒） |
+| **subgraph 区分** | `event["name"]` + `parent_ids` 字符串过滤 | `(namespace_tuple, mode, data)` 元组递归 |
+| **改动量** | 1 处事件类型 + 数据提取，~15 行 | 整个流式循环重写，~50 行 + loop 检测重做 |
+| **稳定性** | `astream_events` 是 Runnable 协议稳定接口 | `updates` chunk 格式在 LangGraph 0.x → 1.x 有过 breaking |
+| **未来扩展** | token 流（`on_chat_model_stream`）、检索事件（`on_retriever_*`）、自定义进度（`on_tool_start`）天然支持 | 全部要重做或换 stream_mode 组合 |
+| **payload 直观度** | `data.output.messages` 嵌套较深 | `{node: delta}` 扁平，state delta 更直接 |
+
+**核心权衡**：updates 模式在"拿 state delta"这一点上确实更直接（不需要从 event 嵌套结构里挖 messages），但代价是放弃 astream_events 整个事件协议。对于本项目这种"需要 loop 检测 + 未来可能加 token 流"的场景，`on_chain_end` 是更高 ROI 的选择。
+
+**决策树**：
+
+```
+你的应用需要监听哪些事件？
+├─ 只关心最终结果 → ainvoke
+├─ 关心每步 state 变化 + 节点身份清晰
+│   ├─ 不需要细粒度事件（工具/LLM/检索）
+│   │   └─ astream(stream_mode="updates")
+│   └─ 需要细粒度事件 → astream_events + on_chain_end
+├─ 需要 token 级打字机效果 → astream(stream_mode="messages")
+└─ 需要多种组合 → astream(stream_mode=["messages", "updates", ...])
+```
+
+**项目实战结论**：`astream_events(version="v2")` + `on_tool_start`（loop 检测 + 进度钩子）+ `on_chain_end`（提取 AgentResponse 含渲染文本）。不用 updates 是因为 loop 检测的时机敏感（task 工具内部是 subagent run，几十秒延迟不可接受），且未来可能加 token 流式。
+
 ---
 
 ## 10. 工具定义：langchain_core.tools

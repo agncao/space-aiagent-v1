@@ -25,8 +25,10 @@ from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
-from space_aiagent.bridge import bridge_var, current_scene_name_var
+from space_aiagent.bridge import bridge_var, current_scene_name_var, tools_results_var
 from space_aiagent.bridge.response_shortcut import _SHORTCUT_RESPONSES
+from space_aiagent.models.response_schema import AgentResponse
+from space_aiagent.tools.scene_management import write_tools
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +37,11 @@ class ToolValidationMiddleware(AgentMiddleware):
     """工具调用前置条件统一校验"""
 
     state_schema = AgentState
-
     # 不需要场景上下文的工具白名单
     # - create_scenario: 场景入口工具，本身用于建立场景上下文
     # - AgentResponse: 结构化输出伪工具，非真实工具调用
     # - task: 子 Agent 调度工具，本身不操作场景
-    _SCENE_EXEMPT_TOOLS = frozenset({
-        "create_scenario",
-        "AgentResponse",
-        "task",
-    })
-
+    _SCENE_EXEMPT_TOOLS={AgentResponse.__name__, "task",write_tools.create_scenario.name}
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -68,6 +64,8 @@ class ToolValidationMiddleware(AgentMiddleware):
         # 校验 2: 场景上下文（白名单外）→ 返回 Command(goto=END) 终止子 Agent 图
         # ToolMessage 关闭 AI 的 tool_call（LLM API 协议要求），Command(goto=END)
         # 跳过子 Agent 后续 LLM 调用，state 含 NO_SCENE ToolMessage 持久化
+        if tool_name in self._SCENE_EXEMPT_TOOLS:
+            logger.info(">>>>>>>>> %s", request)
         if tool_name not in self._SCENE_EXEMPT_TOOLS and not current_scene_name_var.get():
             logger.warning("%s 校验失败: 无场景上下文", tool_name)
             shortcut = _SHORTCUT_RESPONSES["no_scene"]

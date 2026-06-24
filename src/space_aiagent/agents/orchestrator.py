@@ -17,7 +17,7 @@ from langgraph.types import Checkpointer
 
 from space_aiagent.infrastructure.config import PROJECT_ROOT
 from space_aiagent.infrastructure.llm import build_model
-from space_aiagent.middleware import LoggingMiddleware
+from space_aiagent.middleware import LoggingMiddleware, ResponseStabilizationMiddleware
 from space_aiagent.models.response_schema import AgentResponse
 
 # 提示词路径（打包在包内）
@@ -71,6 +71,9 @@ def create_orchestrator(
         memory=["AGENTS.md"],
         checkpointer=checkpointer,
         response_format=ToolStrategy(AgentResponse),
-        middleware=[LoggingMiddleware(thread_id=thread_id)],
+        middleware=[
+            LoggingMiddleware(thread_id=thread_id),
+            ResponseStabilizationMiddleware(agent_name="orchestrator"),
+        ],
     )
     return agent

@@ -43,10 +43,10 @@ class WSBridge:
         self._timeout = 60
 
     async def send_tool_call(
-        self,
-        tool_func: str,
-        args: dict,
-        timeout: float = 60,
+            self,
+            tool_func: str,
+            args: dict,
+            timeout: float = 60,
     ) -> dict:
         """
         发送工具调用指令到前端，等待执行结果
@@ -94,11 +94,7 @@ class WSBridge:
         future = self._pending.pop(tool_call_id, None)
         if future and not future.done():
             future.set_result(
-                {
-                    "success": result.success,
-                    "message": result.message,
-                    "data": result.data,
-                }
+                result.model_dump(exclude={"type", "thread_id", "tool_call_id","tool_func"})
             )
         else:
             logger.warning("收到未知 tool_result: id=%s", tool_call_id)

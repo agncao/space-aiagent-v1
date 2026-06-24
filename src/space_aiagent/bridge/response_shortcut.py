@@ -15,9 +15,9 @@ from space_aiagent.models.response_schema import AgentResponse
 # 新增确定性 case 只需在此追加一条
 _SHORTCUT_RESPONSES: dict[str, AgentResponse] = {
     "no_scene": AgentResponse(
-        status="error",
+        status="info",
         code="NO_SCENE",
-        summary=DEFAULT_TEMPLATES[("error", "NO_SCENE")],
+        summary=DEFAULT_TEMPLATES["NO_SCENE"],
         suggestions=["创建场景", "打开已有场景"],
     ),
 }
