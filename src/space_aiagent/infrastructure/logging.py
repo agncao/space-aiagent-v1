@@ -166,7 +166,10 @@ def setup_logging(
     root_logger.handlers.clear()
 
     formatter = structlog.stdlib.ProcessorFormatter(
-        foreign_pre_chain=[_extract_fields_from_record],
+        foreign_pre_chain=[
+            _extract_fields_from_record,
+            structlog.processors.format_exc_info,
+        ],
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             renderer,
@@ -181,7 +184,10 @@ def setup_logging(
     if file_enabled:
         file_handler = _setup_file_handler(file_dir, file_max_bytes, file_backup_count)
         file_formatter = structlog.stdlib.ProcessorFormatter(
-            foreign_pre_chain=[_extract_fields_from_record],
+            foreign_pre_chain=[
+                _extract_fields_from_record,
+                structlog.processors.format_exc_info,
+            ],
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                 structlog.processors.JSONRenderer(),
