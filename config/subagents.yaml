@@ -6,7 +6,7 @@ agents:
     prompt_file: scene_agent.md
 
   - name: entity-agent
-    description: 处理实体和轨道相关操作：添加卫星、地面站等实体，创建和更新SGP4轨道。当用户提到添加实体、创建卫星、轨道、TLE时使用此 Agent。
+    description: 处理实体和轨道相关操作：添加实体，创建和更新SGP4轨道。当用户提到添加实体、创建轨道、TLE时使用此 Agent。
     tools:
       - entity_management
       - orbit_management

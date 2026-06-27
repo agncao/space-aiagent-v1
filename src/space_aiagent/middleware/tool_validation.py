@@ -11,6 +11,10 @@
   则强制终止子 Agent 图，跳过"解释工具结果"那次 LLM 调用。状态由 LangGraph
   自动持久化到 checkpointer，多轮对话能正确恢复上下文。
 
+附加职责:
+- suggestion 候选集注入：awrap_model_call 在每次 LLM 调用前把当前 agent 工具组
+  对应的候选集写入 ContextVar，供 AgentResponse.suggestions validator 反向校验。
+
 未来可扩展: 参数校验、权限、限流、审计等
 """
 
@@ -19,7 +23,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from langchain.agents.middleware.types import AgentMiddleware, AgentState
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ModelRequest,
+    ModelResponse,
+)
 from langchain_core.messages import ToolMessage
 from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
@@ -28,20 +37,63 @@ from langgraph.types import Command
 from space_aiagent.bridge import bridge_var, current_scene_name_var, tools_results_var
 from space_aiagent.bridge.response_shortcut import _SHORTCUT_RESPONSES
 from space_aiagent.models.response_schema import AgentResponse
-from space_aiagent.tools.scene_management import write_tools
+from space_aiagent.tools.registry import (
+    current_suggestion_candidates_var,
+    get_suggestion_candidates,
+)
+from space_aiagent.tools.scene_management import write_tools, read_tools
 
 logger = logging.getLogger(__name__)
 
 
 class ToolValidationMiddleware(AgentMiddleware):
-    """工具调用前置条件统一校验"""
+    """工具调用前置条件统一校验 + suggestion 候选集注入"""
 
     state_schema = AgentState
     # 不需要场景上下文的工具白名单
     # - create_scenario: 场景入口工具，本身用于建立场景上下文
+    # - query_scenario: 查询场景信息，可确认当前是否已经打开场景，可建立场景上下文
     # - AgentResponse: 结构化输出伪工具，非真实工具调用
     # - task: 子 Agent 调度工具，本身不操作场景
-    _SCENE_EXEMPT_TOOLS={AgentResponse.__name__, "task",write_tools.create_scenario.name}
+    _SCENE_EXEMPT_TOOLS = {
+        AgentResponse.__name__,
+        "task",
+        write_tools.create_scenario.name,
+        read_tools.query_scenario.name,
+    }
+
+    def __init__(self, tool_groups: list[str] | None = None) -> None:
+        """初始化middleware
+
+        Args:
+            tool_groups: 当前 agent 绑定的工具组名列表（如 ["scene_management"]）。
+                用于预生成 suggestion 候选集。None 或空列表时跳过候选集注入
+                （如 orchestrator 不直接生成 AgentResponse，不需要）。
+        """
+        super().__init__()
+        self._tool_groups = tool_groups or []
+        # 启动期一次性生成候选集（避免每次 model call 都重新提取 description）
+        self._suggestion_candidates = (
+            frozenset(get_suggestion_candidates(self._tool_groups))
+            if self._tool_groups
+            else frozenset()
+        )
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """LLM 调用前注入 suggestion 候选集到 ContextVar
+
+        AgentResponse.suggestions validator 会从 ContextVar 读取候选集，
+        过滤掉能力范围外的越界建议。必须在 LLM 产出 AgentResponse 之前 set，
+        awrap_tool_call 太晚（在 LLM 之后）。
+        """
+        if self._suggestion_candidates:
+            current_suggestion_candidates_var.set(self._suggestion_candidates)
+        return await handler(request)
+
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -64,8 +116,6 @@ class ToolValidationMiddleware(AgentMiddleware):
         # 校验 2: 场景上下文（白名单外）→ 返回 Command(goto=END) 终止子 Agent 图
         # ToolMessage 关闭 AI 的 tool_call（LLM API 协议要求），Command(goto=END)
         # 跳过子 Agent 后续 LLM 调用，state 含 NO_SCENE ToolMessage 持久化
-        if tool_name in self._SCENE_EXEMPT_TOOLS:
-            logger.info(">>>>>>>>> %s", request)
         if tool_name not in self._SCENE_EXEMPT_TOOLS and not current_scene_name_var.get():
             logger.warning("%s 校验失败: 无场景上下文", tool_name)
             shortcut = _SHORTCUT_RESPONSES["no_scene"]

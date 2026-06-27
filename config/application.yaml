@@ -27,7 +27,7 @@ websocket:
 
 agent:
   max_iterations: 10
-  temperature: 0.1
+  temperature: 0
   streaming: true
   enable_thinking: false
   primary_task_threshold: 20

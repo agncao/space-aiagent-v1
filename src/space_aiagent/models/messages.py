@@ -24,7 +24,7 @@ class UserInputMessage(WSMessage):
     message_id: str = Field(default="", description="消息唯一ID")
     current_scene_name: str | None = Field(
         default=None,
-        description="当前已打开的场景名（无场景时为 None，由前端 Cesium CurrentScenario.dataSource.name 携带）",
+        description="当前已打开的场景名",
     )
 
 

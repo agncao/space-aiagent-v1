@@ -65,12 +65,8 @@ class LoggingMiddleware(AgentMiddleware):
         last_msgs = messages[-3:] if len(messages) > 3 else messages
 
         logger.debug(
-            "[步骤 %d] LLM 调用, thread=%s, 上下文 %d 条消息",
+            "[步骤 %d] LLM 调用, thread=%s, 上下文 %d 条消息。最近消息: %s",
             self.step_count, self.thread_id, len(messages),
-        )
-        logger.debug(
-            "[步骤 %d] 最近消息: %s",
-            self.step_count,
             [_msg_preview(m) for m in last_msgs],
         )
 

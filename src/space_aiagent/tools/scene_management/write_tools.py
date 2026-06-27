@@ -9,6 +9,9 @@ from space_aiagent.bridge import bridge_var, current_scene_name_var
 from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.schemas import ScenarioConfig
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 @tool(args_schema=ScenarioConfig)
 async def create_scenario(
@@ -19,16 +22,7 @@ async def create_scenario(
     description: str | None = None,
 ) -> dict:
     """
-    创建航天场景。场景是所有实体的容器，添加卫星、地面站等实体前必须先创建场景。
-
-    参数说明:
-    - name: 场景名称，默认"新建场景"
-    - central_body: 中心天体，默认"Earth"
-    - start_time/end_time: 可选的时间范围（ISO 8601）
-    - description: 可选的场景描述
-
-    注意：本工具用于初始化场景。创建成功后，下一轮对话（前端再次携带 current_scene_name）
-    才会建立场景上下文，本轮内不能立即调用其他场景操作工具（如 add_point_entity）。
+    创建场景。
     """
     bridge = bridge_var.get()
     tool_func = inspect.currentframe().f_code.co_name
@@ -38,10 +32,11 @@ async def create_scenario(
         tool_func=string_util.snake_to_camel(tool_func),
         args=args,
     )
+    logger.debug(f"create_scenario result: {result}, data: {result.get('data')}")
     if result["success"]:
         data : dict =result.get("data") or {}
         current_scene_name_var.set(data.get("scene_name"))
-
+        logger.debug(f"create_scenario success, scene_name: {current_scene_name_var.get()}")
     return result
 
 
@@ -49,9 +44,6 @@ async def create_scenario(
 async def rename_scenario(scene_name: str) -> dict:
     """
     重命名/修改当前场景。
-
-    参数:
-    - scene_name: 新的场景名称
     """
     bridge = bridge_var.get()
     tool_func = inspect.currentframe().f_code.co_name
@@ -70,7 +62,7 @@ async def rename_scenario(scene_name: str) -> dict:
 @tool
 async def delete_scene() -> dict:
     """
-    清除当前场景的所有内容，包括场景本身和其中所有实体。
+    删除当前场景。
     """
     bridge = bridge_var.get()
     tool_func = inspect.currentframe().f_code.co_name

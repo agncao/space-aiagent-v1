@@ -53,7 +53,7 @@ class ResponseStabilizationMiddleware(AgentMiddleware):
         result = json.loads(content) if isinstance(content, str) else content
 
         success: bool = result.get("success", False)
-        # 工具返回的 args 通常不带 scene_name（如 queryScenarioEntities 只返回 entities/count），
+        # 工具返回的 args 通常不带 scene_name（如 queryEntities 只返回 entities/count），
         # 但 ENTITIES_LIST/ENTITIES_EMPTY/ENTITY_CREATED/SCENE_CREATED 模板都要 scene_name。
         # 此处从 current_scene_name_var 兜底补全，渲染器才能命中模板。
         args = string_util.keys_to_snake(result.get("args", {}))
@@ -128,7 +128,6 @@ class ResponseStabilizationMiddleware(AgentMiddleware):
 
             response_renderer = ResponseRenderer()
             display_content = response_renderer.render(new_structured_response)
-            logger.debug("AgentResponse 渲染结果: %s", display_content)
 
             # 重建 AIMessage：content 写渲染文本，tool_calls 原样保留
             new_msg = AIMessage(

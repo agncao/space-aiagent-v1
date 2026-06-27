@@ -1,7 +1,7 @@
 """
 实体管理工具
 
-在场景中添加各类实体（卫星、地面站、传感器等）。
+在场景中添加实体。
 工具通过远程桥接发送指令到前端 Cesium 执行。
 
 桥接注入: 使用 bridge.bridge_var (ContextVar) 在会话级别注入 bridge 实例，
@@ -25,14 +25,10 @@ async def add_point_entity(
     properties: dict | None = None,
 ) -> dict:
     """
-    在场景中添加点实体（卫星、地面站、飞机、传感器等）。
-
-    支持的实体类型: place(地点), target(目标点), facility(地面站),
-                   aircraft(飞机), missile(导弹), satellite(卫星),
-                   sensor(传感器), groundVehicle(地面车), ship(船),
-                   launchVehicle(火箭), lineTarget(线目标), areaTarget(区域目标)
-
-    前置条件: 必须先有场景，否则 ToolValidationMiddleware 会直接返回失败。
+    在场景中添加实体。支持的实体类型: 
+        地点(place)、目标点(target)、地面站(facility)、飞机(aircraft)、
+        导弹(missile)、卫星(satellite)、传感器(sensor)、地面车/地面车辆(groundVehicle)、
+        船(ship)、火箭(launchVehicle)、线目标(lineTarget)、区域目标(areaTarget)、链路(chain)。
     """
     bridge = bridge_var.get()
 
@@ -59,13 +55,13 @@ async def add_point_entity(
 
 
 @tool
-async def query_scenario_entities() -> dict:
+async def query_entities() -> dict:
     """
     查询/统计当前场景中的所有实体名称列表及总数。
     """
     bridge = bridge_var.get()
     return await bridge.send_tool_call(
-        tool_func="queryScenarioEntities",
+        tool_func="queryEntities",
         args={},
     )
 

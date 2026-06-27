@@ -15,9 +15,14 @@ from deepagents.backends import FilesystemBackend
 from langchain.agents.structured_output import ToolStrategy
 from langgraph.types import Checkpointer
 
-from space_aiagent.infrastructure.config import PROJECT_ROOT
+from space_aiagent.infrastructure.config import PROJECT_ROOT, get_settings
 from space_aiagent.infrastructure.llm import build_model
-from space_aiagent.middleware import LoggingMiddleware, ResponseStabilizationMiddleware
+from space_aiagent.middleware import (
+    LoggingMiddleware,
+    PrimaryAgentMiddleware,
+    ResponseStabilizationMiddleware,
+    agents_dynamic_prompt,
+)
 from space_aiagent.models.response_schema import AgentResponse
 
 # 提示词路径（打包在包内）
@@ -55,6 +60,7 @@ def create_orchestrator(
         thread_id: 当前会话线程 ID，用于日志追踪
     """
     system_prompt = _build_system_prompt(subagents)
+    settings = get_settings()
     model = build_model()
 
     # 知识文件通过 FilesystemBackend + memory 加载
@@ -73,7 +79,9 @@ def create_orchestrator(
         response_format=ToolStrategy(AgentResponse),
         middleware=[
             LoggingMiddleware(thread_id=thread_id),
+            PrimaryAgentMiddleware(task_loop_threshold=settings.agent.primary_task_threshold),
             ResponseStabilizationMiddleware(agent_name="orchestrator"),
+            agents_dynamic_prompt,
         ],
     )
     return agent

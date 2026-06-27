@@ -64,12 +64,6 @@ async def update_sgp4_orbit(
 ) -> dict:
     """
     更新卫星轨道的显示样式（颜色、发光、渐变）。
-
-    参数说明:
-    - name: 要更新的卫星名称
-    - color: 轨道颜色（十六进制，如 "#FF0000"）
-    - glow_power: 发光强度
-    - taper_power: 渐变强度
     """
     bridge = bridge_var.get()
 

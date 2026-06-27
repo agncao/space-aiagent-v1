@@ -13,6 +13,8 @@
 
 import importlib
 import logging
+import re
+from contextvars import ContextVar
 from pathlib import Path
 
 from langchain_core.tools import BaseTool
@@ -113,3 +115,49 @@ def get_all_groups() -> dict[str, list[BaseTool]]:
         {组名: [BaseTool, ...]} 的浅拷贝
     """
     return dict(_GROUPS)
+
+
+def _extract_first_sentence(description: str) -> str:
+    """提取 description 首段的首句作为用户面能力描述
+
+    用于 suggestions 候选集生成：每个工具的 description 首句作为该工具对应的
+    "用户面能力描述"，用于反向校验 LLM 生成的 suggestions 是否越界。
+
+    示例:
+      "创建航天场景。场景是所有实体的容器..." → "创建航天场景"
+      "查询场景信息。不传参数时查询当前场景。\\n\\n参数:..." → "查询场景信息"
+      "重命名/修改当前场景。\\n\\n参数:..." → "重命名/修改当前场景"
+
+    前提：工具 description 第一段第一句必须是用户视角的能力描述（不是开发者注释）。
+    """
+    first_paragraph = description.split("\n\n")[0].strip()
+    parts = re.split(r"[。\.！？\?]", first_paragraph, maxsplit=1)
+    first_sentence = parts[0].strip() if parts else ""
+    return " ".join(first_sentence.split())  # 归一化空白
+
+
+def get_suggestion_candidates(group_names: list[str]) -> list[str]:
+    """按工具组生成 suggestion 候选集（从 description 首句提取）
+
+    Args:
+        group_names: 工具组名列表，如 ["scene_management"]
+
+    Returns:
+        去重保序的能力描述列表，供 AgentResponse.suggestions validator 反向校验
+    """
+    candidates: list[str] = []
+    for group_name in group_names:
+        for tool in _GROUPS.get(group_name, []):
+            first_sentence = _extract_first_sentence(tool.description)
+            if first_sentence:
+                candidates.append(first_sentence)
+    return list(dict.fromkeys(candidates))  # 去重保序
+
+
+# ContextVar：保存当前 agent 的 suggestion 候选集
+# 接入点：ToolValidationMiddleware.awrap_model_call（已挂在每个子 agent 上，
+# 通过 subagents.py 传入 tool_groups 参数），在每个 LLM 调用前 set
+# 参考现有 bridge_var / current_scene_name_var 模式
+current_suggestion_candidates_var: ContextVar[frozenset[str]] = ContextVar(
+    "current_suggestion_candidates", default=frozenset()
+)

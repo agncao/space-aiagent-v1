@@ -55,7 +55,7 @@ class OrbitUpdateParam(BaseModel):
     """轨道更新参数"""
 
     name: str = Field(description="卫星名称")
-    color: str | None = Field(default=None, description="颜色（十六进制）")
+    color: str | None = Field(default=None, description="轨道颜色（十六进制, 如 '#FF0000'）")
     glow_power: float | None = Field(default=None, description="发光强度")
     taper_power: float | None = Field(default=None, description="渐变强度")
 

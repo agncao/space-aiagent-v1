@@ -26,6 +26,8 @@
 3. 后端 `ToolValidationMiddleware` 检查 `current_scene_name`：
    - 如果为 null → **A 方案短路**：中间件返回 `Command(goto=END)` 携带 NO_SCENE 的 ToolMessage，强制终止子 Agent 图（跳过"解释工具结果"那次 LLM 调用），ToolMessage 内容回流到 orchestrator，由 orchestrator LLM 生成 AgentResponse，**状态由 LangGraph 自动持久化**保证多轮对话上下文完整
    - 如果非 null → 工具通过 WebSocket 发指令到前端
+
+   > orchestrator 上的 `PrimaryAgentMiddleware` 是另一种短路机制：监测连续 `task` 调用 ≥ 20 次时，在 `awrap_model_call` 后置阶段直接**改写 `ModelResponse`**（构造一个携带 AgentResponse tool_call 的 AIMessage），输出 `task_loop_guard` 模板。与 A 方案 `ToolValidationMiddleware` 用 `Command(goto=END)` 终止子 Agent 图不同——`PrimaryAgentMiddleware` 不终止图，而是把 LLM 输出替换为短路响应（详见 CLAUDE.md「任务循环防护」）。
 4. 前端收到指令后调用 Cesium API 执行创建卫星
 5. 前端返回结果给后端，渲染分两条路径（同一 `ResponseRenderer`，输出一致）：
    - **中间件路径**：`ResponseStabilizationMiddleware.awrap_model_call` 后置处理时调 `ResponseRenderer.render()` 把渲染文本写回 `AIMessage.content`，由 checkpointer 持久化供下一轮 LLM cross-turn 上下文使用
@@ -91,12 +93,16 @@
 
 | Agent | 职责                         | 加载的工具组 |
 |-------|----------------------------|-------------|
-| Orchestrator | 意图识别、任务规划、子 Agent 调度、结构化输出 | ToolStrategy(AgentResponse) + memory（AGENTS.md） + LoggingMiddleware + ToolValidationMiddleware + ResponseStabilizationMiddleware |
-| Scene Agent | 场景创建/重命名/删除/查询             | scene_management (6 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware |
-| Entity Agent | 实体创建/SGP4轨道/样式更新           | entity_management + orbit_management (4 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware |
+| Orchestrator | 意图识别、任务规划、子 Agent 调度、结构化输出 | ToolStrategy(AgentResponse) + memory（AGENTS.md） + LoggingMiddleware + PrimaryAgentMiddleware + ResponseStabilizationMiddleware + agents_dynamic_prompt |
+| Scene Agent | 场景创建/重命名/删除/查询             | scene_management (6 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware + agents_dynamic_prompt |
+| Entity Agent | 实体创建/SGP4轨道/样式更新           | entity_management + orbit_management (4 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware + agents_dynamic_prompt |
 | Analysis Agent | 数据分析（未来扩展）                 | （未来扩展） |
 
 > 子 Agent 通过 `config/subagents.yaml` 声明式配置，新增 Agent 只需加 YAML 条目 + `prompts/` 加提示词文件 + `tools/registry.py` 注册工具组。
+
+### 动态提示词注入
+
+`agents_dynamic_prompt`（`middleware/dynamic_prompt.py`，用 `@dynamic_prompt` 装饰器声明）挂在 orchestrator 和所有子 Agent 上，每次 LLM 调用前把 `current_scene_name_var` 当前值追加到 system message 末尾（如「当前场景: 测试场景, 如果不为 None或者空字符串，说明当前场景已打开」），让 LLM 感知前端场景状态。`current_scene_name` 由前端在 `user_input` 携带，websocket handler 在每轮注入 ContextVar，本中间件只读不写。
 
 ### 远程工具桥接
 
@@ -177,7 +183,7 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 ```
 前端                          后端
   │  user_input ──────────→  │
-  │  ←──── ai_message       │  流式状态："正在执行 queryScenarioEntities..."
+  │  ←──── ai_message       │  流式状态："正在执行 queryEntities..."
   │  ←──── tool_call        │  Agent 调用工具
   │  tool_result ─────────→  │  前端执行 Cesium 操作
   │  ←──── ai_message       │  Agent 结构化回复（ResponseRenderer 渲染）
@@ -197,8 +203,8 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 | `deleteScene` | scene_management | `{}` | 删除场景       |
 | `clearEntities` | scene_management | `{}` | 清除所有实体     |
 | `queryScenario` | scene_management | `{sceneName?}` | 查询场景信息     |
-| `queryScenarioEntities` | scene_management | `{}` | 查询实体列表     |
-| `addPointEntity` | entity_management | `{entityType, name, position: {longitude, latitude, height}, properties?}` | 添加点实体      |
+| `queryEntities` | scene_management | `{}` | 查询实体列表     |
+| `addPointEntity` | entity_management | `{entityType, name, position: {longitude, latitude, height}, properties?}` | 添加实体      |
 | `createSGP4Orbit` | orbit_management | `{name, tles, start?, end?}` | 创建 SGP4 轨道 |
 | `updateSGP4Orbit` | orbit_management | `{name, color?, glowPower?, taperPower?}` | 更新轨道样式     |
 
@@ -218,8 +224,10 @@ src/space_aiagent/
 │   └── subagents.py        # 子 Agent 加载器（从 YAML 配置构建）
 ├── middleware/              # Agent 中间件
 │   ├── logging.py          # LoggingMiddleware（LLM 调用/工具执行可观测性）
+│   ├── primary_agent_middleware.py # PrimaryAgentMiddleware（orchestrator task 死循环硬兜底，阈值 20，awrap_model_call 改写 ModelResponse 输出 TASK_LOOP_GUARD）
+│   ├── dynamic_prompt.py   # agents_dynamic_prompt（每次 LLM 调用前把 current_scene_name 注入 system message）
 │   ├── response_stabilization.py # ResponseStabilizationMiddleware（AgentResponse 模板渲染稳定化，写 AIMessage.content）
-│   └── tool_validation.py  # ToolValidationMiddleware（bridge + 场景上下文 fail-fast 校验）
+│   └── tool_validation.py  # ToolValidationMiddleware（bridge + 场景上下文 fail-fast + suggestion 候选集注入）
 ├── prompts/                # 提示词模板（与代码分离）
 │   ├── orchestrator.md     # 主控 Agent 提示词（含 {tool_summaries} 占位符）
 │   ├── scene_agent.md      # 场景子 Agent 提示词
@@ -233,7 +241,7 @@ src/space_aiagent/
 │   ├── enums.py            # 枚举（EntityType / WSMessageType / LLMProvider）
 │   ├── schemas.py          # Pydantic 模型（工具参数、API 请求响应）
 │   ├── messages.py         # WebSocket 消息类型
-│   └── response_schema.py  # AgentResponse 结构化响应模型（ToolStrategy 输出格式）
+│   └── response_schema.py  # AgentResponse 结构化响应模型 + ResponseCode 枚举（ToolStrategy 输出格式）
 ├── bridge/                 # 远程工具桥接层
 │   ├── ws_bridge.py        # WSBridge（Future 桥接 + 消息发送）
 │   ├── response_renderer.py # 响应渲染器（纯 YAML 模板渲染；稳定化职责在 ResponseStabilizationMiddleware）

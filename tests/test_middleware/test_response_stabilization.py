@@ -127,10 +127,10 @@ def test_stabilize_passes_through_non_ai_messages():
 async def test_awrap_tool_call_supplements_scene_name_from_context_var():
     """awrap_tool_call 构造 tool_record 时，args 无 scene_name → 从 current_scene_name_var 补
 
-    复现 ENTITIES_LIST KeyError 根因：query_scenario_entities 返回 args={}, data={entities, count}，
+    复现 ENTITIES_LIST KeyError 根因：query_entities 返回 args={}, data={entities, count}，
     模板需要 scene_name 但 tool_record 没有，渲染器无法补全。
     """
-    # 模拟 query_scenario_entities 工具返回
+    # 模拟 query_entities 工具返回
     tool_result = {
         "success": True,
         "code": "ENTITIES_LIST",
@@ -144,14 +144,14 @@ async def test_awrap_tool_call_supplements_scene_name_from_context_var():
     handle_result = ToolMessage(
         content=json.dumps(tool_result),
         tool_call_id="test_call_1",
-        name="query_scenario_entities",
+        name="query_entities",
     )
 
     async def handler(_request: ToolCallRequest) -> ToolMessage:
         return handle_result
 
     request = ToolCallRequest(
-        tool_call={"name": "query_scenario_entities", "args": {}, "id": "test_call_1"},
+        tool_call={"name": "query_entities", "args": {}, "id": "test_call_1"},
         tool=None,
         state={},
         runtime=None,

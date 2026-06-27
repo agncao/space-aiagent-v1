@@ -62,14 +62,14 @@ sequenceDiagram
         Note over U,LLM: 阶段 4 — 工具执行 & WebSocket 桥接
     end
 
-    SA->>T: 调用 query_scenario_entities()
+    SA->>T: 调用 query_entities()
     T->>T: bridge = bridge_var.get()<br/>获取当前会话 bridge
-    T->>B: bridge.send_tool_call(<br/>  "queryScenarioEntities", {})
+    T->>B: bridge.send_tool_call(<br/>  "queryEntities", {})
 
     Note over B: 1. 生成 UUID → tool_call_id<br/>2. 创建 asyncio.Future<br/>3. 缓存到 _pending 字典
 
     B->>WS: 通过 WebSocket 发送 tool_call 消息
-    WS->>F: tool_call<br/>{tool_func:"queryScenarioEntities", tool_call_id:"uuid-xxx"}
+    WS->>F: tool_call<br/>{tool_func:"queryEntities", tool_call_id:"uuid-xxx"}
 
     Note over F: 前端执行 Cesium API<br/>遍历 currentScenario<br/>.dataSource.entities.values
 

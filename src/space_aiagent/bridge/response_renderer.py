@@ -92,10 +92,13 @@ class ResponseRenderer:
            此处保留 try/except 作为最后兜底）
         3. 未命中模板 → 直接用 AgentResponse
         """
+        if not response.code:
+            logger.warning("响应 code 为空，用 AgentResponse")
+            return self._fallback_text(response)
         template = self._templates.get(response.code)
 
         if template is None:
-            logger.debug("未命中模板 (%s)，用 AgentResponse", response.code)
+            logger.info("未命中模板 (%s)，用 AgentResponse", response.code)
             return self._fallback_text(response)
 
         # LLM 经常不填 args（schema 默认 None），但下面 101/106/107/111/112 行
@@ -107,7 +110,6 @@ class ResponseRenderer:
         try:
             missing_keys = _REQUIRED_KEYS[response.code] - response.args.keys()
             tool_history: list[dict] = tools_results_var.get() or []
-            logger.debug("tools_results_var的数据: %s", tool_history)
             for record in reversed(tool_history):
                 if record.get("code", "").upper() == response.code.upper():
                     args = record.get("args", {})

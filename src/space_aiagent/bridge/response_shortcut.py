@@ -20,4 +20,10 @@ _SHORTCUT_RESPONSES: dict[str, AgentResponse] = {
         summary=DEFAULT_TEMPLATES["NO_SCENE"],
         suggestions=["创建场景", "打开已有场景"],
     ),
+    "task_loop_guard": AgentResponse(
+        status="confirm",
+        code="TASK_LOOP_GUARD",
+        summary=DEFAULT_TEMPLATES["TASK_LOOP_GUARD"],
+        suggestions=["补充要操作的对象", "明确说明要修改的属性"],
+    ),
 }

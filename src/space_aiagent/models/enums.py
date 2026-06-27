@@ -8,7 +8,7 @@ from enum import StrEnum
 
 
 class EntityType(StrEnum):
-    """场景实体类型"""
+    """实体类型"""
 
     PLACE = "place"  # 地点
     TARGET = "target"  # 目标点

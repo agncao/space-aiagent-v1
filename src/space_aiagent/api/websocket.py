@@ -29,6 +29,7 @@ from space_aiagent.agents.subagents import load_subagents
 from space_aiagent.bridge import SessionManager, bridge_var, current_scene_name_var, tools_results_var
 from space_aiagent.bridge.response_renderer import ResponseRenderer
 from space_aiagent.infrastructure.database import get_db
+from space_aiagent.middleware.primary_agent_middleware import orchestrator_task_streak_var
 from space_aiagent.models.enums import WSMessageType
 from space_aiagent.models.messages import (
     ErrorMessage,
@@ -60,12 +61,7 @@ _SUBTASK_LABELS: dict[str, str] = {
     "entity-agent": "正在调用实体管理",
 }
 
-# 死循环兜底阈值：同一轮内 task 工具连续调用达到此值视为死循环，强制中断
-# (A 方案 prompt 约束 orchestrator 不重复 task，B 方案在 LLM 偶发不遵守时硬兜底)
-LOOP_THRESHOLD = 2
-
-
-def _make_progress_message(tool_name: str, tool_input: dict) -> str | None:
+def _make_progress_message(_tool_name: str, _tool_input: dict) -> str | None:
     """根据工具名和参数生成用户可见的进度提示，无意义时返回 None"""
     pass
     # 暂时不用，如果需要把以下注解放开
@@ -135,13 +131,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     async def run_agent(bridge, user_msg: UserInputMessage) -> None:
         """后台执行 agent（流式），不阻塞消息接收循环"""
         bridge_token = bridge_var.set(bridge)
+        logger.info("user_msg: %s, current_scene_name: %s", user_msg, user_msg.current_scene_name)
         scene_token = current_scene_name_var.set(user_msg.current_scene_name)
         tools_results_token = tools_results_var.set([])
+        task_streak_token = orchestrator_task_streak_var.set(0)
         try:
+            logger.debug("Agent 准备创建: thread_id=%s", user_msg.thread_id)
             agent = await _get_or_create_agent(user_msg.thread_id)
-
-            # 循环检测：同一轮内 task 工具连续调用计数器
-            task_call_count = 0
 
             async for event in agent.astream_events(
                 {"messages": [HumanMessage(content=user_msg.content)]},
@@ -154,47 +150,31 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 kind = event["event"]
                 name = event.get("name", "")
                 data = event.get("data", {})
-
-                if kind == "on_tool_start":
-                    if name == "AgentResponse":
-                        continue
-
-                    # 循环检测：orchestrator 受 prompt 约束不应连续调用 task（A 方案），
-                    # 偶发不遵守时这里硬兜底，避免 astream_events 死循环
-                    if name == "task":
-                        task_call_count += 1
-                        if task_call_count >= LOOP_THRESHOLD:
-                            logger.warning(
-                                "检测到 task 连续调用 %d 次，疑似死循环，强制中断: thread_id=%s",
-                                task_call_count,
-                                user_msg.thread_id,
-                            )
-                            await bridge.send_ai_message(
-                                "我多次尝试处理您的请求但似乎卡住了。"
-                                "请提供更具体的信息，例如：要修改的实体名称、目标属性等。"
-                            )
-                            await bridge.send_end()
-                            return
-
-                    # 生成有意义的进度提示
-                    tool_input = data.get("input", {})
-                    display = _make_progress_message(name, tool_input)
-                    if display:
-                        logger.info("发送进度提示(send_ai_message): %s, %s", kind, display)
-                        await bridge.send_ai_message(display)
-
-                elif kind == "on_chain_end":
-                    output = data.get("output")
-                    if output is None or not isinstance(output, dict):
-                        continue
-                    agent_response = output.get("structured_response")
-                    if agent_response is None:
-                        continue
-                    renderer= ResponseRenderer()
-                    await bridge.send_ai_message(renderer.render(agent_response))
-                    await bridge.send_end()
-                    return
-
+                try:
+                    if kind == "on_tool_start":
+                        if name == "AgentResponse":
+                            continue
+                        # 生成有意义的进度提示
+                        tool_input = data.get("input", {})
+                        display = _make_progress_message(name, tool_input)
+                        if display:
+                            logger.info("发送进度提示(send_ai_message): %s, %s", kind, display)
+                            await bridge.send_ai_message(display)
+                    elif kind == "on_chain_end":
+                        output = data.get("output")
+                        if output is None or not isinstance(output, dict):
+                            continue
+                        agent_response = output.get("structured_response")
+                        if agent_response is None:
+                            continue
+                        renderer = ResponseRenderer()
+                        await bridge.send_ai_message(renderer.render(agent_response))
+                        await bridge.send_end()
+                        return
+                except Exception as ex:
+                    logger.exception("Agent 执行出错: event: %s::%s, thread_id=%s, data: %s", kind, name,
+                                     user_msg.thread_id, data)
+                    raise ex
             logger.warning("流结束未收到 AgentResponse on_chain_end 事件: thread_id=%s", user_msg.thread_id)
             await bridge.send_ai_message("处理完成。")
             await bridge.send_end()
@@ -206,6 +186,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             bridge_var.reset(bridge_token)
             current_scene_name_var.reset(scene_token)
             tools_results_var.reset(tools_results_token)
+            orchestrator_task_streak_var.reset(task_streak_token)
 
     try:
         while True:
