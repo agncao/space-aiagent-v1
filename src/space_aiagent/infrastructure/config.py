@@ -5,7 +5,7 @@
 1. 先加载 .env 文件中的环境变量
 2. 加载 config/application.yaml 作为基础配置
 3. 根据 APP_ENV 环境变量加载对应的环境覆盖配置（dev/staging/prod）
-4. YAML 中的 ${VAR:default} 语法会被解析为环境变量
+4. LLM 凭据等敏感信息继续从环境变量读取
 
 使用方式:
     from space_aiagent.infrastructure.config import get_settings
@@ -14,7 +14,6 @@
 """
 
 import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -25,31 +24,6 @@ from pydantic_settings import BaseSettings
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
-
-_ENV_VAR_PATTERN = re.compile(r"\$\{([^}:]+)(?::([^}]*))?\}")
-
-
-def _resolve_env_vars(value: Any) -> Any:
-    """
-    递归解析 YAML 值中的 ${VAR:default} 语法
-
-    示例:
-        "${SERVER_HOST:0.0.0.0}" -> 从环境变量读取 SERVER_HOST，默认值为 0.0.0.0
-    """
-    if isinstance(value, str):
-
-        def _replacer(match: re.Match) -> str:
-            var_name = match.group(1)
-            default = match.group(2) if match.group(2) is not None else ""
-            return os.environ.get(var_name, default)
-
-        return _ENV_VAR_PATTERN.sub(_replacer, value)
-    if isinstance(value, dict):
-        return {k: _resolve_env_vars(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_resolve_env_vars(item) for item in value]
-    return value
-
 
 def _deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个字典，override 覆盖 base"""
@@ -63,14 +37,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def _load_yaml_config(env: str = "dev") -> dict[str, Any]:
-    """
-    加载 YAML 配置文件
-
-    步骤:
-    1. 加载 config/application.yaml 作为基础配置
-    2. 如果存在 config/{env}.yaml，合并覆盖基础配置
-    3. 解析所有 ${VAR:default} 环境变量引用
-    """
+    """加载 YAML 配置文件，并按环境做覆盖合并"""
     config: dict[str, Any] = {}
 
     base_path = CONFIG_DIR / "application.yaml"
@@ -84,8 +51,7 @@ def _load_yaml_config(env: str = "dev") -> dict[str, Any]:
             env_config = yaml.safe_load(f) or {}
         config = _deep_merge(config, env_config)
 
-    return _resolve_env_vars(config)
-
+    return config
 
 class ServerConfig(BaseSettings):
     """服务器配置"""
@@ -114,8 +80,8 @@ class LLMConfig(BaseSettings):
     """LLM 配置（适用于所有 OpenAI 兼容接口）"""
 
     api_key: str = ""
-    base_url: str|None
-    model: str|None
+    base_url: str | None
+    model: str | None
     temperature: float = 0.1
     streaming: bool = True
 
@@ -124,6 +90,8 @@ class AgentConfig(BaseSettings):
     """Agent 配置"""
 
     max_iterations: int = 10
+    enable_thinking: bool = False
+    primary_task_threshold: int = 20
 
 
 class Settings(BaseSettings):
@@ -181,16 +149,20 @@ def _apply_yaml_to_settings(yaml_config: dict[str, Any]) -> Settings:
     )
 
     flat["app_env"] = os.getenv("APP_ENV", "dev")
-    flat["agent"] = AgentConfig(max_iterations=yaml_config.get("agent", {}).get("max_iterations", 10))
-
-    # LLM 配置从环境变量直接读取（.env 中的 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL）
     agent_cfg = yaml_config.get("agent", {})
+    flat["agent"] = AgentConfig(
+        max_iterations=agent_cfg.get("max_iterations", 10),
+        enable_thinking=agent_cfg.get("enable_thinking", False),
+        primary_task_threshold=agent_cfg.get("primary_task_threshold", 20),
+    )
+
+    # LLM 凭据仍从环境变量读取，运行参数从 agent 段读取
     flat["llm"] = LLMConfig(
         api_key=os.getenv("LLM_API_KEY", ""),
         base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
         model=os.getenv("LLM_MODEL", "deepseek-chat"),
-        temperature=float(os.getenv("LLM_TEMPERATURE", str(agent_cfg.get("temperature", 0.1)))),
-        streaming=os.getenv("LLM_STREAMING", str(agent_cfg.get("streaming", True))).lower() == "true",
+        temperature=float(agent_cfg.get("temperature", 0.1)),
+        streaming=agent_cfg.get("streaming", True),
     )
 
     return Settings(**flat)
