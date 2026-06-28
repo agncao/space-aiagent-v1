@@ -93,13 +93,14 @@ class ResponseStabilizationMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         """LLM 产出 AgentResponse 后从 tools_results_var 覆盖（suggestions 保留 LLM）"""
-        response = await handler(request)
+        
+        return await handler(request)
 
-        try:
-            return self._stabilize(response)
-        except Exception:
-            logger.warning("AgentResponse 稳定化失败，原样返回 LLM 响应", exc_info=True)
-            return response
+        # try:
+        #     return self._stabilize(response)
+        # except Exception:
+        #     logger.warning("AgentResponse 稳定化失败，原样返回 LLM 响应", exc_info=True)
+        #     return response
 
     def _stabilize(self, response: ModelResponse) -> ModelResponse:
         """对 response 中含 AgentResponse tool_call 的 AIMessage 做稳定化

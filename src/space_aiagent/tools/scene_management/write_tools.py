@@ -32,7 +32,6 @@ async def create_scenario(
         tool_func=string_util.snake_to_camel(tool_func),
         args=args,
     )
-    logger.debug(f"create_scenario result: {result}, data: {result.get('data')}")
     if result["success"]:
         data : dict =result.get("data") or {}
         current_scene_name_var.set(data.get("scene_name"))

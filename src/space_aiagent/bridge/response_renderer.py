@@ -83,53 +83,8 @@ class ResponseRenderer:
             parts.append(" **接下来您可以：**\n")
             parts.append("\n".join(f"- {s}" for s in response.suggestions))
         return "\n\n".join(parts)
+        
     def render(self, response: AgentResponse) -> str:
         """将结构化响应渲染为自然语言
-
-        1. 按 code 查模板，命中则用 args 填充占位符
-        2. 缺字段抛 KeyError → 降级用 AgentResponse 的稳定化已由
-           ResponseStabilizationMiddleware 在 agent 流程内完成，理论上不会走到这里；
-           此处保留 try/except 作为最后兜底）
-        3. 未命中模板 → 直接用 AgentResponse
         """
-        if not response.code:
-            logger.warning("响应 code 为空，用 AgentResponse")
-            return self._fallback_text(response)
-        template = self._templates.get(response.code)
-
-        if template is None:
-            logger.info("未命中模板 (%s)，用 AgentResponse", response.code)
-            return self._fallback_text(response)
-
-        # LLM 经常不填 args（schema 默认 None），但下面 101/106/107/111/112 行
-        # 都假定 args 是 dict。此处归一化一次，覆盖所有未防御位置；同时让后续
-        # 从 tool_history 补字段的逻辑能写入 args。
-        if response.args is None:
-            response.args = {}
-
-        try:
-            missing_keys = _REQUIRED_KEYS[response.code] - response.args.keys()
-            tool_history: list[dict] = tools_results_var.get() or []
-            for record in reversed(tool_history):
-                if record.get("code", "").upper() == response.code.upper():
-                    args = record.get("args", {})
-                    response.args.update({key: args[key] for key in missing_keys if key in args})
-                    missing_keys = _REQUIRED_KEYS[response.code] - response.args.keys()
-                    if not missing_keys:
-                        break
-                    data = record.get("data", {})
-                    response.args.update({key: data[key] for key in missing_keys if key in data})
-                    missing_keys = _REQUIRED_KEYS[response.code] - response.args.keys()
-                    if not missing_keys:
-                        break
-
-            return template.format_map(response.args or {})
-
-        except Exception:
-            logger.warning(
-                "渲染异常 (status=%s, code=%s)，降级用 AgentResponse",
-                response.status,
-                response.code,
-                exc_info=True,
-            )
-            return self._fallback_text(response)
+        return self._fallback_text(response)
