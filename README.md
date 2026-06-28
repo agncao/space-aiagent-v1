@@ -102,7 +102,7 @@
 
 ### 动态提示词注入
 
-`agents_dynamic_prompt`（`middleware/dynamic_prompt.py`，用 `@dynamic_prompt` 装饰器声明）挂在 orchestrator 和所有子 Agent 上，每次 LLM 调用前把 `current_scene_name_var` 当前值追加到 system message 末尾（如「当前场景: 测试场景, 如果不为 None或者空字符串，说明当前场景已打开」），让 LLM 感知前端场景状态。`current_scene_name` 由前端在 `user_input` 携带，websocket handler 在每轮注入 ContextVar，本中间件只读不写。
+`agents_dynamic_prompt`（`middleware/dynamic_prompt.py`，用 `@dynamic_prompt` 装饰器声明）挂在 orchestrator 和所有子 Agent 上，每次 LLM 调用前把 `request.state["current_scene_name"]` 当前值追加到 system message 末尾（如「当前场景: 测试场景, 如果不为 None或者空字符串，说明当前场景已打开」），让 LLM 感知前端场景状态。`current_scene_name` 由前端在 `user_input` 携带，websocket handler 通过 `astream_events` input 注入到 `SpaceAgentState`（`agents/state.py`），scene 工具成功后通过 `Command(update={"current_scene_name": ...})` 写入，本中间件只读不写。**关键**：deepagents `task` 工具自动双向同步 state（父↔子），所以 scene-agent 创建场景后写入的 `current_scene_name` 会自动传给后续 task 调用的 entity-agent——避免 ContextVar 跨 task 边界丢失。
 
 ### 远程工具桥接
 
@@ -133,7 +133,7 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 }
 ```
 
-`current_scene_name` 由前端从 `yyastk.CurrentScenario?.dataSource?.name` 携带，无场景时为 `null`。后端 `ToolValidationMiddleware` 据此做 fail-fast 校验：除场景创建工具外，无场景上下文时返回 `Command(goto=END)`（携带 NO_SCENE 的 ToolMessage），终止子 Agent 图——ToolMessage 关闭 tool_call（LLM API 协议要求），Command(goto=END) 跳过子 Agent 后续 LLM 调用，状态由 LangGraph 持久化到 checkpointer。
+`current_scene_name` 由前端从 `yyastk.CurrentScenario?.dataSource?.name` 携带，无场景时为 `null`。后端 `ToolValidationMiddleware` 据此做 fail-fast 校验：除场景创建工具外，无场景上下文（`request.state.get("current_scene_name")` 为空）时返回 `Command(goto=END)`（携带 NO_SCENE 的 ToolMessage），终止子 Agent 图——ToolMessage 关闭 tool_call（LLM API 协议要求），Command(goto=END) 跳过子 Agent 后续 LLM 调用，状态由 LangGraph 持久化到 checkpointer。
 
 **工具执行结果 (`tool_result`)** — 前端执行完 Cesium 操作后返回
 ```json

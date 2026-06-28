@@ -1,6 +1,7 @@
 import inspect
 import re
 
+from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool
 
 
@@ -78,7 +79,10 @@ def args_to_camel(func, local_vars: dict, skip_none: bool = True) -> dict:
         func = func.coroutine or func.func
     sig = inspect.signature(func)
     args = {}
-    for param_name in sig.parameters:
+    for param_name, param in sig.parameters.items():
+        # 跳过 langgraph 注入的 ToolRuntime（不应传给前端）
+        if param.annotation is ToolRuntime:
+            continue
         value = local_vars.get(param_name)
         if skip_none and value is None:
             continue

@@ -15,7 +15,7 @@ from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
-from space_aiagent.bridge import current_scene_name_var, tools_results_var
+from space_aiagent.bridge import tools_results_var
 from space_aiagent.middleware.response_stabilization import ResponseStabilizationMiddleware
 from space_aiagent.models.response_schema import AgentResponse
 
@@ -88,13 +88,11 @@ def test_stabilize_fills_template_with_args_and_tool_history():
         "data": {"scene_name": "测试场景"},
     }
     tool_token = tools_results_var.set([tool_record])
-    scene_token = current_scene_name_var.set(None)
     try:
         mw = ResponseStabilizationMiddleware(agent_name="orchestrator")
         new_response = mw._stabilize(response)
     finally:
         tools_results_var.reset(tool_token)
-        current_scene_name_var.reset(scene_token)
 
     new_msg = new_response.result[0]
     assert "测试场景" in new_msg.content
@@ -124,8 +122,8 @@ def test_stabilize_passes_through_non_ai_messages():
     assert new_response.result[0] is human
 
 
-async def test_awrap_tool_call_supplements_scene_name_from_context_var():
-    """awrap_tool_call 构造 tool_record 时，args 无 scene_name → 从 current_scene_name_var 补
+async def test_awrap_tool_call_supplements_scene_name_from_state():
+    """awrap_tool_call 构造 tool_record 时，args 无 scene_name → 从 state.current_scene_name 补
 
     复现 ENTITIES_LIST KeyError 根因：query_entities 返回 args={}, data={entities, count}，
     模板需要 scene_name 但 tool_record 没有，渲染器无法补全。
@@ -153,20 +151,18 @@ async def test_awrap_tool_call_supplements_scene_name_from_context_var():
     request = ToolCallRequest(
         tool_call={"name": "query_entities", "args": {}, "id": "test_call_1"},
         tool=None,
-        state={},
+        state={"current_scene_name": "yy"},
         runtime=None,
     )
 
     mw = ResponseStabilizationMiddleware(agent_name="scene-agent")
 
     tool_token = tools_results_var.set([])
-    scene_token = current_scene_name_var.set("yy")
     try:
         await mw.awrap_tool_call(request, handler)
     finally:
         records = list(tools_results_var.get() or [])
         tools_results_var.reset(tool_token)
-        current_scene_name_var.reset(scene_token)
 
     assert len(records) == 1
     assert records[0]["args"]["scene_name"] == "yy"

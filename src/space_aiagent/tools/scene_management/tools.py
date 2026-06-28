@@ -8,7 +8,7 @@ registry.py 从此文件加载所有工具。实际实现按读写分类:
 
 from .read_tools import query_scenario  # noqa: F401
 from .write_tools import (  # noqa: F401
-    delete_scene,
     create_scenario,
+    delete_scene,
     rename_scenario,
 )

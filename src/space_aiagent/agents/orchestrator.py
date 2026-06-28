@@ -15,6 +15,7 @@ from deepagents.backends import FilesystemBackend
 from langchain.agents.structured_output import ToolStrategy
 from langgraph.types import Checkpointer
 
+from space_aiagent.agents.state import SpaceAgentState
 from space_aiagent.infrastructure.config import PROJECT_ROOT, get_settings
 from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.middleware import (
@@ -77,9 +78,16 @@ def create_orchestrator(
         memory=["AGENTS.md"],
         checkpointer=checkpointer,
         response_format=ToolStrategy(AgentResponse),
+        state_schema=SpaceAgentState,
         middleware=[
             LoggingMiddleware(thread_id=thread_id),
-            PrimaryAgentMiddleware(task_loop_threshold=settings.agent.primary_task_threshold),
+            PrimaryAgentMiddleware(
+                task_loop_threshold=settings.agent.primary_task_threshold,
+                subagent_summaries=[
+                    {"name": s["name"], "description": s["description"]} for s in subagents
+                ],
+                model=model,
+            ),
             ResponseStabilizationMiddleware(agent_name="orchestrator"),
             agents_dynamic_prompt,
         ],

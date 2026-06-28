@@ -86,3 +86,14 @@ class ToolResult(BaseModel):
     success: bool = Field(description="是否成功")
     message: str = Field(default="", description="结果消息")
     data: dict | list | None = Field(default=None, description="结果数据")
+
+
+class SubagentClassification(BaseModel):
+    """LLM 路由分类结构化输出
+
+    PrimaryAgentMiddleware 自动续接 fallback 时用：当未从 task 历史捕获到
+    subagent_type（流程 1：orchestrator 直接 NO_SCENE 不调 task）时，
+    调 LLM 用此 schema 输出最匹配的子 agent name。
+    """
+
+    subagent_type: str = Field(description="应该委派给的子 agent name")

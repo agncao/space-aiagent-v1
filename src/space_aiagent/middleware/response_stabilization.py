@@ -14,7 +14,7 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
-from space_aiagent.bridge import current_scene_name_var, tools_results_var
+from space_aiagent.bridge import tools_results_var
 from space_aiagent.bridge.response_renderer import ResponseRenderer
 from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.response_schema import AgentResponse
@@ -55,12 +55,16 @@ class ResponseStabilizationMiddleware(AgentMiddleware):
         success: bool = result.get("success", False)
         # 工具返回的 args 通常不带 scene_name（如 queryEntities 只返回 entities/count），
         # 但 ENTITIES_LIST/ENTITIES_EMPTY/ENTITY_CREATED/SCENE_CREATED 模板都要 scene_name。
-        # 此处从 current_scene_name_var 兜底补全，渲染器才能命中模板。
+        # 从 state 兜底补全（current_scene_name 通过 SpaceAgentState 同步）。
         args = string_util.keys_to_snake(result.get("args", {}))
         if "scene_name" not in args.keys():
-            scene_name = current_scene_name_var.get()
-            if scene_name:
-                args["scene_name"] = scene_name
+            state_scene = (
+                request.state.get("current_scene_name")
+                if isinstance(request.state, dict)
+                else getattr(request.state, "current_scene_name", None)
+            )
+            if state_scene:
+                args["scene_name"] = state_scene
         tool_record: dict[str, Any] = {
             "status": "success",
             "code": result.get("code", ""),
@@ -93,7 +97,7 @@ class ResponseStabilizationMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         """LLM 产出 AgentResponse 后从 tools_results_var 覆盖（suggestions 保留 LLM）"""
-        
+
         return await handler(request)
 
         # try:

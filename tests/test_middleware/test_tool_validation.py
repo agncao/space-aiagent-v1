@@ -5,8 +5,8 @@
 - 场景上下文校验：失败时返回 Command(goto=END)，终止子 Agent 图，
   ToolMessage 携带 NO_SCENE 错误；状态由 LangGraph 持久化到 checkpointer
 
-每个 async 测试函数由 pytest-asyncio 创建独立 task，
-ContextVar 在测试函数体内 set，自动隔离。
+current_scene_name 通过 SpaceAgentState 双向同步（替代 ContextVar），
+测试在 mock ToolCallRequest.state 中设置该字段。
 """
 
 import json
@@ -16,16 +16,27 @@ from langchain_core.messages import ToolMessage
 from langgraph.graph import END
 from langgraph.types import Command
 
-from space_aiagent.bridge import bridge_var, current_scene_name_var
+from space_aiagent.bridge import bridge_var
 from space_aiagent.middleware.tool_validation import ToolValidationMiddleware
 
 
-def _make_request(tool_name: str, tool_call_id: str = "call_test"):
-    """构造 mock ToolCallRequest（ducktyping，只需要 tool_call 属性）"""
+def _make_request(
+    tool_name: str,
+    tool_call_id: str = "call_test",
+    scene_name: str | None = None,
+):
+    """构造 mock ToolCallRequest（ducktyping，需要 tool_call 和 state 属性）
+
+    Args:
+        scene_name: state.current_scene_name 的值；None 表示无场景
+    """
     return type(
         "Req",
         (),
-        {"tool_call": {"name": tool_name, "args": {}, "id": tool_call_id}},
+        {
+            "tool_call": {"name": tool_name, "args": {}, "id": tool_call_id},
+            "state": {"current_scene_name": scene_name},
+        },
     )()
 
 
@@ -53,7 +64,6 @@ def _assert_no_scene_command(result, expected_tool_call_id: str = "call_test") -
 async def test_no_scene_returns_terminal_command():
     """无场景上下文 → 返回 Command(goto=END)，跳过子 Agent LLM 调用，状态持久化"""
     bridge_var.set(AsyncMock())
-    current_scene_name_var.set(None)
 
     handler = AsyncMock(return_value={"success": True})
     mw = ToolValidationMiddleware()
@@ -67,7 +77,6 @@ async def test_no_scene_returns_terminal_command():
 async def test_no_scene_command_for_unknown_tool():
     """未知工具名（不在白名单）→ 同样返回 Command(goto=END)"""
     bridge_var.set(AsyncMock())
-    current_scene_name_var.set(None)
 
     handler = AsyncMock()
     mw = ToolValidationMiddleware()
@@ -81,7 +90,6 @@ async def test_no_scene_command_for_unknown_tool():
 async def test_no_scene_command_preserves_tool_call_id():
     """Command 里的 ToolMessage 必须保留原 tool_call_id（协议要求）"""
     bridge_var.set(AsyncMock())
-    current_scene_name_var.set(None)
 
     handler = AsyncMock()
     mw = ToolValidationMiddleware()
@@ -97,14 +105,12 @@ async def test_no_scene_command_preserves_tool_call_id():
 async def test_create_scenario_exempt_from_scene_check():
     """create_scenario 在白名单内，无场景也能调用"""
     bridge_var.set(AsyncMock())
-    current_scene_name_var.set(None)
 
     handler = AsyncMock(return_value={"success": True})
     mw = ToolValidationMiddleware()
 
     result = await mw.awrap_tool_call(_make_request("create_scenario"), handler)
 
-    # 白名单工具透传 handler 返回值，不抛异常
     assert result == {"success": True}
     handler.assert_called_once()
 
@@ -112,12 +118,14 @@ async def test_create_scenario_exempt_from_scene_check():
 async def test_no_bridge_failfast():
     """bridge 未注入 → 返回 ToolMessage（系统级错误，让 LLM 兜底）"""
     bridge_var.set(None)
-    current_scene_name_var.set("场景A")
 
     handler = AsyncMock()
     mw = ToolValidationMiddleware()
 
-    result = await mw.awrap_tool_call(_make_request("create_scenario"), handler)
+    result = await mw.awrap_tool_call(
+        _make_request("create_scenario", scene_name="场景A"),
+        handler,
+    )
 
     data = _parse_tool_message(result)
     assert data["success"] is False
@@ -128,13 +136,12 @@ async def test_no_bridge_failfast():
 async def test_no_bridge_returns_tool_message_with_call_id():
     """bridge 失败的 ToolMessage 必须带 tool_call_id（FilesystemMiddleware 要求）"""
     bridge_var.set(None)
-    current_scene_name_var.set("场景A")
 
     handler = AsyncMock()
     mw = ToolValidationMiddleware()
 
     result = await mw.awrap_tool_call(
-        _make_request("delete_scene", tool_call_id="call_abc_123"),
+        _make_request("delete_scene", tool_call_id="call_abc_123", scene_name="场景A"),
         handler,
     )
 
@@ -145,12 +152,14 @@ async def test_no_bridge_returns_tool_message_with_call_id():
 async def test_all_checks_pass_call_handler():
     """场景 + bridge 都就绪 → 正常调用 handler"""
     bridge_var.set(AsyncMock())
-    current_scene_name_var.set("场景A")
 
     handler = AsyncMock(return_value={"success": True, "data": "ok"})
     mw = ToolValidationMiddleware()
 
-    result = await mw.awrap_tool_call(_make_request("add_point_entity"), handler)
+    result = await mw.awrap_tool_call(
+        _make_request("add_point_entity", scene_name="场景A"),
+        handler,
+    )
 
     assert result["data"] == "ok"
     handler.assert_called_once()

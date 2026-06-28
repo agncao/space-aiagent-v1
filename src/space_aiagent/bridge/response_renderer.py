@@ -17,7 +17,6 @@ from pathlib import Path
 
 import yaml
 
-from space_aiagent.bridge import tools_results_var
 from space_aiagent.infrastructure.config import CONFIG_DIR
 from space_aiagent.models.response_schema import AgentResponse
 
@@ -83,7 +82,7 @@ class ResponseRenderer:
             parts.append(" **接下来您可以：**\n")
             parts.append("\n".join(f"- {s}" for s in response.suggestions))
         return "\n\n".join(parts)
-        
+
     def render(self, response: AgentResponse) -> str:
         """将结构化响应渲染为自然语言
         """

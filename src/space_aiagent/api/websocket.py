@@ -26,7 +26,7 @@ from langchain_core.messages import HumanMessage
 
 from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.agents.subagents import load_subagents
-from space_aiagent.bridge import SessionManager, bridge_var, current_scene_name_var, tools_results_var
+from space_aiagent.bridge import SessionManager, bridge_var, tools_results_var
 from space_aiagent.bridge.response_renderer import ResponseRenderer
 from space_aiagent.infrastructure.database import get_db
 from space_aiagent.middleware.primary_agent_middleware import orchestrator_task_streak_var
@@ -132,7 +132,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         """后台执行 agent（流式），不阻塞消息接收循环"""
         bridge_token = bridge_var.set(bridge)
         logger.info("user_msg: %s, current_scene_name: %s", user_msg, user_msg.current_scene_name)
-        scene_token = current_scene_name_var.set(user_msg.current_scene_name)
         tools_results_token = tools_results_var.set([])
         task_streak_token = orchestrator_task_streak_var.set(0)
         try:
@@ -140,7 +139,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             agent = await _get_or_create_agent(user_msg.thread_id)
 
             async for event in agent.astream_events(
-                {"messages": [HumanMessage(content=user_msg.content)]},
+                {
+                    "messages": [HumanMessage(content=user_msg.content)],
+                    # 注入 SpaceAgentState.current_scene_name 初值
+                    # 后续工具返回 Command 更新该字段，跨 task 边界自动同步
+                    "current_scene_name": user_msg.current_scene_name,
+                },
                 config={
                     "configurable": {"thread_id": user_msg.thread_id},
                     "recursion_limit": 100,
@@ -184,7 +188,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await bridge.send_error(str(e))
         finally:
             bridge_var.reset(bridge_token)
-            current_scene_name_var.reset(scene_token)
             tools_results_var.reset(tools_results_token)
             orchestrator_task_streak_var.reset(task_streak_token)
 
