@@ -84,14 +84,24 @@ class LLMConfig(BaseSettings):
     model: str | None
     temperature: float = 0.1
     streaming: bool = True
+    enable_thinking: bool = False
 
+class LLMFlashConfig(BaseSettings):
+    """LLM 配置（适用于所有 OpenAI 兼容接口）"""
+
+    api_key: str = ""
+    base_url: str | None
+    model: str | None
+    temperature: float = 0.1
+    streaming: bool = True
+    enable_thinking: bool = False
 
 class AgentConfig(BaseSettings):
     """Agent 配置"""
 
     max_iterations: int = 10
-    enable_thinking: bool = False
     primary_task_threshold: int = 20
+
 
 
 class Settings(BaseSettings):
@@ -110,6 +120,7 @@ class Settings(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    llm_flash: LLMFlashConfig = Field(default_factory=LLMFlashConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
 
     model_config = {"env_prefix": "", "env_nested_delimiter": "__"}
@@ -150,9 +161,9 @@ def _apply_yaml_to_settings(yaml_config: dict[str, Any]) -> Settings:
 
     flat["app_env"] = os.getenv("APP_ENV", "dev")
     agent_cfg = yaml_config.get("agent", {})
+    flash_cfg = yaml_config.get("flash_model", {})
     flat["agent"] = AgentConfig(
         max_iterations=agent_cfg.get("max_iterations", 10),
-        enable_thinking=agent_cfg.get("enable_thinking", False),
         primary_task_threshold=agent_cfg.get("primary_task_threshold", 20),
     )
 
@@ -163,6 +174,15 @@ def _apply_yaml_to_settings(yaml_config: dict[str, Any]) -> Settings:
         model=os.getenv("LLM_MODEL", "deepseek-chat"),
         temperature=float(agent_cfg.get("temperature", 0.1)),
         streaming=agent_cfg.get("streaming", True),
+        enable_thinking=agent_cfg.get("enable_thinking", False),
+    )
+    flat["llm_flash"] = LLMFlashConfig(
+        api_key=os.getenv("LLM_FLASH_API_KEY", ""),
+        base_url=os.getenv("LLM_FLASH_BASE_URL", "https://api.deepseek.com"),
+        model=os.getenv("LLM_FLASH_MODEL", "deepseek-chat"),
+        temperature=float(flash_cfg.get("temperature", 0.1)),
+        streaming=flash_cfg.get("streaming", True),
+        enable_thinking=flash_cfg.get("enable_thinking", False),
     )
 
     return Settings(**flat)

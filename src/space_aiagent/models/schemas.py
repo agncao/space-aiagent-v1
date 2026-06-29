@@ -4,6 +4,8 @@ Pydantic 数据模型
 定义所有业务实体的数据结构，用于工具参数校验和 API 请求/响应
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from .enums import EntityType
@@ -96,4 +98,4 @@ class SubagentClassification(BaseModel):
     调 LLM 用此 schema 输出最匹配的子 agent name。
     """
 
-    subagent_type: str = Field(description="应该委派给的子 agent name")
+    subagent_type: Literal["entity-agent", "scene-agent"]|None = Field(description="应该委派给的子 agent name")

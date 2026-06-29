@@ -17,7 +17,7 @@ from langgraph.types import Command
 from space_aiagent.bridge import tools_results_var
 from space_aiagent.bridge.response_renderer import ResponseRenderer
 from space_aiagent.infrastructure.utils import string_util
-from space_aiagent.models.response_schema import AgentResponse
+from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
 
 logger = logging.getLogger(__name__)
 

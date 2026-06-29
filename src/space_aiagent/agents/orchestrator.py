@@ -19,12 +19,11 @@ from space_aiagent.agents.state import SpaceAgentState
 from space_aiagent.infrastructure.config import PROJECT_ROOT, get_settings
 from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.middleware import (
-    LoggingMiddleware,
     PrimaryAgentMiddleware,
     ResponseStabilizationMiddleware,
     agents_dynamic_prompt,
 )
-from space_aiagent.models.response_schema import AgentResponse
+from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
 
 # 提示词路径（打包在包内）
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -80,13 +79,8 @@ def create_orchestrator(
         response_format=ToolStrategy(AgentResponse),
         state_schema=SpaceAgentState,
         middleware=[
-            LoggingMiddleware(thread_id=thread_id),
-            PrimaryAgentMiddleware(
+            PrimaryAgentMiddleware(thread_id=thread_id,
                 task_loop_threshold=settings.agent.primary_task_threshold,
-                subagent_summaries=[
-                    {"name": s["name"], "description": s["description"]} for s in subagents
-                ],
-                model=model,
             ),
             ResponseStabilizationMiddleware(agent_name="orchestrator"),
             agents_dynamic_prompt,

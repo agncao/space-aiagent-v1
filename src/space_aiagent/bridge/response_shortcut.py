@@ -9,7 +9,7 @@ payload 的结构化数据源。中间件把它转成 ToolMessage 内容，配�
 """
 
 from space_aiagent.bridge.response_renderer import DEFAULT_TEMPLATES
-from space_aiagent.models.response_schema import AgentResponse
+from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
 
 # shortcut key → 预构建 AgentResponse
 # 新增确定性 case 只需在此追加一条

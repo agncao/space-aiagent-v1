@@ -321,7 +321,7 @@ def test_extract_original_intent_returns_latest_human():
         AIMessage(content=""),
         HumanMessage("添加文昌地面站"),
     ]
-    assert PrimaryAgentMiddleware._extract_original_intent(messages) == "添加文昌地面站"
+    assert PrimaryAgentMiddleware._extract_last_human_intent(messages) == "添加文昌地面站"
 
 
 def test_extract_original_intent_skips_confirmation_phrase():
@@ -331,7 +331,7 @@ def test_extract_original_intent_skips_confirmation_phrase():
         AIMessage(content=""),
         HumanMessage("好的"),
     ]
-    assert PrimaryAgentMiddleware._extract_original_intent(messages) == "添加祝融号地面车"
+    assert PrimaryAgentMiddleware._extract_last_human_intent(messages) == "添加祝融号地面车"
 
 
 def test_extract_original_intent_returns_none_if_only_confirmations():
@@ -340,13 +340,13 @@ def test_extract_original_intent_returns_none_if_only_confirmations():
         HumanMessage("好的"),
         HumanMessage("ok"),
     ]
-    assert PrimaryAgentMiddleware._extract_original_intent(messages) is None
+    assert PrimaryAgentMiddleware._extract_last_human_intent(messages) is None
 
 
 def test_extract_original_intent_returns_none_if_no_human():
     """messages 中无 HumanMessage 时返回 None"""
     messages = [AIMessage(content="")]
-    assert PrimaryAgentMiddleware._extract_original_intent(messages) is None
+    assert PrimaryAgentMiddleware._extract_last_human_intent(messages) is None
 
 
 def test_extract_original_intent_skips_empty_content():
@@ -355,7 +355,7 @@ def test_extract_original_intent_skips_empty_content():
         HumanMessage("添加祝融号"),
         HumanMessage(""),
     ]
-    assert PrimaryAgentMiddleware._extract_original_intent(messages) == "添加祝融号"
+    assert PrimaryAgentMiddleware._extract_last_human_intent(messages) == "添加祝融号"
 
 
 # ── _extract_last_task_subagent 静态方法 ──────────────────────

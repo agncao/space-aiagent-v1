@@ -17,24 +17,12 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
-from space_aiagent.infrastructure.utils import string_util
+from space_aiagent.infrastructure.utils import string_util, message_util
 
 logger = logging.getLogger(__name__)
-
-def _msg_preview(msg: BaseMessage, max_len: int = 120) -> dict:
-    """提取消息预览信息"""
-    content = str(getattr(msg, "content", ""))
-    preview: dict[str, Any] = {
-        "type": getattr(msg, "type", "?"),
-        "content": content[:max_len] + ("..." if len(content) > max_len else ""),
-    }
-    tool_calls = getattr(msg, "tool_calls", None)
-    if tool_calls:
-        preview["tool_calls"] = [tc.get("name", "?") for tc in tool_calls]
-    return preview
 
 
 class LoggingMiddleware(AgentMiddleware):
@@ -67,7 +55,7 @@ class LoggingMiddleware(AgentMiddleware):
         logger.debug(
             "[步骤 %d] LLM 调用, thread=%s, 上下文 %d 条消息。最近消息: %s",
             self.step_count, self.thread_id, len(messages),
-            [_msg_preview(m) for m in last_msgs],
+            [message_util.msg_preview(m) for m in last_msgs],
         )
 
         response = await handler(request)

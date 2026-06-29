@@ -15,5 +15,18 @@ def build_model() -> ChatOpenAI:
         openai_api_base=llm.base_url,
         temperature=llm.temperature,
         streaming=llm.streaming,
-        extra_body={"enable_thinking": settings.agent.enable_thinking},
+        extra_body={"enable_thinking": llm.enable_thinking},
+    )
+
+def build_flash_model() -> ChatOpenAI:
+    """构建 LLM 实例（OpenAI 兼容接口，支持 DeepSeek / Qwen）"""
+    settings = get_settings()
+    llm_flash = settings.llm_flash
+    return ChatOpenAI(
+        model=llm_flash.model,
+        openai_api_key=llm_flash.api_key,
+        openai_api_base=llm_flash.base_url,
+        temperature=llm_flash.temperature,
+        streaming=llm_flash.streaming,
+        extra_body={"enable_thinking": llm_flash.enable_thinking},
     )

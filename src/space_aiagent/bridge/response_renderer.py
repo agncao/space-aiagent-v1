@@ -18,7 +18,7 @@ from pathlib import Path
 import yaml
 
 from space_aiagent.infrastructure.config import CONFIG_DIR
-from space_aiagent.models.response_schema import AgentResponse
+from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
 
 logger = logging.getLogger(__name__)
 

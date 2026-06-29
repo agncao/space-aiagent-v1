@@ -88,3 +88,10 @@ def args_to_camel(func, local_vars: dict, skip_none: bool = True) -> dict:
             continue
         args[snake_to_camel(param_name)] = value
     return args
+
+def flat_tuple_list(tuples_list: list[tuple[str,any]],element_split: str = ": ",join_str: str = ", ") -> str:
+    """
+    将元组列表展开为字符串:"k1:v1, k2:v2"
+    
+    """
+    return join_str.join([f"{e1}{element_split}{e2}" for e1,e2 in tuples_list])

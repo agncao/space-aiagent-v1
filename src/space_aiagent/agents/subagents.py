@@ -6,10 +6,9 @@
 """
 
 from pathlib import Path
+import logging
 
-import yaml
-
-from space_aiagent.infrastructure.config import CONFIG_DIR
+from space_aiagent.agents import subagents_util
 from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.middleware import (
     ResponseStabilizationMiddleware,
@@ -18,9 +17,10 @@ from space_aiagent.middleware import (
 )
 from space_aiagent.tools.registry import get_tools
 
+logger = logging.getLogger(__name__)
+
 # 路径常量
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
-_SUBAGENTS_CONFIG = CONFIG_DIR / "subagents.yaml"
 
 
 def load_subagents() -> list[dict]:
@@ -30,8 +30,7 @@ def load_subagents() -> list[dict]:
     Returns:
         subagent 配置字典列表，可直接传给 create_deep_agent 的 subagents 参数
     """
-    config_text = _SUBAGENTS_CONFIG.read_text(encoding="utf-8")
-    config = yaml.safe_load(config_text)
+    config = subagents_util.load_subagents_yaml_config()
 
     model = build_model()
     subagents: list[dict] = []

@@ -31,3 +31,8 @@ agent:
   streaming: true
   enable_thinking: false
   primary_task_threshold: 20
+
+flash_model:
+  temperature: 0.1
+  streaming: true
+  enable_thinking: false

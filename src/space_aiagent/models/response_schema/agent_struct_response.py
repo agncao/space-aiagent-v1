@@ -8,10 +8,10 @@ import json
 import logging
 from enum import StrEnum, auto
 from typing import Literal
-
 from pydantic import BaseModel, Field, field_validator
 
 from space_aiagent.tools.registry import current_suggestion_candidates_var
+
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,6 @@ class ResponseCode(StrEnum):
 
     # 能力外（用户请求超出当前可用工具范围）
     OUT_OF_SCOPE = auto()
-
 
 class AgentResponse(BaseModel):
     """Agent 结构化响应

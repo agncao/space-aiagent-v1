@@ -36,7 +36,7 @@ from langgraph.types import Command
 
 from space_aiagent.bridge import bridge_var
 from space_aiagent.bridge.response_shortcut import _SHORTCUT_RESPONSES
-from space_aiagent.models.response_schema import AgentResponse
+from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
 from space_aiagent.tools.registry import (
     current_suggestion_candidates_var,
     get_suggestion_candidates,

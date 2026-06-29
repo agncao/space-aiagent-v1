@@ -1,0 +1,27 @@
+import logging
+from typing import Any
+
+from langchain.agents.middleware.types import ModelResponse
+from langchain_core.messages import AIMessage
+
+logger = logging.getLogger(__name__)
+
+def find_agent_response_tool_call(response: ModelResponse) -> dict[str, Any] | None:
+    """在 ModelResponse 中查找名为 AgentResponse 的 tool_call，找不到返回 None"""
+    for msg in response.result:
+        if not isinstance(msg, AIMessage) or not msg.tool_calls:
+            continue
+        for tc in msg.tool_calls:
+            if tc.get("name") != "AgentResponse":
+                continue
+            return tc
+    return None
+
+def getAgentResponseCodeFromModelResponse(response: ModelResponse) -> str | None:
+    """
+    从 ModelResponse 中提取 AgentResponse tool_call 的 code 字段
+    """
+    agent_tc = find_agent_response_tool_call(response)
+    if not agent_tc:
+        return None
+    return agent_tc.get("args", {}).get("code")
