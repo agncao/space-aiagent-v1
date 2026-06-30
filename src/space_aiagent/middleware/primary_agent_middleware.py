@@ -10,8 +10,6 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage
 
-from space_aiagent.bridge.response_renderer import ResponseRenderer
-from space_aiagent.bridge.response_shortcut import _SHORTCUT_RESPONSES
 from space_aiagent.infrastructure.llm import build_flash_model
 from space_aiagent.models.response_schema import response_util,response_constants
 from langgraph.prebuilt.tool_node import ToolCallRequest
@@ -58,8 +56,8 @@ class PrimaryAgentMiddleware(AgentMiddleware):
 
     @staticmethod
     def _build_shortcut_response() -> ModelResponse:
-        shortcut = _SHORTCUT_RESPONSES["task_loop_guard"]
-        display = ResponseRenderer().render(shortcut)
+        shortcut = response_constants.SHORTCUT_RESPONSES["task_loop_guard"]
+        display = response_util.render(shortcut)
         return message_util.build_primary_agent_response(display, shortcut, "call_primary_agent_guard")
 
     # ── 中间件钩子 ────────────────────────────────────────────
@@ -94,7 +92,7 @@ class PrimaryAgentMiddleware(AgentMiddleware):
                 return self._build_shortcut_response()
 
         # ── 职责 2: 意图捕获 ──
-        code = response_util.getAgentResponseCodeFromModelResponse(response)
+        code = response_util.get_agent_response_code_from_model_response(response)
         if code and code in response_constants.INTENTION_TO_CATCH_CODES:
             existing_intent, existing_subagent, _ = message_util.extract_last_existing_intent(request.messages)
             intent, _ = message_util.extract_last_human_intent(
@@ -134,7 +132,7 @@ class PrimaryAgentMiddleware(AgentMiddleware):
                         msg.additional_kwargs.pop("pending_subagent", None)
                 # 手动的恢复一下用户意图
                 subagent_type = await resolve_subagent_type(pending, captured_subagent, self._model)
-                return message_util.build_task_response(pending, subagent_type, "call_pending_intent_auto")
+                response = message_util.build_task_response(pending, subagent_type, "call_pending_intent_auto")
 
         for msg in response.result:
             if hasattr(msg, "tool_calls") and msg.tool_calls:

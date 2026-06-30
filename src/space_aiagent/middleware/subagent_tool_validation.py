@@ -36,8 +36,8 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from space_aiagent.bridge import bridge_var
-from space_aiagent.bridge.response_shortcut import _SHORTCUT_RESPONSES
 from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
+from space_aiagent.models.response_schema import response_constants
 from space_aiagent.tools.registry import (
     current_suggestion_candidates_var,
     get_suggestion_candidates,
@@ -85,7 +85,6 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
             if self._tool_groups
             else frozenset()
         )
-        self._thread_id = get_config().get("configurable", {}).get("thread_id", "")
 
     async def awrap_model_call(
         self,
@@ -98,14 +97,15 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
         过滤掉能力范围外的越界建议。必须在 LLM 产出 AgentResponse 之前 set，
         awrap_tool_call 太晚（在 LLM 之后）。
         """
+        thread_id = get_config().get("configurable", {}).get("thread_id", "")
 
         if self._suggestion_candidates:
             current_suggestion_candidates_var.set(self._suggestion_candidates)
 
         logger.info(
             "[model call before] agent=%s, thread_id=%s, 增加 suggestion 候选集: %s",
-            self._thread_id,
             self._agent_name,
+            thread_id,
             self._suggestion_candidates,
         )
         return await handler(request)
@@ -117,11 +117,12 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command[Any] | Any:
         tool_name = request.tool_call.get("name", "")
         tool_call_id = request.tool_call.get("id", "")
+        thread_id = get_config().get("configurable", {}).get("thread_id", "")
 
         logger.info(
             "[tool call before] agent=%s, thread_id=%s, 工具=%s, 参数=%s",
             self._agent_name,
-            self._thread_id,
+            thread_id,
             tool_name,
             request.tool_call.get("args", {}),
         )
@@ -148,7 +149,7 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
         )
         if tool_name not in self._SCENE_EXEMPT_TOOLS and not state_scene:
             logger.warning("%s 校验失败: 无场景上下文", tool_name)
-            shortcut = _SHORTCUT_RESPONSES["no_scene"]
+            shortcut = response_constants.SHORTCUT_RESPONSES["no_scene"]
             return Command(
                 update={
                     "messages": [

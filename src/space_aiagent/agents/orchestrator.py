@@ -20,7 +20,6 @@ from space_aiagent.infrastructure.config import PROJECT_ROOT, get_settings
 from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.middleware import (
     PrimaryAgentMiddleware,
-    ResponseStabilizationMiddleware,
     agents_dynamic_prompt,
 )
 from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
@@ -82,7 +81,6 @@ def create_orchestrator(
             PrimaryAgentMiddleware(thread_id=thread_id,
                 task_loop_threshold=settings.agent.primary_task_threshold,
             ),
-            ResponseStabilizationMiddleware(agent_name="orchestrator"),
             agents_dynamic_prompt,
         ],
     )

@@ -4,6 +4,8 @@ from typing import Any
 from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage
 
+from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
+
 logger = logging.getLogger(__name__)
 
 def find_agent_response_tool_call(response: ModelResponse) -> dict[str, Any] | None:
@@ -17,7 +19,7 @@ def find_agent_response_tool_call(response: ModelResponse) -> dict[str, Any] | N
             return tc
     return None
 
-def getAgentResponseCodeFromModelResponse(response: ModelResponse) -> str | None:
+def get_agent_response_code_from_model_response(response: ModelResponse) -> str | None:
     """
     从 ModelResponse 中提取 AgentResponse tool_call 的 code 字段
     """
@@ -25,3 +27,17 @@ def getAgentResponseCodeFromModelResponse(response: ModelResponse) -> str | None
     if not agent_tc:
         return None
     return agent_tc.get("args", {}).get("code")
+
+
+def render(response: AgentResponse) -> str:
+    """将结构化响应渲染为自然语言
+    """
+
+    def _fallback_text() -> str:
+        parts = [response.summary]
+        if response.suggestions:
+            parts.append(" **接下来您可以：**\n")
+            parts.append("\n".join(f"- {s}" for s in response.suggestions))
+        return "\n\n".join(parts)
+
+    return _fallback_text()

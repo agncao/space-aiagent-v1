@@ -29,9 +29,7 @@
 
    > orchestrator 上的 `PrimaryAgentMiddleware` 是另一种短路机制：监测连续 `task` 调用 ≥ 20 次时，在 `awrap_model_call` 后置阶段直接**改写 `ModelResponse`**（构造一个携带 AgentResponse tool_call 的 AIMessage），输出 `task_loop_guard` 模板。与 A 方案 `ToolValidationMiddleware` 用 `Command(goto=END)` 终止子 Agent 图不同——`PrimaryAgentMiddleware` 不终止图，而是把 LLM 输出替换为短路响应（详见 CLAUDE.md「任务循环防护」）。
 4. 前端收到指令后调用 Cesium API 执行创建卫星
-5. 前端返回结果给后端，渲染分两条路径（同一 `ResponseRenderer`，输出一致）：
-   - **中间件路径**：`ResponseStabilizationMiddleware.awrap_model_call` 后置处理时调 `ResponseRenderer.render()` 把渲染文本写回 `AIMessage.content`，由 checkpointer 持久化供下一轮 LLM cross-turn 上下文使用
-   - **websocket 出口路径**：`on_chain_end` 事件读 `output.structured_response` 字段，独立调 `ResponseRenderer.render()` 渲染后发给前端。**不走 messages 列表**，避免 `Overwrite` 包装导致的 `'Overwrite' object is not reversible` bug
+5. 前端返回结果给后端，`on_chain_end` 事件读 `output.structured_response` 字段调 `response_util.render()` 渲染为自然语言（直接返回 `AgentResponse.summary` + 可选 suggestions 块），通过 `ai_message` 发送给前端
 
 ## 技术选型
 
@@ -93,9 +91,9 @@
 
 | Agent | 职责                         | 加载的工具组 |
 |-------|----------------------------|-------------|
-| Orchestrator | 意图识别、任务规划、子 Agent 调度、结构化输出 | ToolStrategy(AgentResponse) + memory（AGENTS.md） + PrimaryAgentMiddleware（含内联 LLM/工具调用日志，已替代独立 LoggingMiddleware） + ResponseStabilizationMiddleware + agents_dynamic_prompt |
-| Scene Agent | 场景创建/重命名/删除/查询             | scene_management (6 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware + agents_dynamic_prompt |
-| Entity Agent | 实体创建/SGP4轨道/样式更新           | entity_management + orbit_management (4 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware + agents_dynamic_prompt |
+| Orchestrator | 意图识别、任务规划、子 Agent 调度、结构化输出 | ToolStrategy(AgentResponse) + memory（AGENTS.md） + PrimaryAgentMiddleware（含内联 LLM/工具调用日志，已替代独立 LoggingMiddleware） + ResponseStabilizationMiddleware（已退役占位） + agents_dynamic_prompt |
+| Scene Agent | 场景创建/重命名/删除/查询             | scene_management (6 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware（已退役占位） + agents_dynamic_prompt |
+| Entity Agent | 实体创建/SGP4轨道/样式更新           | entity_management + orbit_management (4 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware（已退役占位） + agents_dynamic_prompt |
 | Analysis Agent | 数据分析（未来扩展）                 | （未来扩展） |
 
 > 子 Agent 通过 `config/subagents.yaml` 声明式配置，新增 Agent 只需加 YAML 条目 + `prompts/` 加提示词文件 + `tools/registry.py` 注册工具组。
@@ -186,11 +184,11 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
   │  ←──── ai_message       │  流式状态："正在执行 queryEntities..."
   │  ←──── tool_call        │  Agent 调用工具
   │  tool_result ─────────→  │  前端执行 Cesium 操作
-  │  ←──── ai_message       │  Agent 结构化回复（ResponseRenderer 渲染）
+  │  ←──── ai_message       │  Agent 结构化回复（response_util.render 渲染）
   │  ←──── end              │  轮次结束
 ```
 
-> 流式执行：后端使用 `astream_events` 驱动 Agent，在工具调用前发送 `ai_message` 状态提示，前端可实时感知进度。最终回复由 `ToolStrategy(AgentResponse)` 结构化输出 → **双渲染路径**：(1) `ResponseStabilizationMiddleware.awrap_model_call` 后置渲染写 `AIMessage.content`（供下一轮 LLM 上下文，checkpointer 持久化）；(2) websocket `on_chain_end` 读 `output.structured_response` 独立渲染发给前端（避开 messages 列表的 `Overwrite` 包装问题）。详见 `readme/python教程.md` 9.5 节。
+> 流式执行：后端使用 `astream_events` 驱动 Agent，在工具调用前发送 `ai_message` 状态提示，前端可实时感知进度。最终回复由 `ToolStrategy(AgentResponse)` 结构化输出 → websocket `on_chain_end` 读 `output.structured_response`，调 `response_util.render()` 直接渲染 `summary` + 可选 suggestions 块发给前端。详见 `readme/python教程.md` 9.5 节。
 
 ### 工具清单
 
@@ -228,7 +226,7 @@ src/space_aiagent/
 │   ├── logging.py          # LoggingMiddleware（**已退役**，类保留；可观测性职责转交 PrimaryAgentMiddleware 内联日志）
 │   ├── primary_agent_middleware.py # PrimaryAgentMiddleware（task 死循环硬兜底 + 意图捕获 + 自动续接 + 内联 LLM/工具调用日志）
 │   ├── dynamic_prompt.py   # agents_dynamic_prompt（每次 LLM 调用前把 current_scene_name 注入 system message）
-│   ├── response_stabilization.py # ResponseStabilizationMiddleware（AgentResponse 模板渲染稳定化，写 AIMessage.content）
+│   ├── response_stabilization.py # ResponseStabilizationMiddleware（**已退役占位**，模板渲染废弃后无职责，类保留挂中间件链）
 │   └── tool_validation.py  # ToolValidationMiddleware（bridge + 场景上下文 fail-fast + suggestion 候选集注入）
 ├── prompts/                # 提示词模板（与代码分离）
 │   ├── orchestrator.md     # 主控 Agent 提示词（含 {tool_summaries} 占位符）
@@ -245,12 +243,10 @@ src/space_aiagent/
 │   ├── messages.py         # WebSocket 消息类型
 │   └── response_schema/    # AgentResponse 模型包
 │       ├── agent_struct_response.py # AgentResponse + ResponseCode 枚举（ToolStrategy 输出格式 + suggestions 越界过滤）
-│       ├── response_constants.py    # INTENTION_TO_CATCH_CODES / INTENTION_RESUME_TRIGGER_CODES
-│       └── response_util.py         # getAgentResponseCodeFromModelResponse 等 ModelResponse 解析工具
+│       ├── response_constants.py    # INTENTION_TO_CATCH_CODES / INTENTION_RESUME_TRIGGER_CODES + SHORTCUT_RESPONSES（A 方案预构建 AgentResponse 注册表）
+│       └── response_util.py         # find_agent_response_tool_call / get_agent_response_code_from_model_response / render（summary + suggestions 出口渲染）
 ├── bridge/                 # 远程工具桥接层
 │   ├── ws_bridge.py        # WSBridge（Future 桥接 + 消息发送）
-│   ├── response_renderer.py # 响应渲染器（纯 YAML 模板渲染；稳定化职责在 ResponseStabilizationMiddleware）
-│   ├── response_shortcut.py # A 方案：预构建 AgentResponse 注册表（被中间件转成 ToolMessage 配合 Command 用）
 │   ├── session.py          # SessionManager（thread_id → WebSocket 映射）
 │   └── __init__.py         # bridge_var (ContextVar) 导出
 └── infrastructure/         # 基础设施
@@ -258,6 +254,7 @@ src/space_aiagent/
     ├── llm.py              # build_model() + build_flash_model()（Flash 专供路由分类等轻量调用）
     ├── logging.py          # structlog 结构化日志
     ├── database.py         # SQLite + AsyncSqliteSaver checkpointer
+    ├── response_template_yaml.py # 加载 config/response_templates.yaml → DEFAULT_TEMPLATES（仅 SHORTCUT_RESPONSES 用作 summary 默认值）
     └── utils/              # 通用工具
         ├── string_util.py  # snake/camel 转换、args_to_camel、truncate、flat_tuple_list
         ├── message_util.py # extract_last_task / extract_last_human_intent / extract_last_existing_intent / build_task_response / msg_preview

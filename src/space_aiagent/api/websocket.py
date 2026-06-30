@@ -26,8 +26,7 @@ from langchain_core.messages import HumanMessage
 
 from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.agents.subagents import load_subagents
-from space_aiagent.bridge import SessionManager, bridge_var, tools_results_var
-from space_aiagent.bridge.response_renderer import ResponseRenderer
+from space_aiagent.bridge import SessionManager, bridge_var
 from space_aiagent.infrastructure.database import get_db
 from space_aiagent.middleware.primary_agent_middleware import orchestrator_task_streak_var
 from space_aiagent.models.enums import WSMessageType
@@ -36,6 +35,7 @@ from space_aiagent.models.messages import (
     ToolResultMessage,
     UserInputMessage,
 )
+from space_aiagent.models.response_schema import response_util
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         """后台执行 agent（流式），不阻塞消息接收循环"""
         bridge_token = bridge_var.set(bridge)
         logger.info("user_msg: %s, current_scene_name: %s", user_msg, user_msg.current_scene_name)
-        tools_results_token = tools_results_var.set([])
         task_streak_token = orchestrator_task_streak_var.set(0)
         try:
             logger.debug("Agent 准备创建: thread_id=%s", user_msg.thread_id)
@@ -171,8 +170,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         agent_response = output.get("structured_response")
                         if agent_response is None:
                             continue
-                        renderer = ResponseRenderer()
-                        await bridge.send_ai_message(renderer.render(agent_response))
+                        await bridge.send_ai_message(response_util.render(agent_response))
                         await bridge.send_end()
                         return
                 except Exception as ex:
@@ -188,7 +186,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await bridge.send_error(str(e))
         finally:
             bridge_var.reset(bridge_token)
-            tools_results_var.reset(tools_results_token)
             orchestrator_task_streak_var.reset(task_streak_token)
 
     try:

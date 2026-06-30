@@ -11,7 +11,6 @@ import logging
 from space_aiagent.agents import subagents_util
 from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.middleware import (
-    ResponseStabilizationMiddleware,
     SubagentToolValidationMiddleware,
     agents_dynamic_prompt,
 )
@@ -51,7 +50,6 @@ def load_subagents() -> list[dict]:
                         tool_groups=agent_cfg["tools"],
                         agent_name=agent_cfg["name"],
                     ),
-                    ResponseStabilizationMiddleware(agent_name=agent_cfg["name"]),
                     agents_dynamic_prompt,
                 ],
             }

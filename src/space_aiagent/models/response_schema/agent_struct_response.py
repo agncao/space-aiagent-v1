@@ -8,10 +8,10 @@ import json
 import logging
 from enum import StrEnum, auto
 from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 from space_aiagent.tools.registry import current_suggestion_candidates_var
-
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +52,8 @@ class ResponseCode(StrEnum):
     OUT_OF_SCOPE = auto()
 
 class AgentResponse(BaseModel):
-    """Agent 结构化响应
-
-    所有子 Agent 最终回复使用此结构，由 ResponseRenderer 渲染为自然语言。
+    """
+    Agent 结构化响应, 所有子 Agent 最终回复使用此结构
     """
 
     status: Literal["success", "error", "info", "confirm"] = Field(
