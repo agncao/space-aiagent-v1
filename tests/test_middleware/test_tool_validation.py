@@ -17,7 +17,7 @@ from langgraph.graph import END
 from langgraph.types import Command
 
 from space_aiagent.bridge import bridge_var
-from space_aiagent.middleware.tool_validation import ToolValidationMiddleware
+from space_aiagent.middleware.subagent_tool_validation import SubagentToolValidationMiddleware
 
 
 def _make_request(
@@ -66,7 +66,7 @@ async def test_no_scene_returns_terminal_command():
     bridge_var.set(AsyncMock())
 
     handler = AsyncMock(return_value={"success": True})
-    mw = ToolValidationMiddleware()
+    mw = SubagentToolValidationMiddleware()
 
     result = await mw.awrap_tool_call(_make_request("add_point_entity"), handler)
 
@@ -79,7 +79,7 @@ async def test_no_scene_command_for_unknown_tool():
     bridge_var.set(AsyncMock())
 
     handler = AsyncMock()
-    mw = ToolValidationMiddleware()
+    mw = SubagentToolValidationMiddleware()
 
     result = await mw.awrap_tool_call(_make_request("some_future_tool"), handler)
 
@@ -92,7 +92,7 @@ async def test_no_scene_command_preserves_tool_call_id():
     bridge_var.set(AsyncMock())
 
     handler = AsyncMock()
-    mw = ToolValidationMiddleware()
+    mw = SubagentToolValidationMiddleware()
 
     result = await mw.awrap_tool_call(
         _make_request("delete_scene", tool_call_id="call_abc_123"),
@@ -107,7 +107,7 @@ async def test_create_scenario_exempt_from_scene_check():
     bridge_var.set(AsyncMock())
 
     handler = AsyncMock(return_value={"success": True})
-    mw = ToolValidationMiddleware()
+    mw = SubagentToolValidationMiddleware()
 
     result = await mw.awrap_tool_call(_make_request("create_scenario"), handler)
 
@@ -120,7 +120,7 @@ async def test_no_bridge_failfast():
     bridge_var.set(None)
 
     handler = AsyncMock()
-    mw = ToolValidationMiddleware()
+    mw = SubagentToolValidationMiddleware()
 
     result = await mw.awrap_tool_call(
         _make_request("create_scenario", scene_name="场景A"),
@@ -138,7 +138,7 @@ async def test_no_bridge_returns_tool_message_with_call_id():
     bridge_var.set(None)
 
     handler = AsyncMock()
-    mw = ToolValidationMiddleware()
+    mw = SubagentToolValidationMiddleware()
 
     result = await mw.awrap_tool_call(
         _make_request("delete_scene", tool_call_id="call_abc_123", scene_name="场景A"),
@@ -154,7 +154,7 @@ async def test_all_checks_pass_call_handler():
     bridge_var.set(AsyncMock())
 
     handler = AsyncMock(return_value={"success": True, "data": "ok"})
-    mw = ToolValidationMiddleware()
+    mw = SubagentToolValidationMiddleware()
 
     result = await mw.awrap_tool_call(
         _make_request("add_point_entity", scene_name="场景A"),

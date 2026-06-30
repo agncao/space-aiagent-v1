@@ -30,6 +30,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 from langchain_core.messages import ToolMessage
+from langgraph.config import get_config
 from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
@@ -46,7 +47,7 @@ from space_aiagent.tools.scene_management import read_tools, write_tools
 logger = logging.getLogger(__name__)
 
 
-class ToolValidationMiddleware(AgentMiddleware):
+class SubagentToolValidationMiddleware(AgentMiddleware):
     """工具调用前置条件统一校验 + suggestion 候选集注入"""
 
     state_schema = AgentState
@@ -62,22 +63,29 @@ class ToolValidationMiddleware(AgentMiddleware):
         read_tools.query_scenario.name,
     }
 
-    def __init__(self, tool_groups: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        tool_groups: list[str] | None = None,
+        agent_name: str = "unknown",
+    ) -> None:
         """初始化middleware
 
         Args:
             tool_groups: 当前 agent 绑定的工具组名列表（如 ["scene_management"]）。
                 用于预生成 suggestion 候选集。None 或空列表时跳过候选集注入
                 （如 orchestrator 不直接生成 AgentResponse，不需要）。
+            agent_name: 当前 middleware 所属的 agent 名称，用于日志追踪。
         """
         super().__init__()
         self._tool_groups = tool_groups or []
+        self._agent_name = agent_name
         # 启动期一次性生成候选集（避免每次 model call 都重新提取 description）
         self._suggestion_candidates = (
             frozenset(get_suggestion_candidates(self._tool_groups))
             if self._tool_groups
             else frozenset()
         )
+        self._thread_id = get_config().get("configurable", {}).get("thread_id", "")
 
     async def awrap_model_call(
         self,
@@ -90,8 +98,16 @@ class ToolValidationMiddleware(AgentMiddleware):
         过滤掉能力范围外的越界建议。必须在 LLM 产出 AgentResponse 之前 set，
         awrap_tool_call 太晚（在 LLM 之后）。
         """
+
         if self._suggestion_candidates:
             current_suggestion_candidates_var.set(self._suggestion_candidates)
+
+        logger.info(
+            "[model call before] agent=%s, thread_id=%s, 增加 suggestion 候选集: %s",
+            self._thread_id,
+            self._agent_name,
+            self._suggestion_candidates,
+        )
         return await handler(request)
 
     async def awrap_tool_call(
@@ -101,6 +117,14 @@ class ToolValidationMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command[Any] | Any:
         tool_name = request.tool_call.get("name", "")
         tool_call_id = request.tool_call.get("id", "")
+
+        logger.info(
+            "[tool call before] agent=%s, thread_id=%s, 工具=%s, 参数=%s",
+            self._agent_name,
+            self._thread_id,
+            tool_name,
+            request.tool_call.get("args", {}),
+        )
 
         # 校验 1: bridge 注入（所有远程工具都需要）
         if bridge_var.get() is None:

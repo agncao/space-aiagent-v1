@@ -12,7 +12,7 @@ from space_aiagent.agents import subagents_util
 from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.middleware import (
     ResponseStabilizationMiddleware,
-    ToolValidationMiddleware,
+    SubagentToolValidationMiddleware,
     agents_dynamic_prompt,
 )
 from space_aiagent.tools.registry import get_tools
@@ -47,7 +47,10 @@ def load_subagents() -> list[dict]:
                 "tools": tools,
                 "system_prompt": prompt,
                 "middleware": [
-                    ToolValidationMiddleware(tool_groups=agent_cfg["tools"]),
+                    SubagentToolValidationMiddleware(
+                        tool_groups=agent_cfg["tools"],
+                        agent_name=agent_cfg["name"],
+                    ),
                     ResponseStabilizationMiddleware(agent_name=agent_cfg["name"]),
                     agents_dynamic_prompt,
                 ],

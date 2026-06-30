@@ -42,7 +42,7 @@
 | Agent Harness | [deepagents](https://docs.langchain.com/oss/python/deepagents/overview) | LangChain 团队开发的 Agent Harness，内置任务规划、子 Agent 生成、长期记忆 |
 | Agent 运行时 | LangGraph | DeepAgent 底层运行时，支持持久化执行、流式输出（astream_events） |
 | 结构化输出 | ToolStrategy | 利用模型 tool calling API 强制输出 AgentResponse 结构，保证回复一致性 |
-| 可观测性 | LoggingMiddleware | Agent 中间件，记录 LLM 调用决策和工具执行过程 |
+| 可观测性 | PrimaryAgentMiddleware 内联日志 | orchestrator 上 `awrap_model_call` / `awrap_tool_call` 打印每次 LLM 调用前后与工具调用的关键信息（替代独立 LoggingMiddleware，类保留供未来复用） |
 | LLM 接口 | langchain-openai | OpenAI 兼容接口，统一支持 DeepSeek 和阿里 DashScope（Qwen） |
 | 持久化 | SQLite + aiosqlite | 开发阶段使用，后续可迁移 PostgreSQL |
 | 配置管理 | YAML + .env | YAML 放业务配置，.env 放敏感信息（不提交 Git），knowledge 外部化到 config/ 可动态修改 |
@@ -93,7 +93,7 @@
 
 | Agent | 职责                         | 加载的工具组 |
 |-------|----------------------------|-------------|
-| Orchestrator | 意图识别、任务规划、子 Agent 调度、结构化输出 | ToolStrategy(AgentResponse) + memory（AGENTS.md） + LoggingMiddleware + PrimaryAgentMiddleware + ResponseStabilizationMiddleware + agents_dynamic_prompt |
+| Orchestrator | 意图识别、任务规划、子 Agent 调度、结构化输出 | ToolStrategy(AgentResponse) + memory（AGENTS.md） + PrimaryAgentMiddleware（含内联 LLM/工具调用日志，已替代独立 LoggingMiddleware） + ResponseStabilizationMiddleware + agents_dynamic_prompt |
 | Scene Agent | 场景创建/重命名/删除/查询             | scene_management (6 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware + agents_dynamic_prompt |
 | Entity Agent | 实体创建/SGP4轨道/样式更新           | entity_management + orbit_management (4 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware + agents_dynamic_prompt |
 | Analysis Agent | 数据分析（未来扩展）                 | （未来扩展） |
@@ -221,10 +221,12 @@ src/space_aiagent/
 │   └── websocket.py        # WebSocket 端点（astream_events 流式事件驱动）
 ├── agents/                 # Agent 层
 │   ├── orchestrator.py     # 主控 Agent（create_deep_agent + subagents + memory + ToolStrategy）
-│   └── subagents.py        # 子 Agent 加载器（从 YAML 配置构建）
+│   ├── state.py            # SpaceAgentState（state_schema，含 current_scene_name，跨 task 边界自动同步）
+│   ├── subagents.py        # 子 Agent 加载器（从 YAML 配置构建）
+│   └── subagents_util.py   # load_subagents_yaml_config + resolve_subagent_type（自动续接路由分类）
 ├── middleware/              # Agent 中间件
-│   ├── logging.py          # LoggingMiddleware（LLM 调用/工具执行可观测性）
-│   ├── primary_agent_middleware.py # PrimaryAgentMiddleware（orchestrator task 死循环硬兜底，阈值 20，awrap_model_call 改写 ModelResponse 输出 TASK_LOOP_GUARD）
+│   ├── logging.py          # LoggingMiddleware（**已退役**，类保留；可观测性职责转交 PrimaryAgentMiddleware 内联日志）
+│   ├── primary_agent_middleware.py # PrimaryAgentMiddleware（task 死循环硬兜底 + 意图捕获 + 自动续接 + 内联 LLM/工具调用日志）
 │   ├── dynamic_prompt.py   # agents_dynamic_prompt（每次 LLM 调用前把 current_scene_name 注入 system message）
 │   ├── response_stabilization.py # ResponseStabilizationMiddleware（AgentResponse 模板渲染稳定化，写 AIMessage.content）
 │   └── tool_validation.py  # ToolValidationMiddleware（bridge + 场景上下文 fail-fast + suggestion 候选集注入）
@@ -239,9 +241,12 @@ src/space_aiagent/
 │   └── orbit_management/   # 轨道管理工具组（2 个工具）
 ├── models/                 # 数据模型
 │   ├── enums.py            # 枚举（EntityType / WSMessageType / LLMProvider）
-│   ├── schemas.py          # Pydantic 模型（工具参数、API 请求响应）
+│   ├── schemas.py          # Pydantic 模型（工具参数、API 请求响应、SubagentClassification）
 │   ├── messages.py         # WebSocket 消息类型
-│   └── response_schema.py  # AgentResponse 结构化响应模型 + ResponseCode 枚举（ToolStrategy 输出格式）
+│   └── response_schema/    # AgentResponse 模型包
+│       ├── agent_struct_response.py # AgentResponse + ResponseCode 枚举（ToolStrategy 输出格式 + suggestions 越界过滤）
+│       ├── response_constants.py    # INTENTION_TO_CATCH_CODES / INTENTION_RESUME_TRIGGER_CODES
+│       └── response_util.py         # getAgentResponseCodeFromModelResponse 等 ModelResponse 解析工具
 ├── bridge/                 # 远程工具桥接层
 │   ├── ws_bridge.py        # WSBridge（Future 桥接 + 消息发送）
 │   ├── response_renderer.py # 响应渲染器（纯 YAML 模板渲染；稳定化职责在 ResponseStabilizationMiddleware）
@@ -249,9 +254,14 @@ src/space_aiagent/
 │   ├── session.py          # SessionManager（thread_id → WebSocket 映射）
 │   └── __init__.py         # bridge_var (ContextVar) 导出
 └── infrastructure/         # 基础设施
-    ├── config.py           # 配置管理（YAML + .env + 多环境合并）
+    ├── config.py           # 配置管理（YAML + .env + 多环境；含 LLMConfig + LLMFlashConfig）
+    ├── llm.py              # build_model() + build_flash_model()（Flash 专供路由分类等轻量调用）
     ├── logging.py          # structlog 结构化日志
-    └── database.py         # SQLite + AsyncSqliteSaver checkpointer
+    ├── database.py         # SQLite + AsyncSqliteSaver checkpointer
+    └── utils/              # 通用工具
+        ├── string_util.py  # snake/camel 转换、args_to_camel、truncate、flat_tuple_list
+        ├── message_util.py # extract_last_task / extract_last_human_intent / extract_last_existing_intent / build_task_response / msg_preview
+        └── collection_util.py # trim_list 等
 ```
 
 ## 环境配置
@@ -273,16 +283,23 @@ src/space_aiagent/
 ```bash
 # .env 示例
 
-# DeepSeek
+# 主 LLM（Orchestrator + 子 Agent 的 LLM 调用都走这里）
 LLM_API_KEY=sk-xxx
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
+
+# Flash LLM（仅 PrimaryAgentMiddleware 自动续接的路由分类用，可与主 LLM 同实例或独立更便宜的实例）
+LLM_FLASH_API_KEY=sk-xxx
+LLM_FLASH_BASE_URL=https://api.deepseek.com
+LLM_FLASH_MODEL=deepseek-chat
 
 # 或阿里 Qwen（DashScope）
 # LLM_API_KEY=sk-xxx
 # LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 # LLM_MODEL=qwen-plus
 ```
+
+主 LLM 运行参数读 `config/application.yaml` 的 `agent` 节（`temperature` / `streaming` / `enable_thinking`），Flash LLM 读 `flash_model` 节。`enable_thinking` 配置位置已从 `agent.enable_thinking` 迁移到 `agent` 节内由 `LLMConfig` 读取（旧引用 `settings.agent.enable_thinking` 已失效）。
 
 ## 快速开始
 

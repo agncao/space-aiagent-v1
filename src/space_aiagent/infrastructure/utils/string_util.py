@@ -5,12 +5,23 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool
 
 
-def truncate(obj, max_len: int = 200) -> str:
-    """截断过长字符串，用于日志输出"""
+
+def truncate(obj, max_len: int = 200, suffix: str = "...", truncate_hint: bool = True) -> str:
+    """截断过长字符串
+    Args:
+        obj: 要截断的字符串
+        max_len: 截断长度
+        suffix: 截断后缀
+        truncate_hint: 是否添加截断提示（默认添加截断提示）
+
+    Returns:
+        截断后的字符串
+    """
     s = str(obj)
     if len(s) <= max_len:
         return s
-    return s[:max_len] + f"...[截断, 总长{len(s)}]"
+    s1 = s[:max_len] + suffix
+    return f"{s1}[截断, 总长{len(s)}]" if truncate_hint else s1
 
 
 

@@ -97,8 +97,13 @@ class PrimaryAgentMiddleware(AgentMiddleware):
         code = response_util.getAgentResponseCodeFromModelResponse(response)
         if code and code in response_constants.INTENTION_TO_CATCH_CODES:
             existing_intent, existing_subagent, _ = message_util.extract_last_existing_intent(request.messages)
-            intent, _ = message_util.extract_last_human_intent(request.messages)
-            intent = intent or existing_intent
+            intent, _ = message_util.extract_last_human_intent(
+                request.messages,
+                ignore_messages=list(self._CONFIRMATION_PHRASES),
+            )
+            # 优先沿用历史 pending_intent：避免本轮「好的」「创建测试场景」等
+            # 确认/推进型输入覆盖上一轮真实意图（注意顺序：existing 在前）
+            intent = existing_intent or intent
             if intent:
                 subagent_name,_,_ = message_util.extract_last_task(request.messages)
                 subagent_name = subagent_name or existing_subagent
@@ -135,7 +140,7 @@ class PrimaryAgentMiddleware(AgentMiddleware):
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
                     logger.info(
-                        "[model call after][决定调用工具]: %s(%s)",
+                        "[model call after][决定调用工具]: %s, args: %s",
                         tc.get("name", "?"),
                         string_util.truncate(tc.get("args", {}), 200),
                     )
