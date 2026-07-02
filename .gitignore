@@ -38,7 +38,7 @@ logs/
 Thumbs.db
 
 # Claude Code
-# .claude/
-# CLAUDE.md
+.claude/
+CLAUDE.md
 
 .worktrees/
