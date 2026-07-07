@@ -99,12 +99,12 @@ src/space_aiagent/
     ├── logging.py          # 结构化日志（structlog，含 `_add_trace_info` processor 注入 trace_id/span_id）
     ├── database.py         # SQLite 持久化（AsyncSqliteSaver checkpointer）
     ├── observability/      # OTel + Langfuse v3（Phase 1A-1，对业务零依赖，enabled=false 时 NoOp）
-    │   ├── tracing.py      # setup_telemetry / shutdown_telemetry / get_tracer / optional_span
+    │   ├── tracing.py      # setup_telemetry / shutdown_telemetry / get_tracer / optional_span / set_span_io
     │   └── processors.py   # add_trace_info structlog processor
     ├── response_template_yaml.py # 加载 config/response_templates.yaml → DEFAULT_TEMPLATES（仅 SHORTCUT_RESPONSES 用作 summary 默认值，不再做 {var} 渲染）
     └── utils/              # 通用工具
         ├── string_util.py  # snake/camel 转换、args_to_camel、truncate、flat_tuple_list
-        ├── message_util.py # 消息提取/构造工具（extract_last_task / extract_last_human_intent / extract_last_existing_intent / build_task_response / build_primary_agent_response / msg_preview）
+        ├── message_util.py # 消息提取/构造工具（extract_last_task / extract_last_human_intent / extract_last_existing_intent / build_task_response / build_primary_agent_response / msg_preview / serialize_messages / serialize_model_response）
         └── collection_util.py # trim_list 等
 ```
 
@@ -313,7 +313,8 @@ Orchestrator 返回 `SCENE_CREATED`/`SCENE_RENAMED`（命中 `response_constants
   - `langfuse_endpoint` / `langfuse_public_key` / `langfuse_secret_key` 凭证从 `.env` 注入（`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`），keys 为空时 SDK 优雅降级（warning 但不崩溃）
   - `sampler_ratio` 控制采样率（0.0-1.0，生产可降到 0.1）
   - Langfuse v3 自部署：`docker compose --env-file .env -f docker/observability/docker-compose.yml up -d`（6 服务：langfuse-web/worker + clickhouse + redis + postgres + minio，端口 3000），首次启动通过 `LANGFUSE_INIT_PROJECT_*` 自动创建项目。**`--env-file .env` 必须带**：`.env` 在仓库根目录，而 compose 用 `-f` 时默认从 compose 文件所在目录 `docker/observability/` 找 `.env`，不加会让 SALT / ENCRYPTION_KEY / NEXTAUTH_SECRET 为空、Langfuse 启动失败
-  - 业务 span 埋点位置：`PrimaryAgentMiddleware.awrap_model_call/awrap_tool_call`（`orchestrator.llm` / `orchestrator.task` / `orchestrator.tool.<name>`）、`SubagentToolValidationMiddleware.awrap_model_call/awrap_tool_call`（`subagent.llm` / `tool.<name>`）、`api/websocket.py:run_agent`（`ws.session` root span）
+  - 业务 span 埋点位置：`PrimaryAgentMiddleware.awrap_model_call/awrap_tool_call`（`orchestrator.llm` / `orchestrator.task` / `orchestrator.tool.<name>`）、`SubagentToolValidationMiddleware.awrap_model_call/awrap_tool_call`（`subagent.llm` / `tool.<name>`）、`api/websocket.py:run_agent`（`ws.session` root span）。各业务 span 通过 `tracing.set_span_io()` 设 `input.value`/`output.value`（observation IO，`message_util.serialize_messages`/`serialize_model_response` 序列化 messages/ModelResponse）
+  - **trace root**：`main.py` 的 `FastAPIInstrumentor.instrument_app(app, excluded_urls="/health,/ws/space")` 排除 WebSocket 路径，让 `ws.session` 成为 trace root（否则 FastAPI WebSocket server span 当 root，无业务 IO 且 name 经常为空，导致 Langfuse Traces 列表 name/input/output 全空）；`ws.session` 的 input/output 按 root observation 规则自动成为 trace 级 IO
   - structlog 已注入 `trace_id` / `span_id` 到每条日志，便于 Loki/ELK 与 Langfuse 串联
 - 环境差异：dev(全局INFO+项目DEBUG+Spring风格控制台+不写文件)、staging(INFO+JSON+写文件)、prod(WARNING+JSON+30备份)
 - 支持按包名单独控制日志级别（如 `openai: WARNING`、`space_aiagent: DEBUG`），通过 `logging.loggers` 配置

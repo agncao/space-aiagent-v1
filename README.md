@@ -255,12 +255,12 @@ src/space_aiagent/
     ├── logging.py          # structlog 结构化日志（含 `_add_trace_info` processor 注入 trace_id/span_id）
     ├── database.py         # SQLite + AsyncSqliteSaver checkpointer
     ├── observability/      # OTel + Langfuse v3（Phase 1A-1，对业务零依赖，enabled=false 时 NoOp）
-    │   ├── tracing.py      # setup_telemetry / shutdown_telemetry / get_tracer / optional_span
+    │   ├── tracing.py      # setup_telemetry / shutdown_telemetry / get_tracer / optional_span / set_span_io（span IO 属性）
     │   └── processors.py   # add_trace_info structlog processor
     ├── response_template_yaml.py # 加载 config/response_templates.yaml → DEFAULT_TEMPLATES（仅 SHORTCUT_RESPONSES 用作 summary 默认值）
     └── utils/              # 通用工具
         ├── string_util.py  # snake/camel 转换、args_to_camel、truncate、flat_tuple_list
-        ├── message_util.py # extract_last_task / extract_last_human_intent / extract_last_existing_intent / build_task_response / msg_preview
+        ├── message_util.py # extract_last_task / extract_last_human_intent / extract_last_existing_intent / build_task_response / msg_preview / serialize_messages / serialize_model_response（后两者供 set_span_io 序列化 IO）
         └── collection_util.py # trim_list 等
 ```
 
@@ -344,6 +344,10 @@ docker compose --env-file .env -f docker/observability/docker-compose.yml down
 | `orchestrator.task` / `orchestrator.tool.<name>` | `PrimaryAgentMiddleware.awrap_tool_call` | `tool.name`, `tool.success`, `tool.latency_ms`, `subagent.name` |
 | `subagent.llm` | `SubagentToolValidationMiddleware.awrap_model_call` | `subagent.name`, `llm.latency_ms` |
 | `tool.<name>` | `SubagentToolValidationMiddleware.awrap_tool_call` | `tool.name`, `tool.success`, `tool.latency_ms` |
+
+> **业务 span IO**：所有业务 span 通过 `set_span_io()`（`tracing.py`）额外设置 `input.value` / `output.value`（OpenInference 标准，Langfuse 识别为 observation IO）——`ws.session` 设用户输入/最终回复，`orchestrator.llm` / `subagent.llm` 设 messages / ModelResponse 序列化（`message_util.serialize_messages` / `serialize_model_response`），`orchestrator.task` / 各 tool 设 tool_args / result。
+
+> **trace root 选择**：`main.py` 用 `FastAPIInstrumentor.instrument_app(app, excluded_urls="/health,/ws/space")` 显式排除 WebSocket 路径——否则 FastAPI 给 WebSocket 长连接创建的 server span 会成为 trace root（无业务 IO、name 还经常为空，导致 Langfuse Traces 列表 name/input/output 全空）。排除后业务层的 `ws.session` span 直接成为 trace root，其 input/output 按 Langfuse root observation 规则自动成为 trace 级 IO，Traces 列表直接显示用户输入与回复。
 
 > ContextVar 跨 task 边界：OTel span context 默认通过 asyncio `copy_context()` 自动跨 task 传播，与现有 `bridge_var` / `orchestrator_task_streak_var` 同机制；不需要手动处理。详见 [`readme/python教程.md`](readme/python教程.md) 第 26 章。
 

@@ -144,9 +144,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     "agent.scene_name": user_msg.current_scene_name or "",
                 },
             ) as span:
-                # observation 级 IO（点进 trace 看 ws.session 详情）+ trace 级 metadata（列表预览）
-                # trace 级用 langfuse.trace.* 强制覆盖：root 实际是 FastAPI server span（无业务 IO），
-                # 不显式设的话 Traces 列表的 name/input/output 会全空
+                # ws.session 是 trace root（main.py 用 excluded_urls 排除了 /ws/space 的 server span），
+                # 其 input/output 按 Langfuse root observation 规则自动成为 trace 级 IO，
+                # Traces 列表直接显示用户输入与最终回复
                 set_span_io(span, input=user_msg.content)
                 logger.debug("Agent 准备创建: thread_id=%s", user_msg.thread_id)
                 agent = await _get_or_create_agent(user_msg.thread_id)
