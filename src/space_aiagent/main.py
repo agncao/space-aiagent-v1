@@ -86,7 +86,7 @@ def create_app() -> FastAPI:
     if settings.observability.enabled:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-        FastAPIInstrumentor.instrument_app(app, excluded_urls="/health")
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="/health,/ws/space")
 
     return app
 
