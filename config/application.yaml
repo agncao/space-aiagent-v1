@@ -36,3 +36,13 @@ flash_model:
   temperature: 0.1
   streaming: true
   enable_thinking: false
+
+observability:
+  # 总开关：false 时全链路 NoOp，业务零开销、零依赖
+  enabled: true
+  service_name: space-aiagent
+  # Langfuse v3 后端 OTLP 端点
+  langfuse_endpoint: http://localhost:3000/api/public/otel
+  # 凭证从 .env 注入（LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY）
+  sampler_ratio: 1.0
+  # Span 批处理调优用环境变量：LANGFUSE_FLUSH_AT / LANGFUSE_FLUSH_INTERVAL

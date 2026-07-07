@@ -61,6 +61,7 @@ _SUBTASK_LABELS: dict[str, str] = {
     "entity-agent": "正在调用实体管理",
 }
 
+
 def _make_progress_message(_tool_name: str, _tool_input: dict) -> str | None:
     """根据工具名和参数生成用户可见的进度提示，无意义时返回 None"""
     pass
@@ -130,56 +131,77 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     async def run_agent(bridge, user_msg: UserInputMessage) -> None:
         """后台执行 agent（流式），不阻塞消息接收循环"""
+        from space_aiagent.infrastructure.observability import optional_span, set_span_io
+
         bridge_token = bridge_var.set(bridge)
-        logger.info("user_msg: %s, current_scene_name: %s", user_msg, user_msg.current_scene_name)
+        logger.info("user_msg: %s", user_msg)
         task_streak_token = orchestrator_task_streak_var.set(0)
         try:
-            logger.debug("Agent 准备创建: thread_id=%s", user_msg.thread_id)
-            agent = await _get_or_create_agent(user_msg.thread_id)
+            with optional_span(
+                "ws.session",
+                **{
+                    "agent.thread_id": user_msg.thread_id,
+                    "agent.scene_name": user_msg.current_scene_name or "",
+                },
+            ) as span:
+                # observation 级 IO（点进 trace 看 ws.session 详情）+ trace 级 metadata（列表预览）
+                # trace 级用 langfuse.trace.* 强制覆盖：root 实际是 FastAPI server span（无业务 IO），
+                # 不显式设的话 Traces 列表的 name/input/output 会全空
+                set_span_io(span, input=user_msg.content)
+                logger.debug("Agent 准备创建: thread_id=%s", user_msg.thread_id)
+                agent = await _get_or_create_agent(user_msg.thread_id)
 
-            async for event in agent.astream_events(
-                {
-                    "messages": [HumanMessage(content=user_msg.content)],
-                    # 注入 SpaceAgentState.current_scene_name 初值
-                    # 后续工具返回 Command 更新该字段，跨 task 边界自动同步
-                    "current_scene_name": user_msg.current_scene_name,
-                },
-                config={
-                    "configurable": {"thread_id": user_msg.thread_id},
-                    "recursion_limit": 100,
-                },
-                version="v2",
-            ):
-                kind = event["event"]
-                name = event.get("name", "")
-                data = event.get("data", {})
-                try:
-                    if kind == "on_tool_start":
-                        if name == "AgentResponse":
-                            continue
-                        # 生成有意义的进度提示
-                        tool_input = data.get("input", {})
-                        display = _make_progress_message(name, tool_input)
-                        if display:
-                            logger.info("发送进度提示(send_ai_message): %s, %s", kind, display)
-                            await bridge.send_ai_message(display)
-                    elif kind == "on_chain_end":
-                        output = data.get("output")
-                        if output is None or not isinstance(output, dict):
-                            continue
-                        agent_response = output.get("structured_response")
-                        if agent_response is None:
-                            continue
-                        await bridge.send_ai_message(response_util.render(agent_response))
-                        await bridge.send_end()
-                        return
-                except Exception as ex:
-                    logger.exception("Agent 执行出错: event: %s::%s, thread_id=%s, data: %s", kind, name,
-                                     user_msg.thread_id, data)
-                    raise ex
-            logger.warning("流结束未收到 AgentResponse on_chain_end 事件: thread_id=%s", user_msg.thread_id)
-            await bridge.send_ai_message("处理完成。")
-            await bridge.send_end()
+                async for event in agent.astream_events(
+                    {
+                        "messages": [HumanMessage(content=user_msg.content)],
+                        # 注入 SpaceAgentState.current_scene_name 初值
+                        # 后续工具返回 Command 更新该字段，跨 task 边界自动同步
+                        "current_scene_name": user_msg.current_scene_name,
+                    },
+                    config={
+                        "configurable": {"thread_id": user_msg.thread_id},
+                        "recursion_limit": 100,
+                    },
+                    version="v2",
+                ):
+                    kind = event["event"]
+                    name = event.get("name", "")
+                    data = event.get("data", {})
+                    try:
+                        if kind == "on_tool_start":
+                            if name == "AgentResponse":
+                                continue
+                            # 生成有意义的进度提示
+                            tool_input = data.get("input", {})
+                            display = _make_progress_message(name, tool_input)
+                            if display:
+                                logger.info("发送进度提示(send_ai_message): %s, %s", kind, display)
+                                await bridge.send_ai_message(display)
+                        elif kind == "on_chain_end":
+                            output = data.get("output")
+                            if output is None or not isinstance(output, dict):
+                                continue
+                            agent_response = output.get("structured_response")
+                            if agent_response is None:
+                                continue
+                            rendered = response_util.render(agent_response)
+                            set_span_io(span, output=rendered)
+                            await bridge.send_ai_message(rendered)
+                            await bridge.send_end()
+                            return
+                    except Exception as ex:
+                        logger.exception(
+                            "Agent 执行出错: event: %s::%s, thread_id=%s, data: %s",
+                            kind,
+                            name,
+                            user_msg.thread_id,
+                            data,
+                        )
+                        raise ex
+                logger.warning("流结束未收到 AgentResponse on_chain_end 事件: thread_id=%s", user_msg.thread_id)
+                set_span_io(span, output="处理完成。")
+                await bridge.send_ai_message("处理完成。")
+                await bridge.send_end()
 
         except Exception as e:
             logger.exception("Agent 执行出错: thread_id=%s", user_msg.thread_id)

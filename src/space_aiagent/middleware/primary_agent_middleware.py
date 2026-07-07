@@ -1,7 +1,8 @@
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from typing import Any, Tuple
+from typing import Any
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -9,12 +10,13 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 from langchain_core.messages import AIMessage
-
-from space_aiagent.infrastructure.llm import build_flash_model
-from space_aiagent.models.response_schema import response_util,response_constants
 from langgraph.prebuilt.tool_node import ToolCallRequest
-from space_aiagent.infrastructure.utils import string_util,message_util,collection_util
+
 from space_aiagent.agents.subagents_util import resolve_subagent_type
+from space_aiagent.infrastructure.llm import build_flash_model
+from space_aiagent.infrastructure.observability import optional_span, set_span_io
+from space_aiagent.infrastructure.utils import collection_util, message_util, string_util
+from space_aiagent.models.response_schema import response_constants, response_util
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +41,26 @@ class PrimaryAgentMiddleware(AgentMiddleware):
     """
 
     # 用户确认短句——不视为原始意图（避免覆盖上一轮的真实意图）
-    _CONFIRMATION_PHRASES = frozenset({
-        "好的", "好", "好啊", "好吧", "行", "可以", "没问题", "确认",
-        "ok", "okay", "yes", "是", "是的", "嗯", "嗯嗯", "继续",
-    })
+    _CONFIRMATION_PHRASES = frozenset(
+        {
+            "好的",
+            "好",
+            "好啊",
+            "好吧",
+            "行",
+            "可以",
+            "没问题",
+            "确认",
+            "ok",
+            "okay",
+            "yes",
+            "是",
+            "是的",
+            "嗯",
+            "嗯嗯",
+            "继续",
+        }
+    )
 
     def __init__(
         self,
@@ -52,7 +70,6 @@ class PrimaryAgentMiddleware(AgentMiddleware):
         self.thread_id = thread_id
         self._threshold = max(1, int(task_loop_threshold))
         self._model = build_flash_model()
-
 
     @staticmethod
     def _build_shortcut_response() -> ModelResponse:
@@ -70,10 +87,21 @@ class PrimaryAgentMiddleware(AgentMiddleware):
 
         logger.debug(
             "[model call before] thread=%s, 上下文 %d 条消息。最近消息: %s",
-            self.thread_id, len(request.messages),
-            [message_util.msg_preview(m) for m in collection_util.trim_list(request.messages, -3)],
+            self.thread_id,
+            len(request.messages),
+            message_util.serialize_messages(collection_util.trim_list(request.messages, -3), content_max_len=300, args_max_len=300),
         )
-        response = await handler(request)
+
+        start_ts = time.perf_counter()
+        with optional_span("orchestrator.llm", **{"agent.thread_id": self.thread_id}) as span:
+            set_span_io(span, input=message_util.serialize_messages(request.messages))
+            response = await handler(request)
+            latency_ms = int((time.perf_counter() - start_ts) * 1000)
+            span.set_attribute("llm.latency_ms", latency_ms)
+            code = response_util.parse_code_by_model_response(response)
+            if code:
+                span.set_attribute("response.code", code)
+            set_span_io(span, output=message_util.serialize_model_response(response))
 
         # ── 职责 1: TASK_LOOP_GUARD ──
         tool_calls = message_util.extract_tool_calls(response)
@@ -92,7 +120,6 @@ class PrimaryAgentMiddleware(AgentMiddleware):
                 return self._build_shortcut_response()
 
         # ── 职责 2: 意图捕获 ──
-        code = response_util.get_agent_response_code_from_model_response(response)
         if code and code in response_constants.INTENTION_TO_CATCH_CODES:
             existing_intent, existing_subagent, _ = message_util.extract_last_existing_intent(request.messages)
             intent, _ = message_util.extract_last_human_intent(
@@ -103,11 +130,13 @@ class PrimaryAgentMiddleware(AgentMiddleware):
             # 确认/推进型输入覆盖上一轮真实意图（注意顺序：existing 在前）
             intent = existing_intent or intent
             if intent:
-                subagent_name,_,_ = message_util.extract_last_task(request.messages)
+                subagent_name, _, _ = message_util.extract_last_task(request.messages)
                 subagent_name = subagent_name or existing_subagent
                 logger.info(
                     "[model call after][捕获意图]: %s, subagent: %s（触发 code=%s）",
-                    intent, subagent_name, code,
+                    intent,
+                    subagent_name,
+                    code,
                 )
                 for msg in response.result:
                     if not isinstance(msg, AIMessage) or not msg.tool_calls:
@@ -118,7 +147,7 @@ class PrimaryAgentMiddleware(AgentMiddleware):
                         if subagent_name:
                             additional["pending_subagent"] = subagent_name
                         msg.additional_kwargs = additional
-                        logger.info("[model call after][捕获意图], 保存到状态: %s",msg)
+                        logger.info("[model call after][捕获意图], 保存到状态: %s", msg)
                         break
 
         # ── 职责 3: 自动续接 ──
@@ -160,13 +189,33 @@ class PrimaryAgentMiddleware(AgentMiddleware):
             string_util.truncate(tool_args, 300),
         )
 
-        result = await handler(request)
-
-        logger.info(
-            "[tool call after] thread_id: %s, tool name: %s, 结果: %s",
-            self.thread_id,
-            tool_name,
-            string_util.truncate(result, 200),
-        )
-
-        return result
+        start_ts = time.perf_counter()
+        span_name = "orchestrator.task" if tool_name == "task" else f"orchestrator.tool.{tool_name}"
+        subagent_type = tool_args.get("subagent_type", "") if tool_name == "task" else ""
+        result = None
+        with optional_span(
+            span_name,
+            **{
+                "agent.thread_id": self.thread_id,
+                "tool.name": tool_name,
+                **({"subagent.name": subagent_type} if subagent_type else {}),
+            },
+        ) as span:
+            set_span_io(span, input=tool_args)
+            try:
+                result = await handler(request)
+                span.set_attribute("tool.success", True)
+                set_span_io(span, output=result)
+                return result
+            except Exception:
+                span.set_attribute("tool.success", False)
+                raise
+            finally:
+                latency_ms = int((time.perf_counter() - start_ts) * 1000)
+                span.set_attribute("tool.latency_ms", latency_ms)
+                logger.info(
+                    "[tool call after] thread_id: %s, tool name: %s, 结果: %s",
+                    self.thread_id,
+                    tool_name,
+                    string_util.truncate(result, 200),
+                )

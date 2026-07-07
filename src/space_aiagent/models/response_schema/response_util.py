@@ -19,7 +19,7 @@ def find_agent_response_tool_call(response: ModelResponse) -> dict[str, Any] | N
             return tc
     return None
 
-def get_agent_response_code_from_model_response(response: ModelResponse) -> str | None:
+def parse_code_by_model_response(response: ModelResponse) -> str | None:
     """
     从 ModelResponse 中提取 AgentResponse tool_call 的 code 字段
     """

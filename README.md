@@ -40,11 +40,11 @@
 | Agent Harness | [deepagents](https://docs.langchain.com/oss/python/deepagents/overview) | LangChain 团队开发的 Agent Harness，内置任务规划、子 Agent 生成、长期记忆 |
 | Agent 运行时 | LangGraph | DeepAgent 底层运行时，支持持久化执行、流式输出（astream_events） |
 | 结构化输出 | ToolStrategy | 利用模型 tool calling API 强制输出 AgentResponse 结构，保证回复一致性 |
-| 可观测性 | PrimaryAgentMiddleware 内联日志 | orchestrator 上 `awrap_model_call` / `awrap_tool_call` 打印每次 LLM 调用前后与工具调用的关键信息（替代独立 LoggingMiddleware，类保留供未来复用） |
+| 可观测性 | PrimaryAgentMiddleware 内联日志 + OpenTelemetry + Langfuse v3 | 内联日志输出业务调用流水；OTel + Langfuse v3 自部署采集 trace + token 归因（`observability.enabled=false` 时全链路 NoOp，业务零依赖） |
 | LLM 接口 | langchain-openai | OpenAI 兼容接口，统一支持 DeepSeek 和阿里 DashScope（Qwen） |
 | 持久化 | SQLite + aiosqlite | 开发阶段使用，后续可迁移 PostgreSQL |
 | 配置管理 | YAML + .env | YAML 放业务配置，.env 放敏感信息（不提交 Git），knowledge 外部化到 config/ 可动态修改 |
-| 日志 | structlog | 结构化 JSON 日志，控制台 + 文件轮转，可接入 ELK |
+| 日志 | structlog | 结构化 JSON 日志，控制台 + 文件轮转，可接入 ELK；每条日志自动注入 `trace_id` / `span_id`（来自 OTel current span，便于和 Langfuse trace 串联） |
 | 代码质量 | ruff + pre-commit | 格式化 + lint + Git hooks |
 
 ## 架构设计
@@ -250,10 +250,13 @@ src/space_aiagent/
 │   ├── session.py          # SessionManager（thread_id → WebSocket 映射）
 │   └── __init__.py         # bridge_var (ContextVar) 导出
 └── infrastructure/         # 基础设施
-    ├── config.py           # 配置管理（YAML + .env + 多环境；含 LLMConfig + LLMFlashConfig）
+    ├── config.py           # 配置管理（YAML + .env + 多环境；含 LLMConfig + LLMFlashConfig + ObservabilityConfig）
     ├── llm.py              # build_model() + build_flash_model()（Flash 专供路由分类等轻量调用）
-    ├── logging.py          # structlog 结构化日志
+    ├── logging.py          # structlog 结构化日志（含 `_add_trace_info` processor 注入 trace_id/span_id）
     ├── database.py         # SQLite + AsyncSqliteSaver checkpointer
+    ├── observability/      # OTel + Langfuse v3（Phase 1A-1，对业务零依赖，enabled=false 时 NoOp）
+    │   ├── tracing.py      # setup_telemetry / shutdown_telemetry / get_tracer / optional_span
+    │   └── processors.py   # add_trace_info structlog processor
     ├── response_template_yaml.py # 加载 config/response_templates.yaml → DEFAULT_TEMPLATES（仅 SHORTCUT_RESPONSES 用作 summary 默认值）
     └── utils/              # 通用工具
         ├── string_util.py  # snake/camel 转换、args_to_camel、truncate、flat_tuple_list
@@ -289,14 +292,60 @@ LLM_MODEL=deepseek-chat
 LLM_FLASH_API_KEY=sk-xxx
 LLM_FLASH_BASE_URL=https://api.deepseek.com
 LLM_FLASH_MODEL=deepseek-chat
-
-# 或阿里 Qwen（DashScope）
-# LLM_API_KEY=sk-xxx
-# LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-# LLM_MODEL=qwen-plus
 ```
 
 主 LLM 运行参数读 `config/application.yaml` 的 `agent` 节（`temperature` / `streaming` / `enable_thinking`），Flash LLM 读 `flash_model` 节。`enable_thinking` 配置位置已从 `agent.enable_thinking` 迁移到 `agent` 节内由 `LLMConfig` 读取（旧引用 `settings.agent.enable_thinking` 已失效）。
+
+### 可观测性配置（Phase 1A-1）
+
+`config/application.yaml` 的 `observability:` 段控制 OTel + Langfuse v3 集成：
+
+```yaml
+observability:
+  enabled: false              # 总开关：false 时全链路 NoOp，业务零开销、零依赖
+  service_name: space-aiagent
+  langfuse_endpoint: http://localhost:3000/api/public/otel
+  sampler_ratio: 1.0          # 0.0-1.0，生产可降到 0.1
+```
+
+凭证从 `.env` 注入（与 `LLM_API_KEY` 同套机制）：
+
+```bash
+# .env 示例
+LANGFUSE_PUBLIC_KEY=pk-lf-xxx
+LANGFUSE_SECRET_KEY=sk-lf-xxx
+
+# docker-compose 自部署所需（首次启动自动初始化项目）
+LANGFUSE_NEXTAUTH_SECRET=openssl rand -base64 32
+LANGFUSE_SALT=openssl rand -base64 32
+LANGFUSE_ENCRYPTION_KEY=openssl rand -hex 32  # 必须 hex 64 字符（base64 会被 Langfuse 拒绝）
+LANGFUSE_INIT_PROJECT_PUBLIC_KEY=pk-lf-space-aiagent-dev
+LANGFUSE_INIT_PROJECT_SECRET_KEY=sk-lf-space-aiagent-dev
+```
+
+**自部署 Langfuse v3**：
+
+```bash
+# --env-file 必须显式指定根目录 .env：否则 Compose 会去 docker/observability/ 下找 .env
+# （即 compose 文件所在目录），找不到会导致 SALT / ENCRYPTION_KEY / NEXTAUTH_SECRET 为空，Langfuse 启动失败
+docker compose --env-file .env -f docker/observability/docker-compose.yml up -d
+# 访问 http://localhost:3000，首次启动通过 LANGFUSE_INIT_* 自动创建项目
+
+# 停止并清理容器（named volume 保留、数据不丢；同样带 --env-file 避免 compose 解析时的空变量 warning）
+docker compose --env-file .env -f docker/observability/docker-compose.yml down
+```
+
+**Span 层级**（业务埋点位置）：
+
+| Span 名 | 位置 | 关键 attributes |
+|---------|------|----------------|
+| `ws.session` | `api/websocket.py:run_agent` | `agent.thread_id`, `agent.scene_name` |
+| `orchestrator.llm` | `PrimaryAgentMiddleware.awrap_model_call` | `llm.latency_ms`, `response.code` |
+| `orchestrator.task` / `orchestrator.tool.<name>` | `PrimaryAgentMiddleware.awrap_tool_call` | `tool.name`, `tool.success`, `tool.latency_ms`, `subagent.name` |
+| `subagent.llm` | `SubagentToolValidationMiddleware.awrap_model_call` | `subagent.name`, `llm.latency_ms` |
+| `tool.<name>` | `SubagentToolValidationMiddleware.awrap_tool_call` | `tool.name`, `tool.success`, `tool.latency_ms` |
+
+> ContextVar 跨 task 边界：OTel span context 默认通过 asyncio `copy_context()` 自动跨 task 传播，与现有 `bridge_var` / `orchestrator_task_streak_var` 同机制；不需要手动处理。详见 [`readme/python教程.md`](readme/python教程.md) 第 26 章。
 
 ## 快速开始
 

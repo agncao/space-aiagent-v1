@@ -20,7 +20,7 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AIMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
-from space_aiagent.infrastructure.utils import string_util, message_util
+from space_aiagent.infrastructure.utils import message_util, string_util, collection_util
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +49,13 @@ class LoggingMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse | AIMessage:
         self.step_count += 1
-        messages = request.messages
-        last_msgs = messages[-3:] if len(messages) > 3 else messages
 
         logger.debug(
             "[步骤 %d] LLM 调用, thread=%s, 上下文 %d 条消息。最近消息: %s",
-            self.step_count, self.thread_id, len(messages),
-            [message_util.msg_preview(m) for m in last_msgs],
+            self.step_count,
+            self.thread_id,
+            len(request.messages),
+            message_util.serialize_messages(collection_util.trim_list(request.messages,-3), content_max_len=300, args_max_len=300),
         )
 
         response = await handler(request)

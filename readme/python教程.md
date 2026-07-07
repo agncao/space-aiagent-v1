@@ -31,6 +31,7 @@
 23. [DeepAgents `context_schema` 源码解析](#23-deepagents-context_schema-源码解析)
 24. [`create_deep_agent` 参数全解析（源码级）](#24-create_deep_agent-参数全解析源码级)
 25. [LangGraph Command —— 状态更新 + 控制流导航](#25-langgraph-command--状态更新--控制流导航)
+26. [可观测性：OpenTelemetry + Langfuse + Prometheus + Grafana](#26-可观测性opentelemetry--langfuse--prometheus--grafana)
 
 ---
 
@@ -7646,3 +7647,301 @@ LLM: 完全失忆，重复同样的错误响应
 - 子图向父图更新同名字段时需要 Reducer（如 `add_messages`）避免覆盖
 - **`ToolMessage` 是 LLM API 协议层的"关闭 tool_call"动作，不能省**——`Command(goto=END)` 只能跳过 LLM 调用，不能跳过协议层的状态闭合
 - 异常做控制流是反模式：绕过 checkpointer 持久化机制，破坏多轮对话状态一致性
+
+---
+
+## 26. 可观测性：OpenTelemetry + Langfuse + Prometheus + Grafana
+
+> 本项目 Phase 1A 阶段的核心基础设施。本章讲清楚企业级 AI Agent 系统的可观测性应该怎么做、平台如何选型、为什么 Prometheus 还要配 Grafana。
+
+### 26.1 可观测性的三大支柱 + Agent 系统的第四维
+
+传统分布式系统的可观测性有"三大支柱"（Three Pillars），AI Agent 系统因为涉及 LLM 调用，**新增了一个维度**——成本与质量归因。
+
+| 支柱 | 回答的问题 | 传统 Web 服务 | Agent 系统 |
+|------|----------|--------------|----------|
+| **Logging** | 发生了什么？ | HTTP 请求、DB 错误 | LLM 输入/输出、工具参数/结果、状态变化 |
+| **Tracing** | 一次请求经历了什么？ | 跨服务的调用链 | 一次会话内 LLM 调用 → Skill 加载 → 工具调用 → 子 Agent 路由的完整链路 |
+| **Metrics** | 系统健康度？ | QPS、延迟、错误率 | + token 成本、Skill 使用次数、模型调用分布 |
+| **(新增) Cost & Quality** | 花了多少钱、质量如何？ | 不太关注 | 按 Skill/用户/会话归因的 token 成本、成功率、幻觉率 |
+
+#### 关键认知：Agent 系统的可观测性 ≠ 传统 APM
+
+很多团队直接拿 Datadog / New Relic 套到 Agent 系统上，结果发现根本看不出问题：
+
+```
+传统 APM 看到的：
+  POST /v1/chat/completions  200  2.3s  ← 这条记录毫无价值
+
+Agent 系统真正需要看到的：
+  Thread #abc123 / 用户:张三
+    ├─ Skill load: coverage_analysis (0.1s)
+    ├─ LLM call: gpt-4o (2.3s, $0.012, 850 tokens)
+    │   prompt: "分析北斗对中国境内覆盖..."
+    │   response: "需要先创建场景..."
+    ├─ Tool call: query_satellite (0.8s) → returned 5 results
+    └─ LLM call: gpt-4o (1.8s, $0.008, 600 tokens)
+        response: "找到 5 颗卫星，建议选择..."
+```
+
+**传统指标没意义的原因**：
+- `p99 延迟` 没意义——LLM 单次调用就是几秒到几十秒，慢是正常的
+- `QPS` 没意义——一个用户可能占用 Agent 几分钟
+- `错误率` 没意义——LLM 输出的"错误"不是 HTTP 5xx 能定义的
+
+**真正有意义的指标**：
+- 哪个 Skill 选错了导致重试
+- 哪个工具调用失败了
+- 哪个会话烧了异常多的 token
+- LLM 给的输出是不是用户期望的
+
+### 26.2 主流平台选型对比
+
+#### A. 通用 APM 平台（不推荐作为主选）
+
+| 方案 | 部署 | 价格 | 适合 |
+|------|------|------|------|
+| Datadog / New Relic | SaaS | 商业，按 host/trace 计费 | 传统 Web 公司 |
+| 阿里云 ARMS / 腾讯云 APM | SaaS | 商业 | 国内云原生公司 |
+| Prometheus + Grafana + Loki/Jaeger（自建）| 私有化 | 免费 + 运维成本 | 通用基础设施监控 |
+
+**问题**：这些平台不懂 LLM——看到的是 "POST /v1/chat/completions 200ms"，看不到 prompt/response/思考过程。
+
+#### B. LLM 专项可观测性平台（推荐主选）
+
+| 方案 | 部署 | 价格 | LangGraph 集成 | 数据敏感度 |
+|------|------|------|---------------|----------|
+| **Langfuse**（开源）| ✅ 私有化 | 免费 + 运维 | 成熟 | ✅ 高（自部署）|
+| **LangSmith**（LangChain 官方）| 主要 SaaS | 商业 | ⭐ 最丝滑 | ⚠️ SaaS 默认数据出境 |
+| **Phoenix (Arize)**（开源）| ✅ 私有化 | 免费 + 运维 | OTel 标准 | ✅ 高 |
+| **Helicone** | 开源 + SaaS | 混合 | 一般 | 中 |
+| **OpenLLMetry / Traceloop** | 标准（OTel 扩展）| 免费 | OTel 标准 | 取决于后端 |
+| **Weave (W&B)** | SaaS | 商业 | 一般 | ⚠️ SaaS |
+| **Braintrust** | SaaS | 商业 | 一般 | ⚠️ SaaS |
+
+#### C. 自建全家桶
+
+OTel SDK + ClickHouse / Pinot + 自研前端——除非团队有专职 SRE 和强烈定制需求，否则**不推荐**，维护成本极高。
+
+### 26.3 针对本项目的推荐组合
+
+**约束条件**：
+1. 航天数据 → 必须私有化部署（**排除 LangSmith SaaS / Datadog / W&B**）
+2. 已用 LangGraph → 集成成本要低
+3. 团队不大 → 不能自建重型方案
+4. 客户在中国 → 国内厂商或开源友好
+
+**推荐组合**：
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Agent 应用层（LangGraph + deepagents）                   │
+└──────────────────────────────────────────────────────────┘
+                  ↓ 通过 SDK 接入
+┌──────────────────────────────────────────────────────────┐
+│  OpenTelemetry（标准协议，不绑定具体后端）                │
+│  - 代码 instrumentation 用 OTel API                      │
+│  - 后端可替换（关键：避免锁定）                          │
+└──────────────────────────────────────────────────────────┘
+                  ↓
+┌────────────────────┬────────────────────┬───────────────┐
+│  Langfuse（自部署）│  Prometheus        │  Loki         │
+│  - LLM trace       │  + Grafana         │  + Grafana    │
+│  - prompt/response │  - 系统指标        │  - 结构化日志 │
+│  - token 成本      │  - QPS/延迟/错误率 │  - 聚合查询   │
+│  - Skill 路由      │                    │               │
+└────────────────────┴────────────────────┴───────────────┘
+```
+
+#### 主选：Langfuse 自部署
+
+**为什么选 Langfuse 而非 Phoenix**：
+- Langfuse 跟 LangChain/LangGraph 集成更成熟（社区生态）
+- Langfuse 自带成本归因、用户管理、Skill 维度聚合
+- Phoenix 强在 LLM 推理质量评估，弱在工程化运维
+
+**为什么不用 LangSmith**：
+- LangChain 官方集成最丝滑，**但 SaaS 默认数据出境**
+- 航天客户验收时这一项就过不了
+- 等于自己放弃产品核心客户群
+
+#### 副选：Prometheus + Grafana
+
+**职责分工**：
+- Langfuse 管"AI 维度"（LLM 调用、Skill、token）
+- Prometheus 管"系统维度"（FastAPI QPS、WebSocket 连接数、DB 慢查询）
+
+两者互补，不冲突。
+
+#### 日志：现有 JSON 日志 + Loki
+
+项目已有结构化日志（`infrastructure/logging.py`），加 Loki 做日志聚合即可，不用大改。
+
+#### 选型决策的 6 个维度
+
+如果未来要重新评估，按这 6 个维度打分：
+
+| 维度 | 关键问题 |
+|------|---------|
+| **数据敏感度** | 必须私有化部署？还是 SaaS 可接受？ |
+| **集成成本** | 跟现有 LangGraph/LangChain 集成需要多少代码改动？ |
+| **AI 专项能力** | 能看到 prompt/response 吗？能归因 token 成本到 Skill 吗？ |
+| **运维复杂度** | 团队是否有专职 SRE？没有就别自建 |
+| **协议开放性** | 是否基于 OpenTelemetry？换平台需要重写吗？ |
+| **长期成本** | SaaS 按 trace 计费，规模大了可能比自建贵 |
+
+### 26.4 有了 Prometheus 为何还需要 Grafana
+
+因为它们职责完全不同——**Prometheus 是数据库，Grafana 是可视化前端**。两者配合是行业标准做法。
+
+#### 各自定位
+
+| | Prometheus | Grafana |
+|---|----------|---------|
+| **本质** | 时序数据库 + 数据采集器 | 可视化平台 + 告警面板 |
+| **核心能力** | 抓取/存储/查询指标数据 | 渲染图表/仪表盘/告警 UI |
+| **是否存数据** | ✅ 存（TSDB） | ❌ 不存（查别人的数据）|
+| **能否独立工作** | 能（有基本查询页）但难用 | 不能独立（需要数据源）|
+
+#### Prometheus 自带的可视化为什么不够用
+
+Prometheus 有自带的 `/graph` 页面和表达式浏览器，但：
+
+1. **只有折线图**：其他图表类型（热力图、地理图、表格、状态历史）做不了
+2. **没有仪表盘组合**：不能把多个图表拼成一个完整视图
+3. **没有权限/团队**：无法分客户/分角色看不同面板
+4. **告警 UI 简陋**：配置告警规则后没有好的通知中心
+5. **不支持多数据源**：看不到日志（Loki）、看不到 trace（Tempo/Jaeger）、看不到 Langfuse 数据
+
+#### 为什么 Grafana 是事实标准
+
+Grafana 的核心价值是**"一个面板看所有数据源"**：
+
+```
+Grafana 仪表盘
+   ├─ 数据源 1: Prometheus（系统指标，QPS/延迟）
+   ├─ 数据源 2: Loki（结构化日志）
+   ├─ 数据源 3: Tempo / Jaeger（分布式 trace）
+   ├─ 数据源 4: Langfuse（LLM 调用 trace）
+   └─ 数据源 5: ClickHouse / PostgreSQL（业务数据）
+```
+
+**关键能力**：
+- 同一个面板上叠加不同数据源的图（如 QPS 曲线 + 错误日志点）
+- 通过 `trace_id` 在指标/日志/trace 间跳转
+- 告警规则统一管理（Prometheus 告警 + Loki 日志告警 + 业务告警）
+- 团队/角色权限管理
+
+#### 类比
+
+- Prometheus : Grafana = **数据库 : BI 工具**
+- Prometheus : Grafana = **PostgreSQL : Tableau**
+
+没人会拿 PostgreSQL 当 BI 工具直接给老板看，同样也没人拿 Prometheus 自带的查询页给运维看线上大盘。
+
+#### 替代方案（如果想精简）
+
+| 方案 | 适合 |
+|------|------|
+| **Prometheus + Grafana**（推荐）| 标准方案，社区最活跃 |
+| VictoriaMetrics + vmui | 想要单二进制部署，运维更轻 |
+| Datadog / 阿里云 ARMS | 商业全家桶，不用自己装 Grafana |
+| Langfuse 自带面板 | 只看 AI 维度，不要系统维度 |
+
+### 26.5 监控 vs 可观测性（容易混淆的概念）
+
+可观测性 ≠ 监控。区别：
+
+- **监控**（Monitoring）：知道**正在**发生什么，能告警
+- **可观测性**（Observability）：能**回溯**为什么发生，能调试
+
+企业级产品两个都要。Langfuse 主打可观测性（回溯），Prometheus/Grafana 主打监控（告警）。**别期望一个平台全包揽**。
+
+| 场景 | 关心的能力 | 工具 |
+|------|----------|------|
+| "WebSocket 连接数突然飙升，告警！" | 监控 | Prometheus + Alertmanager |
+| "为什么这个会话烧了 $50？" | 可观测性 | Langfuse trace |
+| "客户报告 Skill 选错了，回放" | 可观测性 | Langfuse session replay |
+| "p99 延迟突然变高，谁干的" | 可观测性 + 监控 | Grafana 跨数据源关联 |
+
+### 26.6 落地节奏
+
+Phase 1A 拆成三个子阶段，按"先 AI 维度后系统维度"推进：
+
+| 子阶段 | 内容 | 工具 | 周期 |
+|--------|------|------|------|
+| **1A-1** | OTel instrumentation + Langfuse 自部署 | OpenTelemetry SDK + Langfuse | 1-2 周 |
+| **1A-2** | 系统指标采集 | + Prometheus | 1 周 |
+| **1A-3** | 统一可视化 + 跨数据源关联 | + Grafana | 1 周 |
+
+#### 关键原则
+
+1. **协议先行**：所有 instrumentation 用 OpenTelemetry API，**不直接调 Langfuse SDK**——这样未来要换 Phoenix/LangSmith 不用改业务代码
+2. **不破坏现有日志**：现有 JSON 日志保留，OTel trace 跟日志通过 `trace_id` 关联
+3. **从最高价值开始**：先 trace LLM 调用（最贵的部分），再 trace 工具，最后 trace Skill
+
+#### OTel instrumentation 接入点清单
+
+```python
+# 示例：在 PrimaryAgentMiddleware 里埋点
+from opentelemetry import trace
+
+tracer = trace.get_tracer(__name__)
+
+class PrimaryAgentMiddleware(AgentMiddleware):
+    async def awrap_model_call(self, request, handler):
+        with tracer.start_as_current_span("orchestrator.llm_call") as span:
+            span.set_attribute("thread_id", request.state["thread_id"])
+            span.set_attribute("model", self.model.name)
+            # ... 业务逻辑
+            response = await handler(request)
+            span.set_attribute("tokens.input", response.usage.input_tokens)
+            span.set_attribute("tokens.output", response.usage.output_tokens)
+            span.set_attribute("cost.usd", calculate_cost(response.usage))
+            return response
+
+    async def awrap_tool_call(self, request, handler):
+        tool_name = request.name
+        with tracer.start_as_current_span(f"tool.{tool_name}") as span:
+            span.set_attribute("tool.name", tool_name)
+            span.set_attribute("tool.args", json.dumps(request.args))
+            # ... 业务逻辑
+            return await handler(request)
+```
+
+#### Langfuse 自部署（docker-compose 概要）
+
+```yaml
+# docker-compose.langfuse.yml
+services:
+  langfuse:
+    image: langfuse/langfuse:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://...
+      - NEXTAUTH_SECRET=...
+      - SALT=...
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_PASSWORD=...
+    volumes:
+      - langfuse-pg:/var/lib/postgresql/data
+
+volumes:
+  langfuse-pg:
+```
+
+### 26.7 小结
+
+- AI Agent 的可观测性 ≠ 传统 APM，新增"成本与质量"维度
+- **三大支柱 + 一新增**：Logging / Tracing / Metrics / Cost & Quality
+- 私有化部署约束下，**Langfuse（自部署）+ Prometheus + Grafana + Loki** 是事实标准组合
+- **OpenTelemetry 作为协议层**，避免平台锁定，未来可平滑换后端
+- Prometheus 是数据库，Grafana 是可视化前端，**两者职责不同**
+- 监控（告警）和可观测性（调试）是两件事，需要不同工具
+- Phase 1A 拆三个子阶段：1A-1（Langfuse）→ 1A-2（Prometheus）→ 1A-3（Grafana），按"真正需要时才上"推进

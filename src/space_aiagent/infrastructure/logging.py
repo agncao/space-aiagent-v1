@@ -77,8 +77,7 @@ def _console_renderer(_, __, event_dict):
     caller = event_dict.pop("caller", "")
     event = event_dict.pop("event", "")
 
-    remaining = {k: v for k, v in event_dict.items()
-                 if k not in ("_record", "_from_structlog", "logger")}
+    remaining = {k: v for k, v in event_dict.items() if k not in ("_record", "_from_structlog", "logger")}
     extras = " " + " ".join(f"{k}={v}" for k, v in remaining.items()) if remaining else ""
 
     return f"{ts} [{level:<5}] [{thread}] {caller} - {event}{extras}"
@@ -93,9 +92,7 @@ def _setup_console_handler() -> logging.StreamHandler:
     return logging.StreamHandler()
 
 
-def _setup_file_handler(
-    log_dir: str, max_bytes: int, backup_count: int
-) -> logging.handlers.RotatingFileHandler:
+def _setup_file_handler(log_dir: str, max_bytes: int, backup_count: int) -> logging.handlers.RotatingFileHandler:
     """
     创建文件日志处理器（带轮转）。
 
@@ -129,6 +126,11 @@ def setup_logging(
     # 选择 renderer：console 用 Spring 风格，否则用 JSON
     renderer = _console_renderer if fmt == "console" else structlog.processors.JSONRenderer()
 
+    # 延迟 import 避免 logging ↔ observability 循环导入
+    from space_aiagent.infrastructure.observability.processors import (
+        add_trace_info as _add_trace_info,
+    )
+
     # structlog 共享 processors
     shared_processors = [
         structlog.contextvars.merge_contextvars,
@@ -136,6 +138,8 @@ def setup_logging(
         structlog.stdlib.add_logger_name,
         _add_thread_name,
         _add_caller_info,
+        # 注入当前 span 的 trace_id/span_id（enabled=false 或无 active span 时为 no-op）
+        _add_trace_info,
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,

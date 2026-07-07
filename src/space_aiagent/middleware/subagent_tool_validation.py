@@ -20,6 +20,7 @@
 
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -36,8 +37,10 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from space_aiagent.bridge import bridge_var
-from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
+from space_aiagent.infrastructure.observability import optional_span, set_span_io
+from space_aiagent.infrastructure.utils import message_util
 from space_aiagent.models.response_schema import response_constants
+from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
 from space_aiagent.tools.registry import (
     current_suggestion_candidates_var,
     get_suggestion_candidates,
@@ -81,9 +84,7 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
         self._agent_name = agent_name
         # 启动期一次性生成候选集（避免每次 model call 都重新提取 description）
         self._suggestion_candidates = (
-            frozenset(get_suggestion_candidates(self._tool_groups))
-            if self._tool_groups
-            else frozenset()
+            frozenset(get_suggestion_candidates(self._tool_groups)) if self._tool_groups else frozenset()
         )
 
     async def awrap_model_call(
@@ -108,7 +109,19 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
             thread_id,
             self._suggestion_candidates,
         )
-        return await handler(request)
+        start_ts = time.perf_counter()
+        with optional_span(
+            "subagent.llm",
+            **{
+                "agent.thread_id": thread_id,
+                "subagent.name": self._agent_name,
+            },
+        ) as span:
+            set_span_io(span, input=message_util.serialize_messages(request.messages))
+            response = await handler(request)
+            span.set_attribute("llm.latency_ms", int((time.perf_counter() - start_ts) * 1000))
+            set_span_io(span, output=message_util.serialize_model_response(response))
+            return response
 
     async def awrap_tool_call(
         self,
@@ -172,4 +185,23 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
 
         # 未来扩展点: 参数校验、权限、限流等
 
-        return await handler(request)
+        start_ts = time.perf_counter()
+        with optional_span(
+            f"tool.{tool_name}",
+            **{
+                "agent.thread_id": thread_id,
+                "tool.name": tool_name,
+                "subagent.name": self._agent_name,
+            },
+        ) as span:
+            set_span_io(span, input=request.tool_call.get("args", {}))
+            try:
+                result = await handler(request)
+                span.set_attribute("tool.success", True)
+                set_span_io(span, output=result)
+                return result
+            except Exception:
+                span.set_attribute("tool.success", False)
+                raise
+            finally:
+                span.set_attribute("tool.latency_ms", int((time.perf_counter() - start_ts) * 1000))

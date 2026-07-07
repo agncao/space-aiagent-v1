@@ -25,6 +25,7 @@ from pydantic_settings import BaseSettings
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个字典，override 覆盖 base"""
     result = base.copy()
@@ -52,6 +53,7 @@ def _load_yaml_config(env: str = "dev") -> dict[str, Any]:
         config = _deep_merge(config, env_config)
 
     return config
+
 
 class ServerConfig(BaseSettings):
     """服务器配置"""
@@ -86,6 +88,7 @@ class LLMConfig(BaseSettings):
     streaming: bool = True
     enable_thinking: bool = False
 
+
 class LLMFlashConfig(BaseSettings):
     """LLM 配置（适用于所有 OpenAI 兼容接口）"""
 
@@ -96,12 +99,31 @@ class LLMFlashConfig(BaseSettings):
     streaming: bool = True
     enable_thinking: bool = False
 
+
 class AgentConfig(BaseSettings):
     """Agent 配置"""
 
     max_iterations: int = 10
     primary_task_threshold: int = 20
 
+
+class ObservabilityConfig(BaseSettings):
+    """可观测性配置（OTel + Langfuse）
+
+    enabled=false 时全局走 NoOp Tracer，业务零开销、零依赖。
+    Span 批处理参数由 Langfuse SDK 默认值控制；如需调优，
+    通过环境变量 LANGFUSE_FLUSH_AT / LANGFUSE_FLUSH_INTERVAL 设置。
+    """
+
+    enabled: bool = False
+    service_name: str = "space-aiagent"
+    service_version: str = "0.1.0"
+
+    langfuse_endpoint: str = "http://localhost:3000/api/public/otel"
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+
+    sampler_ratio: float = 1.0
 
 
 class Settings(BaseSettings):
@@ -122,6 +144,7 @@ class Settings(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     llm_flash: LLMFlashConfig = Field(default_factory=LLMFlashConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
     model_config = {"env_prefix": "", "env_nested_delimiter": "__"}
 
@@ -183,6 +206,17 @@ def _apply_yaml_to_settings(yaml_config: dict[str, Any]) -> Settings:
         temperature=float(flash_cfg.get("temperature", 0.1)),
         streaming=flash_cfg.get("streaming", True),
         enable_thinking=flash_cfg.get("enable_thinking", False),
+    )
+
+    obs_cfg = yaml_config.get("observability", {})
+    flat["observability"] = ObservabilityConfig(
+        enabled=obs_cfg.get("enabled", False),
+        service_name=obs_cfg.get("service_name", app_cfg.get("name", "space-aiagent")),
+        service_version=obs_cfg.get("service_version", app_cfg.get("version", "0.1.0")),
+        langfuse_endpoint=obs_cfg.get("langfuse_endpoint", "http://localhost:3000/api/public/otel"),
+        langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", ""),
+        langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY", ""),
+        sampler_ratio=float(obs_cfg.get("sampler_ratio", 1.0)),
     )
 
     return Settings(**flat)

@@ -25,8 +25,8 @@ Skill，还能购买产品方或第三方的 Skill 包。
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| **Phase 1A-1** | 可观测性 - AI 维度（OTel instrumentation + Langfuse 自部署，trace + token 归因）| 🔵 准备中 |
-| **Phase 1A-2** | 可观测性 - 系统指标（Prometheus 采集，QPS/延迟/资源）| 🟡 待 1A-1 完成 |
+| **Phase 1A-1** | 可观测性 - AI 维度（OTel instrumentation + Langfuse v3 自部署，trace + token 归因）| ✅ 已完成（2026-07-02） |
+| **Phase 1A-2** | 可观测性 - 系统指标（Prometheus 采集，QPS/延迟/资源）| 🟡 待启动 |
 | **Phase 1A-3** | 可观测性 - 可视化（Grafana 统一面板 + 跨数据源关联）| 🟡 待 1A-2 完成 |
 | **Phase 1B** | 失败恢复（重试 + 降级 + 状态回滚）| 🔵 准备中 |
 | **Phase 2** | Skill 系统第一版（Anthropic 风格协议 + LLM 主动检索 + load_skill 工具 + 3-5 个示例 + 多模型路由 + 基础审计）| 🔵 准备中 |
@@ -48,6 +48,7 @@ Skill，还能购买产品方或第三方的 Skill 包。
 - FastAPI (Web + WebSocket)
 - deepagents + LangGraph (Agent Harness)
 - langchain-openai (DeepSeek / Qwen 兼容接口)
+- OpenTelemetry SDK + Langfuse v3（AI 维度可观测性，自部署，对业务零依赖）
 - SQLite (持久化，后续可迁移 PostgreSQL)
 - ruff (代码质量) + pre-commit (Git hooks)
 - pytest (测试)
@@ -93,10 +94,13 @@ src/space_aiagent/
 │   ├── ws_bridge.py        # WebSocket Future 桥接
 │   └── session.py          # 会话管理
 └── infrastructure/         # 基础设施
-    ├── config.py           # 配置管理（YAML + .env，含 LLMConfig + LLMFlashConfig）
+    ├── config.py           # 配置管理（YAML + .env，含 LLMConfig + LLMFlashConfig + ObservabilityConfig）
     ├── llm.py              # build_model() + build_flash_model()（OpenAI 兼容，Flash 专供路由分类等轻量调用）
-    ├── logging.py          # 结构化日志
+    ├── logging.py          # 结构化日志（structlog，含 `_add_trace_info` processor 注入 trace_id/span_id）
     ├── database.py         # SQLite 持久化（AsyncSqliteSaver checkpointer）
+    ├── observability/      # OTel + Langfuse v3（Phase 1A-1，对业务零依赖，enabled=false 时 NoOp）
+    │   ├── tracing.py      # setup_telemetry / shutdown_telemetry / get_tracer / optional_span
+    │   └── processors.py   # add_trace_info structlog processor
     ├── response_template_yaml.py # 加载 config/response_templates.yaml → DEFAULT_TEMPLATES（仅 SHORTCUT_RESPONSES 用作 summary 默认值，不再做 {var} 渲染）
     └── utils/              # 通用工具
         ├── string_util.py  # snake/camel 转换、args_to_camel、truncate、flat_tuple_list
@@ -299,11 +303,18 @@ Orchestrator 返回 `SCENE_CREATED`/`SCENE_RENAMED`（命中 `response_constants
 - `config/response_templates.yaml` 响应模板
 - `config/knowledge/` 领域知识（如 AGENTS.md），外部化管理，生产环境可动态修改（通过 memory 参数加载）
 - `.env` 存放 API Key 等敏感信息，`.gitignore` 排除，`.env.example` 为模板
-- `config/application.yaml` 直接维护 server、logging、agent、flash_model 等基础运行配置
+- `config/application.yaml` 直接维护 server、logging、agent、flash_model、observability 等基础运行配置
 - `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` 统一配置主 OpenAI 兼容接口，切换提供商只需修改这三个值
 - `LLM_FLASH_API_KEY` / `LLM_FLASH_BASE_URL` / `LLM_FLASH_MODEL` 配置 **Flash LLM**（专供 `PrimaryAgentMiddleware` 路由分类等轻量调用，可与主 LLM 同实例或独立更便宜的实例）
 - `config/application.yaml` 的 `llm.enable_thinking`（写在 `agent` 节，由 `LLMConfig` 读取）和 `flash_model.enable_thinking` 分别控制主 LLM 与 Flash LLM 是否透传 `enable_thinking`，仅支持 `true/false`。**注意**：`enable_thinking` 已从 `AgentConfig` 迁出，旧引用 `settings.agent.enable_thinking` 已失效
 - `config/application.yaml` 的 `agent.primary_task_threshold` 控制 orchestrator 连续调用 `task` 的保护阈值
+- **可观测性（Phase 1A-1）**：`config/application.yaml` 的 `observability:` 段控制 OTel + Langfuse v3 集成：
+  - `enabled: false`（默认）→ 全链路 NoOp，业务零开销、零依赖；`enabled: true` 时需要可访问的 Langfuse 实例
+  - `langfuse_endpoint` / `langfuse_public_key` / `langfuse_secret_key` 凭证从 `.env` 注入（`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`），keys 为空时 SDK 优雅降级（warning 但不崩溃）
+  - `sampler_ratio` 控制采样率（0.0-1.0，生产可降到 0.1）
+  - Langfuse v3 自部署：`docker compose --env-file .env -f docker/observability/docker-compose.yml up -d`（6 服务：langfuse-web/worker + clickhouse + redis + postgres + minio，端口 3000），首次启动通过 `LANGFUSE_INIT_PROJECT_*` 自动创建项目。**`--env-file .env` 必须带**：`.env` 在仓库根目录，而 compose 用 `-f` 时默认从 compose 文件所在目录 `docker/observability/` 找 `.env`，不加会让 SALT / ENCRYPTION_KEY / NEXTAUTH_SECRET 为空、Langfuse 启动失败
+  - 业务 span 埋点位置：`PrimaryAgentMiddleware.awrap_model_call/awrap_tool_call`（`orchestrator.llm` / `orchestrator.task` / `orchestrator.tool.<name>`）、`SubagentToolValidationMiddleware.awrap_model_call/awrap_tool_call`（`subagent.llm` / `tool.<name>`）、`api/websocket.py:run_agent`（`ws.session` root span）
+  - structlog 已注入 `trace_id` / `span_id` 到每条日志，便于 Loki/ELK 与 Langfuse 串联
 - 环境差异：dev(全局INFO+项目DEBUG+Spring风格控制台+不写文件)、staging(INFO+JSON+写文件)、prod(WARNING+JSON+30备份)
 - 支持按包名单独控制日志级别（如 `openai: WARNING`、`space_aiagent: DEBUG`），通过 `logging.loggers` 配置
 
@@ -316,7 +327,8 @@ Orchestrator 返回 `SCENE_CREATED`/`SCENE_RENAMED`（命中 `response_constants
 ### 架构约定
 
 - **配置分离**: YAML 管业务配置，.env 管敏感信息，不提交到 Git
-- **结构化日志**: JSON 格式，支持控制台 + 文件轮转，可接入 ELK
+- **结构化日志**: JSON 格式，支持控制台 + 文件轮转，可接入 ELK；每条日志带 `trace_id` / `span_id`（来自 OTel current span，可观测性 disabled 时省略）
+- **可观测性对业务零依赖**（Phase 1A-1 原则）：`observability.enabled=false` 或 Langfuse 宕机时业务必须照常运行，OTel SDK 默认提供 NoOp Tracer 零开销兜底；中间件用 `optional_span()` context manager 包裹，enabled=false 时是 no-op
 - **包管理**: pyproject.toml 定义依赖，scripts/gen_requirements.py 生成 requirements.txt 供 CI/CD
 
 ## 代码风格
