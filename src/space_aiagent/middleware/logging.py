@@ -7,7 +7,6 @@ Agent 执行日志中间件
 基于 deepagents 中间件模式：https://docs.langchain.com/oss/python/langchain/agents/middleware
 """
 
-import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -20,9 +19,10 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AIMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
-from space_aiagent.infrastructure.utils import message_util, string_util, collection_util
+from space_aiagent.infrastructure.logging import get_logger
+from space_aiagent.infrastructure.utils import collection_util, message_util, string_util
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class LoggingMiddleware(AgentMiddleware):
@@ -51,11 +51,13 @@ class LoggingMiddleware(AgentMiddleware):
         self.step_count += 1
 
         logger.debug(
-            "[步骤 %d] LLM 调用, thread=%s, 上下文 %d 条消息。最近消息: %s",
-            self.step_count,
-            self.thread_id,
-            len(request.messages),
-            message_util.serialize_messages(collection_util.trim_list(request.messages,-3), content_max_len=300, args_max_len=300),
+            "LLM 调用",
+            step=self.step_count,
+            thread=self.thread_id,
+            msg_count=len(request.messages),
+            recent_messages=message_util.serialize_messages(
+                collection_util.trim_list(request.messages, -3), content_max_len=300, args_max_len=300
+            ),
         )
 
         response = await handler(request)
@@ -72,10 +74,10 @@ class LoggingMiddleware(AgentMiddleware):
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
                     logger.info(
-                        "[步骤 %d] LLM 决定调用工具: %s(%s)",
-                        self.step_count,
-                        tc.get("name", "?"),
-                        string_util.truncate(tc.get("args", {}), 200),
+                        "LLM 决定调用工具",
+                        step=self.step_count,
+                        tool_name=tc.get("name", "?"),
+                        args=string_util.truncate(tc.get("args", {}), 200),
                     )
 
         return response
@@ -92,19 +94,19 @@ class LoggingMiddleware(AgentMiddleware):
         tool_args = request.tool_call.get("args", {})
 
         logger.info(
-            "[工具 %d] 开始: %s, 参数: %s",
-            self.tool_call_count,
-            tool_name,
-            string_util.truncate(tool_args, 300),
+            "工具开始",
+            step=self.tool_call_count,
+            tool_name=tool_name,
+            args=string_util.truncate(tool_args, 300),
         )
 
         result = await handler(request)
 
         logger.info(
-            "[工具 %d] 完成: %s, 结果: %s",
-            self.tool_call_count,
-            tool_name,
-            string_util.truncate(result, 200),
+            "工具完成",
+            step=self.tool_call_count,
+            tool_name=tool_name,
+            result=string_util.truncate(result, 200),
         )
 
         return result

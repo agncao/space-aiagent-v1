@@ -15,11 +15,11 @@ WebSocket 远程工具桥接
 """
 
 import asyncio
-import logging
 import uuid
 
 from fastapi import WebSocket
 
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.models.messages import (
     AIMessage,
     EndMessage,
@@ -28,7 +28,7 @@ from space_aiagent.models.messages import (
     ToolResultMessage,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class WSBridge:
@@ -43,10 +43,10 @@ class WSBridge:
         self._timeout = 60
 
     async def send_tool_call(
-            self,
-            tool_func: str,
-            args: dict,
-            timeout: float = 60,
+        self,
+        tool_func: str,
+        args: dict,
+        timeout: float = 60,
     ) -> dict:
         """
         发送工具调用指令到前端，等待执行结果
@@ -72,15 +72,19 @@ class WSBridge:
             tool_call_id=tool_call_id,
         )
         await self._ws.send_json(message.model_dump())
-        logger.debug("发送 tool_call: %s(%s), id=%s, thread_id=%s", tool_func, args, tool_call_id, self._thread_id)
+        logger.debug(
+            "发送 tool_call", tool_func=tool_func, args=args, tool_call_id=tool_call_id, thread_id=self._thread_id
+        )
 
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
-            logger.debug("收到 tool_result: tool_call_id=%s, thread_id=%s, success=%s", tool_call_id, self._thread_id, result.get("success"))
+            logger.debug(
+                "收到 tool_result", tool_call_id=tool_call_id, thread_id=self._thread_id, success=result.get("success")
+            )
             return result
         except TimeoutError:
             self._pending.pop(tool_call_id, None)
-            logger.warning("tool_call 超时: %s, tool_call_id=%s, thread_id=%s", tool_func, tool_call_id,self._thread_id)
+            logger.warning("tool_call 超时", tool_func=tool_func, tool_call_id=tool_call_id, thread_id=self._thread_id)
             return {"success": False, "message": f"工具调用超时: {tool_func}"}
 
     def resolve_tool_result(self, result: ToolResultMessage) -> None:
@@ -93,11 +97,9 @@ class WSBridge:
         tool_call_id = result.tool_call_id
         future = self._pending.pop(tool_call_id, None)
         if future and not future.done():
-            future.set_result(
-                result.model_dump(exclude={"type", "thread_id", "tool_call_id","tool_func"})
-            )
+            future.set_result(result.model_dump(exclude={"type", "thread_id", "tool_call_id", "tool_func"}))
         else:
-            logger.warning("收到未知 tool_result: id=%s", tool_call_id)
+            logger.warning("收到未知 tool_result", tool_call_id=tool_call_id)
 
     async def send_ai_message(self, content: str) -> None:
         """发送 AI 文本消息到前端"""
@@ -131,4 +133,4 @@ class WSBridge:
                 future.set_exception(ConnectionError("WebSocket 连接已断开"))
         count = len(self._pending)
         self._pending.clear()
-        logger.debug("bridge cleanup: 已清理 %d 个 pending futures", count)
+        logger.debug("bridge cleanup", cleaned_count=count)

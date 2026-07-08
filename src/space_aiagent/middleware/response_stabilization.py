@@ -6,11 +6,11 @@
 中间件链上作为占位，便于未来在此挂载新的稳定化逻辑。退役模式参考 LoggingMiddleware。
 """
 
-import logging
-
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
 
-logger = logging.getLogger(__name__)
+from space_aiagent.infrastructure.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class ResponseStabilizationMiddleware(AgentMiddleware):

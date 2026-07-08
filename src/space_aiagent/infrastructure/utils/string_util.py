@@ -5,7 +5,6 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool
 
 
-
 def truncate(obj, max_len: int = 200, suffix: str = "...", truncate_hint: bool = True) -> str:
     """截断过长字符串
     Args:
@@ -24,7 +23,6 @@ def truncate(obj, max_len: int = 200, suffix: str = "...", truncate_hint: bool =
     return f"{s1}[截断, 总长{len(s)}]" if truncate_hint else s1
 
 
-
 def camel_to_snake(name: str) -> str:
     """
     将驼峰命名法字符串转换为下划线分割的字符串
@@ -36,9 +34,9 @@ def camel_to_snake(name: str) -> str:
         下划线分割的字符串
     """
     # 处理连续大写字母的情况，如 HTTPServer -> http_server
-    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+    s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
     # 处理小写字母或数字后跟大写字母的情况，如 myHTTPServer -> my_http_server
-    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+    return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
 def snake_to_camel(name: str) -> str:
@@ -51,9 +49,10 @@ def snake_to_camel(name: str) -> str:
     Returns:
         小驼峰命名的字符串
     """
-    components = name.split('_')
+    components = name.split("_")
     # 第一个组件保持小写，后续组件首字母大写
-    return components[0] + ''.join(x.capitalize() for x in components[1:])
+    return components[0] + "".join(x.capitalize() for x in components[1:])
+
 
 def keys_to_snake(data: dict) -> dict:
     """递归将字典中所有 key 从 camelCase 转换为 snake_case"""
@@ -100,9 +99,10 @@ def args_to_camel(func, local_vars: dict, skip_none: bool = True) -> dict:
         args[snake_to_camel(param_name)] = value
     return args
 
-def flat_tuple_list(tuples_list: list[tuple[str,any]],element_split: str = ": ",join_str: str = ", ") -> str:
+
+def flat_tuple_list(tuples_list: list[tuple[str, any]], element_split: str = ": ", join_str: str = ", ") -> str:
     """
     将元组列表展开为字符串:"k1:v1, k2:v2"
-    
+
     """
-    return join_str.join([f"{e1}{element_split}{e2}" for e1,e2 in tuples_list])
+    return join_str.join([f"{e1}{element_split}{e2}" for e1, e2 in tuples_list])

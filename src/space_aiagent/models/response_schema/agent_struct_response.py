@@ -5,15 +5,15 @@ Agent 结构化响应数据模型
 """
 
 import json
-import logging
 from enum import StrEnum, auto
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.tools.registry import current_suggestion_candidates_var
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ResponseCode(StrEnum):
@@ -51,6 +51,7 @@ class ResponseCode(StrEnum):
     # 能力外（用户请求超出当前可用工具范围）
     OUT_OF_SCOPE = auto()
 
+
 class AgentResponse(BaseModel):
     """
     Agent 结构化响应, 所有子 Agent 最终回复使用此结构
@@ -59,9 +60,7 @@ class AgentResponse(BaseModel):
     status: Literal["success", "error", "info", "confirm"] = Field(
         description="响应状态: success=操作成功, error=操作失败, info=信息查询, confirm=需要确认"
     )
-    code: ResponseCode = Field(
-        description="场景编码，用于匹配渲染模板。如 NO_SCENE, ENTITIES_LIST, SCENE_CREATED"
-    )
+    code: ResponseCode = Field(description="场景编码，用于匹配渲染模板。如 NO_SCENE, ENTITIES_LIST, SCENE_CREATED")
     summary: str = Field(description="一句话摘要，模板未命中时作为降级展示")
     args: dict | None = Field(
         default=None,
@@ -106,10 +105,10 @@ class AgentResponse(BaseModel):
         if not candidates:
             return v
         # 子串双向匹配：建议包含候选 OR 候选包含建议
-        logger.debug("原始 suggestions: %s，候选集: %s", v, candidates)
+        logger.debug("原始 suggestions", suggestions=v, candidates=candidates)
         kept = [s for s in v if any(c in s or s in c for c in candidates)]
-        logger.debug("suggestions 中匹配候选推荐的有: %s", kept)
+        logger.debug("suggestions 匹配候选", kept=kept)
         filtered_out = set(v) - set(kept)
         if filtered_out:
-            logger.warning("过滤越界 suggestions: %s", filtered_out)
+            logger.warning("过滤越界 suggestions", filtered_out=filtered_out)
         return kept

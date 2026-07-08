@@ -5,14 +5,14 @@
 （NO_SCENE / TASK_LOOP_GUARD 两个确定性 shortcut），不再做 {var} 占位符渲染。
 """
 
-import logging
 from pathlib import Path
 
 import yaml
 
 from space_aiagent.infrastructure.config import CONFIG_DIR
+from space_aiagent.infrastructure.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _TEMPLATE_CONFIG_PATH: Path = CONFIG_DIR / "response_templates.yaml"
 

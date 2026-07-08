@@ -7,6 +7,7 @@ current_scene_name 通过 SpaceAgentState 跨节点同步：websocket handler �
 user_input.current_scene_name 注入 astream_events input，工具返回 Command
 更新 state。本中间件只读不写。
 """
+
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware import dynamic_prompt
 from langchain.agents.middleware.types import ModelRequest

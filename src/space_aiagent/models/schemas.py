@@ -46,7 +46,7 @@ class EntityConfig(BaseModel):
 class SGP4Param(BaseModel):
     """SGP4 轨道参数"""
 
-    name: str | None= Field(default=None, description="在航天任务分析平台展示的卫星名称")
+    name: str | None = Field(default=None, description="在航天任务分析平台展示的卫星名称")
     satellite_number: str | None = Field(default=None, description="卫星编号")
     tles: list[str] = Field(description="TLE 两行根数")
     start: str | None = Field(default=None, description="开始时间")
@@ -98,4 +98,4 @@ class SubagentClassification(BaseModel):
     调 LLM 用此 schema 输出最匹配的子 agent name。
     """
 
-    subagent_type: Literal["entity-agent", "scene-agent"]|None = Field(description="应该委派给的子 agent name")
+    subagent_type: Literal["entity-agent", "scene-agent"] | None = Field(description="应该委派给的子 agent name")

@@ -5,13 +5,13 @@
 每个前端连接对应一个 thread_id，Agent 处理时需要找到对应的 WS 连接发送指令。
 """
 
-import logging
-
 from fastapi import WebSocket
+
+from space_aiagent.infrastructure.logging import get_logger
 
 from .ws_bridge import WSBridge
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SessionManager:
@@ -43,12 +43,12 @@ class SessionManager:
         if thread_id in self._bridges:
             old_bridge = self._bridges[thread_id]
             old_bridge.cleanup()
-            logger.info("旧连接被替换: thread_id=%s", thread_id)
+            logger.info("旧连接被替换", thread_id=thread_id)
 
         bridge = WSBridge(websocket, thread_id)
         self._connections[thread_id] = websocket
         self._bridges[thread_id] = bridge
-        logger.info("注册新连接: thread_id=%s", thread_id)
+        logger.info("注册新连接", thread_id=thread_id)
         return bridge
 
     def unregister(self, thread_id: str) -> None:
@@ -62,7 +62,7 @@ class SessionManager:
             bridge.cleanup()
 
         self._connections.pop(thread_id, None)
-        logger.info("注销连接: thread_id=%s", thread_id)
+        logger.info("注销连接", thread_id=thread_id)
 
     def get_websocket(self, thread_id: str) -> WebSocket | None:
         """根据 thread_id 获取 WebSocket 连接"""

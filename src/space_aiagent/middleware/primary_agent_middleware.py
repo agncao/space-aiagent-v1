@@ -1,4 +1,3 @@
-import logging
 import time
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -14,11 +13,12 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 
 from space_aiagent.agents.subagents_util import resolve_subagent_type
 from space_aiagent.infrastructure.llm import build_flash_model
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
 from space_aiagent.infrastructure.utils import collection_util, message_util, string_util
 from space_aiagent.models.response_schema import response_constants, response_util
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 orchestrator_task_streak_var: ContextVar[int] = ContextVar(
     "orchestrator_task_streak_var",
@@ -86,10 +86,12 @@ class PrimaryAgentMiddleware(AgentMiddleware):
     ) -> ModelResponse:
 
         logger.debug(
-            "[model call before] thread=%s, 上下文 %d 条消息。最近消息: %s",
-            self.thread_id,
-            len(request.messages),
-            message_util.serialize_messages(collection_util.trim_list(request.messages, -3), content_max_len=300, args_max_len=300),
+            "model call before",
+            thread_id=self.thread_id,
+            msg_count=len(request.messages),
+            recent_messages=message_util.serialize_messages(
+                collection_util.trim_list(request.messages, -3), content_max_len=300, args_max_len=300
+            ),
         )
 
         start_ts = time.perf_counter()
@@ -114,8 +116,8 @@ class PrimaryAgentMiddleware(AgentMiddleware):
             orchestrator_task_streak_var.set(streak)
             if streak >= self._threshold:
                 logger.warning(
-                    "检测到 orchestrator 连续决策调用 task %d 次，改写为结构化短路响应",
-                    streak,
+                    "检测到 orchestrator 连续决策调用 task，改写为结构化短路响应",
+                    streak=streak,
                 )
                 return self._build_shortcut_response()
 
@@ -133,10 +135,10 @@ class PrimaryAgentMiddleware(AgentMiddleware):
                 subagent_name, _, _ = message_util.extract_last_task(request.messages)
                 subagent_name = subagent_name or existing_subagent
                 logger.info(
-                    "[model call after][捕获意图]: %s, subagent: %s（触发 code=%s）",
-                    intent,
-                    subagent_name,
-                    code,
+                    "model call after 捕获意图",
+                    intent=intent,
+                    subagent=subagent_name,
+                    code=code,
                 )
                 for msg in response.result:
                     if not isinstance(msg, AIMessage) or not msg.tool_calls:
@@ -147,7 +149,7 @@ class PrimaryAgentMiddleware(AgentMiddleware):
                         if subagent_name:
                             additional["pending_subagent"] = subagent_name
                         msg.additional_kwargs = additional
-                        logger.info("[model call after][捕获意图], 保存到状态: %s", msg)
+                        logger.info("model call after 捕获意图，保存到状态", msg=msg)
                         break
 
         # ── 职责 3: 自动续接 ──
@@ -167,9 +169,9 @@ class PrimaryAgentMiddleware(AgentMiddleware):
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
                     logger.info(
-                        "[model call after][决定调用工具]: %s, args: %s",
-                        tc.get("name", "?"),
-                        string_util.truncate(tc.get("args", {}), 200),
+                        "model call after 决定调用工具",
+                        tool_name=tc.get("name", "?"),
+                        args=string_util.truncate(tc.get("args", {}), 200),
                     )
 
         return response
@@ -183,10 +185,10 @@ class PrimaryAgentMiddleware(AgentMiddleware):
         tool_args = request.tool_call.get("args", {})
 
         logger.info(
-            "[tool call before] thread_id: %s, tool name: %s, 参数: %s",
-            self.thread_id,
-            tool_name,
-            string_util.truncate(tool_args, 300),
+            "tool call before",
+            thread_id=self.thread_id,
+            tool_name=tool_name,
+            args=string_util.truncate(tool_args, 300),
         )
 
         start_ts = time.perf_counter()
@@ -214,8 +216,8 @@ class PrimaryAgentMiddleware(AgentMiddleware):
                 latency_ms = int((time.perf_counter() - start_ts) * 1000)
                 span.set_attribute("tool.latency_ms", latency_ms)
                 logger.info(
-                    "[tool call after] thread_id: %s, tool name: %s, 结果: %s",
-                    self.thread_id,
-                    tool_name,
-                    string_util.truncate(result, 200),
+                    "tool call after",
+                    thread_id=self.thread_id,
+                    tool_name=tool_name,
+                    result=string_util.truncate(result, 200),
                 )

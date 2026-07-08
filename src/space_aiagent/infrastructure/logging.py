@@ -20,14 +20,7 @@ import threading
 from pathlib import Path
 
 import structlog
-
-
-def _add_caller_info(logger, method, event_dict):
-    """structlog processor: 添加调用者信息（文件名:行号）"""
-    record = event_dict.get("_record")
-    if record:
-        event_dict["caller"] = f"{record.filename}:{record.lineno}"
-    return event_dict
+from structlog.processors import CallsiteParameter, CallsiteParameterAdder
 
 
 def _add_thread_name(logger, method, event_dict):
@@ -75,6 +68,11 @@ def _console_renderer(_, __, event_dict):
     level = event_dict.pop("level", "")
     thread = event_dict.pop("thread_name", "")
     caller = event_dict.pop("caller", "")
+    if not caller:
+        # structlog 日志：caller 由 CallsiteParameterAdder 提供 filename+lineno（shared_processors 阶段无 _record）
+        filename = event_dict.pop("filename", "")
+        lineno = event_dict.pop("lineno", "")
+        caller = f"{filename}:{lineno}" if filename else ""
     event = event_dict.pop("event", "")
 
     remaining = {k: v for k, v in event_dict.items() if k not in ("_record", "_from_structlog", "logger")}
@@ -137,7 +135,7 @@ def setup_logging(
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         _add_thread_name,
-        _add_caller_info,
+        CallsiteParameterAdder(parameters=[CallsiteParameter.FILENAME, CallsiteParameter.LINENO]),
         # 注入当前 span 的 trace_id/span_id（enabled=false 或无 active span 时为 no-op）
         _add_trace_info,
         structlog.processors.TimeStamper(fmt="iso"),
@@ -172,6 +170,7 @@ def setup_logging(
     formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=[
             _extract_fields_from_record,
+            _add_trace_info,
             structlog.processors.format_exc_info,
         ],
         processors=[
@@ -190,6 +189,7 @@ def setup_logging(
         file_formatter = structlog.stdlib.ProcessorFormatter(
             foreign_pre_chain=[
                 _extract_fields_from_record,
+                _add_trace_info,
                 structlog.processors.format_exc_info,
             ],
             processors=[

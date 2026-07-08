@@ -78,7 +78,8 @@ def create_orchestrator(
         response_format=ToolStrategy(AgentResponse),
         state_schema=SpaceAgentState,
         middleware=[
-            PrimaryAgentMiddleware(thread_id=thread_id,
+            PrimaryAgentMiddleware(
+                thread_id=thread_id,
                 task_loop_threshold=settings.agent.primary_task_threshold,
             ),
             agents_dynamic_prompt,

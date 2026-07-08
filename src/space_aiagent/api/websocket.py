@@ -19,7 +19,6 @@ WebSocket 路径: /ws/space
 
 import asyncio
 import json
-import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from langchain_core.messages import HumanMessage
@@ -28,6 +27,7 @@ from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.agents.subagents import load_subagents
 from space_aiagent.bridge import SessionManager, bridge_var
 from space_aiagent.infrastructure.database import get_db
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.middleware.primary_agent_middleware import orchestrator_task_streak_var
 from space_aiagent.models.enums import WSMessageType
 from space_aiagent.models.messages import (
@@ -37,7 +37,7 @@ from space_aiagent.models.messages import (
 )
 from space_aiagent.models.response_schema import response_util
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -105,7 +105,7 @@ async def _get_or_create_agent(thread_id: str):
     checkpointer = await _get_checkpointer()
     agent = create_orchestrator(subagents, checkpointer, thread_id=thread_id)
     _agent_cache[thread_id] = agent
-    logger.info("Agent 实例已创建: thread_id=%s", thread_id)
+    logger.info("Agent 实例已创建", thread_id=thread_id)
     return agent
 
 
@@ -134,7 +134,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         from space_aiagent.infrastructure.observability import optional_span, set_span_io
 
         bridge_token = bridge_var.set(bridge)
-        logger.info("user_msg: %s", user_msg)
         task_streak_token = orchestrator_task_streak_var.set(0)
         try:
             with optional_span(
@@ -148,7 +147,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 # 其 input/output 按 Langfuse root observation 规则自动成为 trace 级 IO，
                 # Traces 列表直接显示用户输入与最终回复
                 set_span_io(span, input=user_msg.content)
-                logger.debug("Agent 准备创建: thread_id=%s", user_msg.thread_id)
                 agent = await _get_or_create_agent(user_msg.thread_id)
 
                 async for event in agent.astream_events(
@@ -175,7 +173,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             tool_input = data.get("input", {})
                             display = _make_progress_message(name, tool_input)
                             if display:
-                                logger.info("发送进度提示(send_ai_message): %s, %s", kind, display)
+                                logger.info("发送进度提示(send_ai_message)", kind=kind, display=display)
                                 await bridge.send_ai_message(display)
                         elif kind == "on_chain_end":
                             output = data.get("output")
@@ -191,20 +189,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             return
                     except Exception as ex:
                         logger.exception(
-                            "Agent 执行出错: event: %s::%s, thread_id=%s, data: %s",
-                            kind,
-                            name,
-                            user_msg.thread_id,
-                            data,
+                            "Agent 执行出错",
+                            event_kind=kind,
+                            event_name=name,
+                            thread_id=user_msg.thread_id,
+                            data=data,
                         )
                         raise ex
-                logger.warning("流结束未收到 AgentResponse on_chain_end 事件: thread_id=%s", user_msg.thread_id)
+                logger.warning("流结束未收到 AgentResponse on_chain_end 事件", thread_id=user_msg.thread_id)
                 set_span_io(span, output="处理完成。")
                 await bridge.send_ai_message("处理完成。")
                 await bridge.send_end()
 
         except Exception as e:
-            logger.exception("Agent 执行出错: thread_id=%s", user_msg.thread_id)
+            logger.exception("Agent 执行出错", thread_id=user_msg.thread_id)
             await bridge.send_error(str(e))
         finally:
             bridge_var.reset(bridge_token)
@@ -213,7 +211,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
-            logger.info("收到用户请求: %s", raw)
+            logger.info("收到用户请求", raw=raw)
             data = json.loads(raw)
             msg_type = data.get("type")
 
@@ -234,15 +232,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 if bridge:
                     bridge.resolve_tool_result(tool_result)
                 else:
-                    logger.warning("收到 tool_result 但无对应 bridge: thread_id=%s", tool_result.thread_id)
+                    logger.warning("收到 tool_result 但无对应 bridge", thread_id=tool_result.thread_id)
 
             else:
-                logger.warning("未知消息类型: %s", msg_type)
+                logger.warning("未知消息类型", msg_type=msg_type)
 
     except WebSocketDisconnect:
-        logger.info("WebSocket 连接已断开: thread_id=%s", current_thread_id)
+        logger.info("WebSocket 连接已断开", thread_id=current_thread_id)
     except Exception as e:
-        logger.exception("WebSocket 错误: %s", e)
+        logger.exception("WebSocket 错误")
         try:
             error_msg = ErrorMessage(
                 thread_id=current_thread_id or "",
@@ -263,4 +261,4 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             if bridge:
                 bridge.cleanup()
             session_manager.unregister(current_thread_id)
-            logger.info("会话已清理: thread_id=%s", current_thread_id)
+            logger.info("会话已清理", thread_id=current_thread_id)

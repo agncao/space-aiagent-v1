@@ -1,12 +1,13 @@
-import logging
 from typing import Any
 
 from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage
 
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
 
 def find_agent_response_tool_call(response: ModelResponse) -> dict[str, Any] | None:
     """在 ModelResponse 中查找名为 AgentResponse 的 tool_call，找不到返回 None"""
@@ -19,6 +20,7 @@ def find_agent_response_tool_call(response: ModelResponse) -> dict[str, Any] | N
             return tc
     return None
 
+
 def parse_code_by_model_response(response: ModelResponse) -> str | None:
     """
     从 ModelResponse 中提取 AgentResponse tool_call 的 code 字段
@@ -30,8 +32,7 @@ def parse_code_by_model_response(response: ModelResponse) -> str | None:
 
 
 def render(response: AgentResponse) -> str:
-    """将结构化响应渲染为自然语言
-    """
+    """将结构化响应渲染为自然语言"""
 
     def _fallback_text() -> str:
         parts = [response.summary]

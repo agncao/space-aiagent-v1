@@ -12,14 +12,15 @@
 """
 
 import importlib
-import logging
 import re
 from contextvars import ContextVar
 from pathlib import Path
 
 from langchain_core.tools import BaseTool
 
-logger = logging.getLogger(__name__)
+from space_aiagent.infrastructure.logging import get_logger
+
+logger = get_logger(__name__)
 
 _TOOLS_ROOT = Path(__file__).parent
 
@@ -54,7 +55,7 @@ def _discover_groups() -> dict[str, list[BaseTool]]:
             try:
                 mod = importlib.import_module(full_module)
             except Exception as e:
-                logger.warning("跳过工具模块 %s：导入失败 %s", full_module, e)
+                logger.warning("跳过工具模块，导入失败", module=full_module, error=str(e))
                 continue
 
             for attr_name in dir(mod):
@@ -73,10 +74,10 @@ def _discover_groups() -> dict[str, list[BaseTool]]:
 
         groups[group_name] = deduped
         logger.debug(
-            "发现工具组 %s: %d 个工具 %s",
-            group_name,
-            len(deduped),
-            [t.name for t in deduped],
+            "发现工具组",
+            group=group_name,
+            tool_count=len(deduped),
+            tools=[t.name for t in deduped],
         )
 
     return groups

@@ -6,17 +6,17 @@
 """
 
 from pathlib import Path
-import logging
 
 from space_aiagent.agents import subagents_util
 from space_aiagent.infrastructure.llm import build_model
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.middleware import (
     SubagentToolValidationMiddleware,
     agents_dynamic_prompt,
 )
 from space_aiagent.tools.registry import get_tools
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # 路径常量
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"

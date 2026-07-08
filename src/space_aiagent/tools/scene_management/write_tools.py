@@ -8,7 +8,6 @@
 """
 import inspect
 import json
-import logging
 
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
@@ -16,10 +15,11 @@ from langchain_core.tools import tool
 from langgraph.types import Command
 
 from space_aiagent.bridge import bridge_var
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.schemas import ScenarioConfig
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _build_command(
@@ -74,7 +74,7 @@ async def create_scenario(
     if result["success"]:
         data: dict = result.get("data") or {}
         scene_name_resolved = data.get("scene_name")
-        logger.debug("create_scenario success, scene_name: %s", scene_name_resolved)
+        logger.debug("create_scenario success", scene_name=scene_name_resolved)
         return _build_command(result, runtime, scene_name=scene_name_resolved)
     return _build_command(result, runtime)
 
