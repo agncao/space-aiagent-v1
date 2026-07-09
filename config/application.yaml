@@ -46,3 +46,18 @@ observability:
   # 凭证从 .env 注入（LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY）
   sampler_ratio: 1.0
   # Span 批处理调优用环境变量：LANGFUSE_FLUSH_AT / LANGFUSE_FLUSH_INTERVAL
+
+retry:
+  # 失败恢复（Phase 1B）：false 时 RetryMiddleware 透传，零开销
+  # 与 observability.enabled 独立
+  enabled: true
+  llm:
+    max_attempts: 3
+    base_delay: 1.0
+    max_delay: 10.0
+    # ToolStrategy 结构化输出解析失败是否重试，默认 false
+    retry_on_parse_error: false
+  tool:
+    max_attempts: 3
+    base_delay: 1.0
+    max_delay: 10.0

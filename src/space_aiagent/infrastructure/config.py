@@ -126,6 +126,36 @@ class ObservabilityConfig(BaseSettings):
     sampler_ratio: float = 1.0
 
 
+class RetryLLMConfig(BaseSettings):
+    """LLM 调用重试配置"""
+
+    max_attempts: int = 3
+    base_delay: float = 1.0
+    max_delay: float = 10.0
+    # ToolStrategy 结构化输出解析失败(ValidationError)是否重试，默认 false
+    retry_on_parse_error: bool = False
+
+
+class RetryToolConfig(BaseSettings):
+    """工具调用重试配置"""
+
+    max_attempts: int = 3
+    base_delay: float = 1.0
+    max_delay: float = 10.0
+
+
+class RetryConfig(BaseSettings):
+    """失败恢复配置（Phase 1B）
+
+    enabled=false 时 RetryMiddleware 透传，零开销。
+    与 observability.enabled 独立（retry 是业务恢复，observability 是观测）。
+    """
+
+    enabled: bool = True
+    llm: RetryLLMConfig = Field(default_factory=RetryLLMConfig)
+    tool: RetryToolConfig = Field(default_factory=RetryToolConfig)
+
+
 class Settings(BaseSettings):
     """
     全局配置 - 单例模式
@@ -145,6 +175,7 @@ class Settings(BaseSettings):
     llm_flash: LLMFlashConfig = Field(default_factory=LLMFlashConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    retry: RetryConfig = Field(default_factory=RetryConfig)
 
     model_config = {"env_prefix": "", "env_nested_delimiter": "__"}
 
@@ -217,6 +248,24 @@ def _apply_yaml_to_settings(yaml_config: dict[str, Any]) -> Settings:
         langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", ""),
         langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY", ""),
         sampler_ratio=float(obs_cfg.get("sampler_ratio", 1.0)),
+    )
+
+    retry_cfg = yaml_config.get("retry", {})
+    llm_retry_cfg = retry_cfg.get("llm", {})
+    tool_retry_cfg = retry_cfg.get("tool", {})
+    flat["retry"] = RetryConfig(
+        enabled=retry_cfg.get("enabled", True),
+        llm=RetryLLMConfig(
+            max_attempts=llm_retry_cfg.get("max_attempts", 3),
+            base_delay=float(llm_retry_cfg.get("base_delay", 1.0)),
+            max_delay=float(llm_retry_cfg.get("max_delay", 10.0)),
+            retry_on_parse_error=llm_retry_cfg.get("retry_on_parse_error", False),
+        ),
+        tool=RetryToolConfig(
+            max_attempts=tool_retry_cfg.get("max_attempts", 3),
+            base_delay=float(tool_retry_cfg.get("base_delay", 1.0)),
+            max_delay=float(tool_retry_cfg.get("max_delay", 10.0)),
+        ),
     )
 
     return Settings(**flat)
