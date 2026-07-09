@@ -1,10 +1,13 @@
 """RetryMiddleware 单测（Task 3 先测降级出口 shortcut 存在）"""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import openai
+import pytest
+from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, ValidationError
 
 from space_aiagent.infrastructure.config import RetryConfig, RetryLLMConfig
@@ -119,3 +122,66 @@ async def test_llm_parse_error_retried_when_configured():
     result = await mw.awrap_model_call(SimpleNamespace(), handler)
     assert result == "ok"
     assert handler.call_count == 3
+
+
+# ── Task 6: awrap_tool_call 工具重试 ──
+
+
+def _make_tool_request(tool_call_id: str = "call_test"):
+    """构造 mock ToolCallRequest（ducktyping，需 tool_call 属性）"""
+    return type(
+        "Req",
+        (),
+        {"tool_call": {"name": "add_point_entity", "args": {}, "id": tool_call_id}},
+    )()
+
+
+async def test_tool_timeout_retried_then_succeeds():
+    """TimeoutError → 退避重试后成功"""
+    mw = RetryMiddleware(_fast_cfg())
+    handler = AsyncMock(side_effect=[TimeoutError(), {"success": True}])
+    result = await mw.awrap_tool_call(_make_tool_request(), handler)
+    assert result == {"success": True}
+    assert handler.call_count == 2
+
+
+async def test_tool_timeout_exhausted_returns_tool_message():
+    """TimeoutError 重试耗尽 → 转 ToolMessage(success=false, 超时) 给 LLM"""
+    mw = RetryMiddleware(_fast_cfg())
+    handler = AsyncMock(side_effect=TimeoutError())
+    result = await mw.awrap_tool_call(_make_tool_request("call_x"), handler)
+    assert isinstance(result, ToolMessage)
+    assert result.tool_call_id == "call_x"
+    data = json.loads(result.content)
+    assert data["success"] is False
+    assert "超时" in data["message"]
+    assert handler.call_count == 3
+
+
+async def test_tool_non_timeout_exception_propagates():
+    """非 TimeoutError 异常（如 ValueError/WebSocketDisconnect）→ 不重试，原样冒泡"""
+    mw = RetryMiddleware(_fast_cfg())
+    handler = AsyncMock(side_effect=ValueError("bug"))
+    with pytest.raises(ValueError):
+        await mw.awrap_tool_call(_make_tool_request(), handler)
+    assert handler.call_count == 1
+
+
+async def test_tool_success_false_not_retried():
+    """业务失败(success=false) → 不重试，原样返回给 LLM 消化"""
+    mw = RetryMiddleware(_fast_cfg())
+    biz_fail = {"success": False, "message": "实体已存在"}
+    handler = AsyncMock(return_value=biz_fail)
+    result = await mw.awrap_tool_call(_make_tool_request(), handler)
+    assert result == biz_fail
+    handler.assert_called_once()
+
+
+async def test_disabled_passthrough_tool():
+    """enabled=false → 工具调用透传不重试"""
+    cfg = RetryConfig(enabled=False)
+    mw = RetryMiddleware(cfg)
+    handler = AsyncMock(return_value={"success": True})
+    result = await mw.awrap_tool_call(_make_tool_request(), handler)
+    assert result == {"success": True}
+    handler.assert_called_once()

@@ -9,11 +9,15 @@
 observability.enabled=false 时 span 是 NoOp，set_attribute 无副作用，retry 仍正常工作。
 """
 
+import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import openai
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
+from langchain_core.messages import ToolMessage
+from langgraph.prebuilt.tool_node import ToolCallRequest
 from opentelemetry.trace.span import Span
 from pydantic import ValidationError
 from tenacity import (
@@ -109,3 +113,36 @@ class RetryMiddleware(AgentMiddleware):
                 span.set_attribute("retry.error", type(e).__name__)
                 logger.warning("LLM 不可重试异常，降级 LLM_UNAVAILABLE", error=type(e).__name__)
                 return self._degrade_llm()
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[Any]],
+    ) -> Any:
+        if not self._config.enabled:
+            return await handler(request)
+
+        with optional_span("tool.retry") as span:
+            retrying = AsyncRetrying(
+                stop=stop_after_attempt(self._config.tool.max_attempts),
+                wait=wait_exponential_jitter(
+                    initial=self._config.tool.base_delay, max=self._config.tool.max_delay
+                ),
+                retry=retry_if_exception_type(asyncio.TimeoutError),
+                before_sleep=_make_before_sleep(span),
+            )
+            try:
+                return await retrying(handler, request)
+            except RetryError:
+                # TimeoutError 重试耗尽 → 转 ToolMessage 给 LLM 消化（不短路，不新增 code）
+                span.set_attribute("retry.outcome", "exhausted")
+                tool_call_id = request.tool_call.get("id", "")
+                logger.warning("工具超时重试耗尽，转 ToolMessage", tool_call_id=tool_call_id)
+                return ToolMessage(
+                    content=json.dumps(
+                        {"success": False, "message": "工具调用超时，请稍后重试"},
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            # 非 TimeoutError 异常 tenacity 不重试、原样 reraise，不在此 catch，冒泡到 websocket handler
