@@ -83,9 +83,11 @@ class WSBridge:
             )
             return result
         except TimeoutError:
+            # Phase 1B：超时改抛 asyncio.TimeoutError（不再吞成 {success:false} dict），
+            # 由 RetryMiddleware.awrap_tool_call 捕获并退避重试
             self._pending.pop(tool_call_id, None)
             logger.warning("tool_call 超时", tool_func=tool_func, tool_call_id=tool_call_id, thread_id=self._thread_id)
-            return {"success": False, "message": f"工具调用超时: {tool_func}"}
+            raise
 
     def resolve_tool_result(self, result: ToolResultMessage) -> None:
         """
