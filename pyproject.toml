@@ -45,6 +45,9 @@ dependencies = [
     # 工具
     "rich>=15.0.0",
     "click>=8.4.1",
+
+    # 失败恢复（重试退避引擎）
+    "tenacity>=8.2.3",
 ]
 
 [project.optional-dependencies]
