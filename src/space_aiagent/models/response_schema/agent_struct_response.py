@@ -51,6 +51,9 @@ class ResponseCode(StrEnum):
     # 能力外（用户请求超出当前可用工具范围）
     OUT_OF_SCOPE = auto()
 
+    # 系统失败（LLM 调用重试耗尽 / 不可重试失败，由 RetryMiddleware 注入）
+    LLM_UNAVAILABLE = auto()
+
 
 class AgentResponse(BaseModel):
     """

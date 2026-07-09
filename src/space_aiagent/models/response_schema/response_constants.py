@@ -24,4 +24,10 @@ SHORTCUT_RESPONSES: dict[str, AgentResponse] = {
         summary=DEFAULT_TEMPLATES["TASK_LOOP_GUARD"],
         suggestions=[],
     ),
+    "llm_unavailable": AgentResponse(
+        status="error",
+        code=ResponseCode.LLM_UNAVAILABLE,
+        summary=DEFAULT_TEMPLATES["LLM_UNAVAILABLE"],
+        suggestions=[],
+    ),
 }
