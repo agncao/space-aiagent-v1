@@ -8,9 +8,11 @@
 from pathlib import Path
 
 from space_aiagent.agents import subagents_util
+from space_aiagent.infrastructure.config import get_settings
 from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.middleware import (
+    RetryMiddleware,
     SubagentToolValidationMiddleware,
     agents_dynamic_prompt,
 )
@@ -51,6 +53,7 @@ def load_subagents() -> list[dict]:
                         agent_name=agent_cfg["name"],
                     ),
                     agents_dynamic_prompt,
+                    RetryMiddleware(get_settings().retry),
                 ],
             }
         )
