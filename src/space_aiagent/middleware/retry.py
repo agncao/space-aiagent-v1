@@ -2,14 +2,13 @@
 
 挂在 orchestrator 和子 Agent 链最内层（紧贴真实 LLM/工具调用）。
 - LLM: 可重试异常(429/超时/5xx/连接)退避重试，耗尽/不可重试降级 LLM_UNAVAILABLE
-- 工具: 仅 asyncio.TimeoutError 退避重试，耗尽转 ToolMessage 给 LLM；
+- 工具: 仅 TimeoutError 退避重试，耗尽转 ToolMessage 给 LLM；
   其他异常原样冒泡（连接中断不处理，当前无重连机制）
 
 可观测性：复用 optional_span 子 span + before_sleep 回调写 retry.* attribute。
 observability.enabled=false 时 span 是 NoOp，set_attribute 无副作用，retry 仍正常工作。
 """
 
-import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -60,9 +59,7 @@ def _make_before_sleep(span: Span) -> Callable[[Any], None]:
         exc = retry_state.outcome.exception() if retry_state.outcome else None
         if exc is not None:
             span.set_attribute("retry.last_error", type(exc).__name__)
-        logger.warning(
-            "重试", attempt=attempt, error=type(exc).__name__ if exc else None
-        )
+        logger.warning("重试", attempt=attempt, error=type(exc).__name__ if exc else None)
 
     return _log
 
@@ -72,17 +69,13 @@ class RetryMiddleware(AgentMiddleware):
 
     def __init__(self, config: RetryConfig) -> None:
         self._config = config
-        self._retryable_llm_errors = _build_retryable_llm_errors(
-            config.llm.retry_on_parse_error
-        )
+        self._retryable_llm_errors = _build_retryable_llm_errors(config.llm.retry_on_parse_error)
 
     def _degrade_llm(self) -> ModelResponse:
         """复用 task_loop_guard 改写模式：构造 LLM_UNAVAILABLE 降级 ModelResponse"""
         shortcut = response_constants.SHORTCUT_RESPONSES["llm_unavailable"]
         display = response_util.render(shortcut)
-        return message_util.build_primary_agent_response(
-            display, shortcut, "call_llm_unavailable"
-        )
+        return message_util.build_primary_agent_response(display, shortcut, "call_llm_unavailable")
 
     async def awrap_model_call(
         self,
@@ -95,9 +88,7 @@ class RetryMiddleware(AgentMiddleware):
         with optional_span("llm.retry") as span:
             retrying = AsyncRetrying(
                 stop=stop_after_attempt(self._config.llm.max_attempts),
-                wait=wait_exponential_jitter(
-                    initial=self._config.llm.base_delay, max=self._config.llm.max_delay
-                ),
+                wait=wait_exponential_jitter(initial=self._config.llm.base_delay, max=self._config.llm.max_delay),
                 retry=retry_if_exception_type(self._retryable_llm_errors),
                 before_sleep=_make_before_sleep(span),
             )
@@ -125,10 +116,8 @@ class RetryMiddleware(AgentMiddleware):
         with optional_span("tool.retry") as span:
             retrying = AsyncRetrying(
                 stop=stop_after_attempt(self._config.tool.max_attempts),
-                wait=wait_exponential_jitter(
-                    initial=self._config.tool.base_delay, max=self._config.tool.max_delay
-                ),
-                retry=retry_if_exception_type(asyncio.TimeoutError),
+                wait=wait_exponential_jitter(initial=self._config.tool.base_delay, max=self._config.tool.max_delay),
+                retry=retry_if_exception_type(TimeoutError),
                 before_sleep=_make_before_sleep(span),
             )
             try:

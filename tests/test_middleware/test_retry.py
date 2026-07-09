@@ -113,9 +113,7 @@ async def test_llm_parse_error_retried_when_configured():
     """retry_on_parse_error=true → ValidationError 进重试白名单"""
     cfg = RetryConfig(
         enabled=True,
-        llm=RetryLLMConfig(
-            max_attempts=3, base_delay=0.001, max_delay=0.001, retry_on_parse_error=True
-        ),
+        llm=RetryLLMConfig(max_attempts=3, base_delay=0.001, max_delay=0.001, retry_on_parse_error=True),
     )
     mw = RetryMiddleware(cfg)
     handler = AsyncMock(side_effect=[_make_validation_error(), _make_validation_error(), "ok"])
