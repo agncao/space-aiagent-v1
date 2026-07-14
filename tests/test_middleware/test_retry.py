@@ -13,12 +13,12 @@ from pydantic import BaseModel, ValidationError
 from space_aiagent.infrastructure.config import RetryConfig, RetryLLMConfig
 from space_aiagent.middleware.retry import RetryMiddleware
 from space_aiagent.models.response_schema import response_constants, response_util
-from space_aiagent.models.response_schema.agent_struct_response import ResponseCode
+from space_aiagent.models.response_schema.agent_struct_response import ResponseCode, AgentResponse
 
 
 def test_llm_unavailable_shortcut_exists():
     """SHORTCUT_RESPONSES 含 llm_unavailable，code=LLM_UNAVAILABLE，render 非空"""
-    shortcut = response_constants.SHORTCUT_RESPONSES["llm_unavailable"]
+    shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.LLM_UNAVAILABLE]
     assert shortcut.code == ResponseCode.LLM_UNAVAILABLE
     assert shortcut.status == "error"
     text = response_util.render(shortcut)

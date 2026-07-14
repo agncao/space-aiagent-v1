@@ -22,8 +22,8 @@ def test_retry_config_retry_on_parse_error_can_be_enabled():
 
 
 def test_retry_config_loaded_from_yaml():
-    """application.yaml 的 retry 段能被 _apply_yaml_to_settings 正确读取"""
-    from space_aiagent.infrastructure.config import _apply_yaml_to_settings
+    """application.yaml 的 retry 段能被 apply_yaml_to_settings 正确读取"""
+    from space_aiagent.infrastructure.config import apply_yaml_to_settings
 
     yaml_config = {
         "retry": {
@@ -32,7 +32,7 @@ def test_retry_config_loaded_from_yaml():
             "tool": {"max_attempts": 2, "base_delay": 0.5, "max_delay": 5.0},
         }
     }
-    settings = _apply_yaml_to_settings(yaml_config)
+    settings = apply_yaml_to_settings(yaml_config)
     assert settings.retry.enabled is False
     assert settings.retry.llm.max_attempts == 5
     assert settings.retry.llm.retry_on_parse_error is True

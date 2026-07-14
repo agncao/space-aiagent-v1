@@ -12,22 +12,22 @@ INTENTION_RESUME_TRIGGER_CODES = frozenset({ResponseCode.SCENE_CREATED})
 # shortcut key → 预构建 AgentResponse
 # 新增确定性 case 只需在此追加一条
 SHORTCUT_RESPONSES: dict[str, AgentResponse] = {
-    "no_scene": AgentResponse(
+    ResponseCode.NO_SCENE: AgentResponse(
         status="info",
         code=ResponseCode.NO_SCENE,
-        summary=DEFAULT_TEMPLATES["NO_SCENE"],
+        summary=DEFAULT_TEMPLATES[ResponseCode.NO_SCENE],
         suggestions=[],
     ),
-    "task_loop_guard": AgentResponse(
+    ResponseCode.TASK_LOOP_GUARD: AgentResponse(
         status="confirm",
         code=ResponseCode.TASK_LOOP_GUARD,
-        summary=DEFAULT_TEMPLATES["TASK_LOOP_GUARD"],
+        summary=DEFAULT_TEMPLATES[ResponseCode.TASK_LOOP_GUARD],
         suggestions=[],
     ),
-    "llm_unavailable": AgentResponse(
+    ResponseCode.LLM_UNAVAILABLE: AgentResponse(
         status="error",
         code=ResponseCode.LLM_UNAVAILABLE,
-        summary=DEFAULT_TEMPLATES["LLM_UNAVAILABLE"],
+        summary=DEFAULT_TEMPLATES[ResponseCode.LLM_UNAVAILABLE],
         suggestions=[],
     ),
 }

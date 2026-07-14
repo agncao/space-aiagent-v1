@@ -21,13 +21,21 @@ def _fake_settings(enable_thinking: bool) -> SimpleNamespace:
             base_url="https://dashscope.example/v1",
             temperature=0,
             streaming=True,
+            enable_thinking=enable_thinking,
         ),
-        agent=SimpleNamespace(enable_thinking=enable_thinking),
+        llm_flash=SimpleNamespace(
+            model="qwen3.7-flash-preview",
+            api_key="fake-key",
+            base_url="https://dashscope.example/v1",
+            temperature=0,
+            streaming=True,
+            enable_thinking=enable_thinking,
+        ),
     )
 
 
 def test_build_model_passes_enable_thinking_false_via_extra_body():
-    """settings.agent.enable_thinking=False 必须透传到 ChatOpenAI extra_body"""
+    """settings.llm.enable_thinking=False 必须透传到 ChatOpenAI extra_body"""
     with (
         patch.object(llm_module, "get_settings", return_value=_fake_settings(False)),
         patch.object(llm_module, "ChatOpenAI") as fake_ctor,
@@ -39,7 +47,7 @@ def test_build_model_passes_enable_thinking_false_via_extra_body():
 
 
 def test_build_model_passes_enable_thinking_true_via_extra_body():
-    """settings.agent.enable_thinking=True 同样必须透传，保证配置开关可逆"""
+    """settings.llm.enable_thinking=True 同样必须透传，保证配置开关可逆"""
     with (
         patch.object(llm_module, "get_settings", return_value=_fake_settings(True)),
         patch.object(llm_module, "ChatOpenAI") as fake_ctor,

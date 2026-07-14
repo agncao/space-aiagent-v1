@@ -63,8 +63,8 @@ class AgentResponse(BaseModel):
     status: Literal["success", "error", "info", "confirm"] = Field(
         description="响应状态: success=操作成功, error=操作失败, info=信息查询, confirm=需要确认"
     )
-    code: ResponseCode = Field(description="场景编码，用于匹配渲染模板。如 NO_SCENE, ENTITIES_LIST, SCENE_CREATED")
-    summary: str = Field(description="一句话摘要，模板未命中时作为降级展示")
+    code: ResponseCode = Field(description="响应信息编码，也用于匹配渲染模板。如 NO_SCENE, ENTITIES_LIST, SCENE_CREATED")
+    summary: str = Field(description="响应信息")
     args: dict | None = Field(
         default=None,
         description="JSON格式的数据对象，用于填充模板变量（如 {'count': 5, 'entities': [...]}），"
@@ -92,7 +92,7 @@ class AgentResponse(BaseModel):
 
     @field_validator("suggestions", mode="after")
     @classmethod
-    def _filter_out_of_scope_suggestions(cls, v: list[str]) -> list[str]:
+    def _filter_out_of_scope_suggestions(cls, suggestions: list[str]) -> list[str]:
         """过滤掉能力范围外的 suggestions，避免误导用户
 
         LLM 偶尔会破 prompt 规则生成越界建议（如「添加月球探测器轨道」，
@@ -102,16 +102,16 @@ class AgentResponse(BaseModel):
         候选集由 ToolValidationMiddleware.awrap_model_call 在每个 LLM 调用前
         注入 ContextVar。未设置上下文（启动期/单元测试）时跳过过滤。
         """
-        if not v:
-            return v
+        if not suggestions:
+            return suggestions
         candidates = current_suggestion_candidates_var.get()
         if not candidates:
-            return v
+            return suggestions
         # 子串双向匹配：建议包含候选 OR 候选包含建议
-        logger.debug("原始 suggestions", suggestions=v, candidates=candidates)
-        kept = [s for s in v if any(c in s or s in c for c in candidates)]
+        logger.debug("原始 suggestions", suggestions=suggestions, candidates=candidates)
+        kept = [s for s in suggestions if any(c in s or s in c for c in candidates)]
         logger.debug("suggestions 匹配候选", kept=kept)
-        filtered_out = set(v) - set(kept)
+        filtered_out = set(suggestions) - set(kept)
         if filtered_out:
             logger.warning("过滤越界 suggestions", filtered_out=filtered_out)
         return kept
