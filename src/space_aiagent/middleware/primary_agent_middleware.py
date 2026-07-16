@@ -17,6 +17,7 @@ from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
 from space_aiagent.infrastructure.utils import collection_util, message_util, string_util
 from space_aiagent.models.response_schema import response_constants, response_util
+from space_aiagent.models.response_schema.agent_struct_response import ResponseCode
 
 logger = get_logger(__name__)
 
@@ -73,7 +74,7 @@ class PrimaryAgentMiddleware(AgentMiddleware):
 
     @staticmethod
     def _build_shortcut_response() -> ModelResponse:
-        shortcut = response_constants.SHORTCUT_RESPONSES["task_loop_guard"]
+        shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.TASK_LOOP_GUARD]
         display = response_util.render(shortcut)
         return message_util.build_primary_agent_response(display, shortcut, "call_primary_agent_guard")
 

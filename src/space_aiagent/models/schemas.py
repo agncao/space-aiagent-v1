@@ -4,7 +4,8 @@ Pydantic 数据模型
 定义所有业务实体的数据结构，用于工具参数校验和 API 请求/响应
 """
 
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,34 @@ class ScenarioConfig(BaseModel):
     start_time: str | None = Field(default=None, description="开始时间（ISO 8601）")
     end_time: str | None = Field(default=None, description="结束时间（ISO 8601）")
     description: str | None = Field(default=None, description="场景描述")
+
+
+class ScenarioInfo(BaseModel):
+    """提供给 Agent 和前端渲染器的场景查询结果。"""
+
+    scene_name: str = Field(description="场景名称")
+    update_time: str = Field(default="", description="最后更新时间")
+    file_url: str = Field(default="", description="场景文件地址")
+    uploader_name: str = Field(default="", description="上传人姓名")
+
+    @classmethod
+    def from_frontend(cls, payload: Mapping[str, Any]) -> "ScenarioInfo | None":
+        """从前端原始对象提取展示字段，避免账户敏感字段进入 Agent 上下文。"""
+        scene_name = str(payload.get("name") or payload.get("scene_name") or "").strip()
+        if not scene_name:
+            return None
+
+        uploader = payload.get("uploader")
+        uploader_name = str(payload.get("uploader_name") or "").strip()
+        if isinstance(uploader, Mapping):
+            uploader_name = str(uploader.get("name") or uploader.get("loginName") or "").strip()
+
+        return cls(
+            scene_name=scene_name,
+            update_time=str(payload.get("updateTime") or payload.get("update_time") or "").strip(),
+            file_url=str(payload.get("fileUrl") or payload.get("file_url") or "").strip(),
+            uploader_name=uploader_name,
+        )
 
 
 class EntityPosition(BaseModel):

@@ -40,12 +40,12 @@ from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
 from space_aiagent.infrastructure.utils import message_util
 from space_aiagent.models.response_schema import response_constants
-from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
+from space_aiagent.models.response_schema.agent_struct_response import AgentResponse, ResponseCode
 from space_aiagent.tools.registry import (
     current_suggestion_candidates_var,
     get_suggestion_candidates,
 )
-from space_aiagent.tools.scene_management import read_tools, write_tools
+from space_aiagent.tools.scene_management import tools
 
 logger = get_logger(__name__)
 
@@ -62,8 +62,9 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
     _SCENE_EXEMPT_TOOLS = {
         AgentResponse.__name__,
         "task",
-        write_tools.create_scenario.name,
-        read_tools.query_scenario.name,
+        tools.create_scenario.name,
+        tools.query_scenario.name,
+        tools.open_scenario.name,
     }
 
     def __init__(
@@ -162,7 +163,7 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
         )
         if tool_name not in self._SCENE_EXEMPT_TOOLS and not state_scene:
             logger.warning("校验失败 无场景上下文", tool_name=tool_name)
-            shortcut = response_constants.SHORTCUT_RESPONSES["no_scene"]
+            shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.NO_SCENE]
             return Command(
                 update={
                     "messages": [

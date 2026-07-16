@@ -155,6 +155,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         # 注入 SpaceAgentState.current_scene_name 初值
                         # 后续工具返回 Command 更新该字段，跨 task 边界自动同步
                         "current_scene_name": user_msg.current_scene_name,
+                        # 查询结果只属于当前轮次，避免历史数据影响后续响应渲染。
+                        "scenario_query_results": None,
                     },
                     config={
                         "configurable": {"thread_id": user_msg.thread_id},
@@ -182,7 +184,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             agent_response = output.get("structured_response")
                             if agent_response is None:
                                 continue
-                            rendered = response_util.render(agent_response)
+                            rendered = response_util.render(
+                                agent_response,
+                                scenario_infos=output.get("scenario_query_results"),
+                            )
                             set_span_io(span, output=rendered)
                             await bridge.send_ai_message(rendered)
                             await bridge.send_end()
@@ -211,9 +216,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
-            logger.info("收到用户请求", raw=raw)
             data = json.loads(raw)
             msg_type = data.get("type")
+            # 不记录完整消息体：tool_result 可能携带账户密码、salt 等敏感字段。
+            logger.info(
+                "收到用户请求",
+                msg_type=msg_type,
+                thread_id=data.get("thread_id"),
+                tool_func=data.get("tool_func"),
+                tool_call_id=data.get("tool_call_id"),
+                success=data.get("success"),
+            )
 
             if msg_type == WSMessageType.USER_INPUT:
                 user_msg = UserInputMessage(**data)

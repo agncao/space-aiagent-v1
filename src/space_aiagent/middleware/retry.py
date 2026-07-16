@@ -32,6 +32,7 @@ from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span
 from space_aiagent.infrastructure.utils import message_util
 from space_aiagent.models.response_schema import response_constants, response_util
+from space_aiagent.models.response_schema.agent_struct_response import ResponseCode
 
 logger = get_logger(__name__)
 
@@ -73,7 +74,7 @@ class RetryMiddleware(AgentMiddleware):
 
     def _degrade_llm(self) -> ModelResponse:
         """复用 task_loop_guard 改写模式：构造 LLM_UNAVAILABLE 降级 ModelResponse"""
-        shortcut = response_constants.SHORTCUT_RESPONSES["LLM_UNAVAILABLE"]
+        shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.LLM_UNAVAILABLE]
         display = response_util.render(shortcut)
         return message_util.build_primary_agent_response(display, shortcut, "call_llm_unavailable")
 

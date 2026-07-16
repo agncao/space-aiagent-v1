@@ -10,6 +10,7 @@
 copy_context() + asyncio.create_task(context=...) 隔离运行，
 ContextVar 不跨 task 边界传播）。
 """
+
 from typing import NotRequired
 
 from deepagents.graph import DeepAgentState
@@ -19,3 +20,5 @@ class SpaceAgentState(DeepAgentState):
     """航天 domain state schema"""
 
     current_scene_name: NotRequired[str | None]
+    # 仅保存白名单展示字段；每轮 user_input 会重置，查询成功后由工具写入。
+    scenario_query_results: NotRequired[list[dict[str, str]] | None]

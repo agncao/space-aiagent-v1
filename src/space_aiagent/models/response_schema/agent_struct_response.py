@@ -19,40 +19,56 @@ logger = get_logger(__name__)
 class ResponseCode(StrEnum):
     """Agent 响应场景编码 — 单一数据源
 
-    用 auto() + _generate_next_value_ 让 value 自动等于成员名（保留大写），
-    写法类似 Java enum（只声明名字，不写值）。
+    每个成员同时声明编码和业务含义，schema_description() 会把它们写入
+    AgentResponse.code 的 JSON Schema description，供 LLM 选择正确编码。
 
     注意：StrEnum 默认 _generate_next_value_ 会返回 name.lower()，
     此处覆盖为返回 name 原文，与 response_templates.yaml 的大写键对齐。
 
     新增 code 时务必同步：
-    1. config/response_templates.yaml（不然会走 _fallback_text）
-    2. prompts/*.md（告诉 LLM 何时用）
+    1. 在枚举成员旁声明清晰、互斥的业务含义
+    2. 确定性短路响应需要同步 response_constants.SHORTCUT_RESPONSES
     """
+
+    description: str
+
+    def __new__(cls, value: str, description: str):
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.description = description
+        return member
 
     @staticmethod
     def _generate_next_value_(name, start, count, last_values):
         return name  # 覆盖 StrEnum 默认的 name.lower()，保持大写以匹配 yaml 键
 
     # 场景生命周期
-    NO_SCENE = auto()
-    TASK_LOOP_GUARD = auto()
-    SCENE_CREATED = auto()
-    SCENE_RENAMED = auto()
-    SCENE_DELETED = auto()
+    NO_SCENE = auto(), "当前没有打开的场景"
+    TASK_LOOP_GUARD = auto(), "主控 Agent 连续委派任务达到保护阈值，需要用户补充信息后再继续"
+    SCENE_CREATED = auto(), "场景成功创建"
+    SCENE_RENAMED = auto(), "场景成功重命名"
+    SCENE_DELETED = auto(), "场景成功删除"
+    SCENE_QUERIED = auto(), "成功查询场景信息"
+    SCENE_OPENED = auto(), "成功打开场景"
 
     # 实体生命周期
-    ENTITIES_EMPTY = auto()
-    ENTITIES_LIST = auto()
-    ENTITIES_ADDED = auto()
-    ENTITY_CREATED = auto()
-    ENTITIES_CLEARED = auto()
+    ENTITIES_EMPTY = auto(), "实体查询成功，但当前场景中没有实体"
+    ENTITIES_LIST = auto(), "实体查询成功，返回当前场景中的实体列表"
+    ENTITIES_ADDED = auto(), "已成功添加一个或者多个实体"
+    ENTITY_CREATED = auto(), "已成功创建并添加实体到当前场景"
+    ENTITIES_CLEARED = auto(), "成功清除所有实体"
 
     # 能力外（用户请求超出当前可用工具范围）
-    OUT_OF_SCOPE = auto()
+    OUT_OF_SCOPE = auto(), "用户请求超出能力范围"
 
     # 系统失败（LLM 调用重试耗尽 / 不可重试失败，由 RetryMiddleware 注入）
-    LLM_UNAVAILABLE = auto()
+    LLM_UNAVAILABLE = auto(), "LLM 调用重试耗尽或发生不可重试错误，AI 服务暂时不可用"
+
+    @classmethod
+    def schema_description(cls) -> str:
+        """生成会传给 LLM 的枚举值语义说明。"""
+        code_descriptions = "\n".join(f"- {member.value}: {member.description}" for member in cls)
+        return f"响应信息编码，用于准确标识本轮结果。请根据以下业务含义选择：\n{code_descriptions}"
 
 
 class AgentResponse(BaseModel):
@@ -63,7 +79,7 @@ class AgentResponse(BaseModel):
     status: Literal["success", "error", "info", "confirm"] = Field(
         description="响应状态: success=操作成功, error=操作失败, info=信息查询, confirm=需要确认"
     )
-    code: ResponseCode = Field(description="响应信息编码，也用于匹配渲染模板。如 NO_SCENE, ENTITIES_LIST, SCENE_CREATED")
+    code: ResponseCode = Field(description=ResponseCode.schema_description())
     summary: str = Field(description="响应信息")
     args: dict | None = Field(
         default=None,

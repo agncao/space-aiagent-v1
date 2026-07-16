@@ -72,10 +72,7 @@ async def create_scenario(
         args=args,
     )
     if result["success"]:
-        data: dict = result.get("data") or {}
-        scene_name_resolved = data.get("scene_name")
-        logger.debug("create_scenario success", scene_name=scene_name_resolved)
-        return _build_command(result, runtime, scene_name=scene_name_resolved)
+        return _build_command(result, runtime, scene_name=result.get("current_scene_name") )
     return _build_command(result, runtime)
 
 
@@ -93,9 +90,7 @@ async def rename_scenario(runtime: ToolRuntime, scene_name: str) -> Command:
         args=args,
     )
     if result["success"]:
-        data: dict = result.get("data") or {}
-        scene_name_resolved = data.get("scene_name")
-        return _build_command(result, runtime, scene_name=scene_name_resolved)
+        return _build_command(result, runtime, scene_name=result.get("current_scene_name"))
     return _build_command(result, runtime)
 
 
