@@ -27,6 +27,8 @@ Skill，还能购买产品方或第三方的 Skill 包。
 |------|------|------|
 | **Phase 1A-1** | 可观测性 - AI 维度（OTel instrumentation + Langfuse v3 自部署，trace + token 归因）| ✅ 已完成（2026-07-02） |
 | **Phase 1B** | 失败恢复（重试 + 降级）| ✅ 已完成（2026-07-10）|
+| **传输层迁移** | WebSocket → SSE+POST 事件流（token/tool_start/tool_args/tool_result/tool_end/interrupt/done），删 WS（[spec](docs/superpowers/specs/2026-07-21-sse-migration-design.md) / [plan](docs/superpowers/plans/2026-07-21-sse-migration.md)）| 🔵 进行中（2026-07-21）|
+| **Human-in-the-loop** | interrupt 人工接管（graph interrupt() + /resume 续跑 + 前端决策 UI）| 🟡 待启动（传输层迁移之后）|
 | **Phase 2** | Skill 系统第一版（Anthropic 风格协议 + LLM 主动检索 + load_skill 工具 + 3-5 个示例 + 多模型路由 + 基础审计）| 🔵 准备中 |
 | **Phase 1C** | 工具能力补全（数据查询、报告生成等）| 🟡 待启动 |
 | **Phase 1A-2** | 可观测性 - 系统指标（Prometheus 采集，QPS/延迟/资源）| 🟡 待启动（延后至 1C 之后）|
