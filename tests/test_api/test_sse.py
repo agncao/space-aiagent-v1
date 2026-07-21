@@ -191,6 +191,64 @@ async def test_chat_emits_token_frame(monkeypatch, chat_request_body: dict) -> N
     assert "".join(token_contents) == "正在处理"
 
 
+async def test_chat_token_filters_tool_call_chunks(monkeypatch, chat_request_body: dict) -> None:
+    """spike 结论验证：结构化输出的 tool_call 碎片（content 空）不发 token，只发自由文本 content。
+
+    spike（2026-07-21 真 LLM）显示 orchestrator/子 agent 的结构化输出以
+    tool_call_chunks 流式（content 为空），自由文本以 content 流式。fake agent
+    产出 content文本 → tool_call碎片(content空) → content文本 → done，断言
+    只有两个 token 帧（碎片被过滤），且 source 非空（无 metadata 时 "agent" 兜底）。
+    """
+    agent_response = AgentResponse(
+        status="success",
+        code=ResponseCode.ENTITY_CREATED,
+        summary="已创建",
+        suggestions=[],
+    )
+
+    class _ToolCallChunk(_FakeChunk):
+        """模拟结构化输出的 tool_call 流式碎片：content 空，带 tool_call_chunks"""
+
+        def __init__(self) -> None:
+            super().__init__("")
+            self.tool_call_chunks = [
+                {"name": "create_scenario", "args": '{"scene_name":', "id": "", "index": 0}
+            ]
+
+    async def _factory(_thread_id: str) -> Any:
+        return _FakeAgent(
+            [
+                {"event": "on_chat_model_stream", "name": "ChatOpenAI",
+                 "metadata": {"langgraph_node": "model"},
+                 "data": {"chunk": _FakeChunk("我将")}},
+                {"event": "on_chat_model_stream", "name": "ChatOpenAI",
+                 "metadata": {"langgraph_node": "model"},
+                 "data": {"chunk": _ToolCallChunk()}},
+                {"event": "on_chat_model_stream", "name": "ChatOpenAI",
+                 "metadata": {"langgraph_node": "model"},
+                 "data": {"chunk": _FakeChunk("为您创建")}},
+                {"event": "on_chain_end", "name": "orchestrator",
+                 "data": {"output": {"structured_response": agent_response}}},
+            ]
+        )
+
+    monkeypatch.setattr(sse_module, "_get_or_create_agent", _factory)
+    from space_aiagent.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post("/api/v1/space/chat", json=chat_request_body)
+
+    assert resp.status_code == 200
+    frames = _parse_sse_frames(resp.text)
+    token_frames = [d for ev, d in frames if ev == "token"]
+    # tool_call 碎片被过滤，只余两个 content token
+    assert len(token_frames) == 2, f"tool_call 碎片未被过滤，token 帧数: {len(token_frames)}"
+    assert "".join(d["content"] for d in token_frames) == "我将为您创建"
+    # source 从 metadata.langgraph_node 解析（spike 实测统一为 "model"）
+    assert all(d["source"] == "model" for d in token_frames), "source 应取 langgraph_node='model'"
+
+
 async def test_chat_emits_error_on_exception(monkeypatch, chat_request_body: dict) -> None:
     """fake agent 抛异常 → SSE 流以 error 帧终止"""
 

@@ -121,8 +121,13 @@ def _extract_chunk_text(chunk: Any) -> str:
     """从 on_chat_model_stream 的 chunk 中抽取文本内容
 
     chunk.content 既可能是 str，也可能是 list[ContentBlock]（如 deepagents
-    MemoryMiddleware/SubagentsMiddleware 改写后的结构）。基本版兜底，
-    T5 会精细化 source 抽取。
+    MemoryMiddleware/SubagentsMiddleware 改写后的结构）。
+
+    spike 结论（2026-07-21，真 LLM：DashScope qwen）：结构化输出的 token
+    以 tool_call_chunks 形式流式（content 为空），自由文本以 content 形式
+    流式。本函数只取 content 文本，空 content（tool_call JSON 碎片）自然
+    返回 "" → 调用方不发 token，从而过滤掉 orchestrator/子 agent 的结构化
+    JSON 参数碎片，只把真正的自由文本 token 发给前端。
     """
     content = getattr(chunk, "content", None)
     if isinstance(content, str):
@@ -190,10 +195,15 @@ async def run_agent(bridge: Any, chat_request: ChatRequest) -> None:
                         text = _extract_chunk_text(chunk)
                         if not text:
                             continue
-                        # source 暂留空字符串（T5 精细化 metadata 解析）
+                        # source 从 metadata best-effort 解析。spike 确认当前
+                        # astream_events 的 langgraph_node 全为 "model"、tags 为空，
+                        # 无法区分 orchestrator / 子 agent，故 source 暂为统一值；
+                        # 未来 deepagents 若丰富 metadata（node/tags 带 agent 标识），
+                        # 在此细化即可实现前端按来源过滤。
+                        source = (event.get("metadata") or {}).get("langgraph_node") or "agent"
                         await bridge._emit(
                             SSEEventType.TOKEN,
-                            {"content": text, "source": ""},
+                            {"content": text, "source": source},
                         )
                     elif kind == "on_tool_start":
                         # AgentResponse 是结构化输出占位工具，不向前端发事件

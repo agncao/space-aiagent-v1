@@ -75,6 +75,12 @@ WebSocket 技术上能逐条发这些事件，但语义不对：它是全双工�
 
 **已知 caveat（须如实告知前端）**：orchestrator 用 `ToolStrategy(AgentResponse)` 结构化输出，其「token」是 tool-call JSON 参数碎片（DeepSeek/Qwen 走 tool calling），展示不友好；子 agent 若产自由文本则可读。**前端按 `source` 过滤决定展示哪些**（如只显示子 agent 推理、隐藏 orchestrator JSON 碎片）。实现期须先 spike 确认结构化输出的流式 chunk 实际落在哪个 event（`on_chat_model_stream` 内容块 vs tool-call arg delta），再定最终 hook 点。
 
+**Spike 结论（2026-07-21，真 LLM 实测：DashScope qwen3.7-plus 主 / qwen3.6-flash）**：
+1. 结构化输出（orchestrator 调 `task`、子 agent 调 `create_scenario` 等）以 **`tool_call_chunks`** 形式流式，`chunk.content` 为空；自由文本（如子 agent 的「我将为您创建一个测试场景。」）以 **`content`** 形式流式。
+2. **过滤策略落地**：`_extract_chunk_text` 只取 `content` 文本，空 content（tool_call 碎片）返回 `""` → hook 跳过不发 token。结果：JSON 参数碎片天然被过滤，只把真正的自由文本 token 发给前端，无需前端额外过滤。
+3. **`source` 无法区分 agent 来源**：所有 `on_chat_model_stream` 事件的 `name='ChatOpenAI'`、`metadata.langgraph_node='model'`、`tags=[]`，orchestrator 与子 agent 完全一致。故 §4.4「source 标识来源 agent」的期望**无法实现**，`source` 暂取 `langgraph_node`（当前统一为 `"model"`，无 metadata 时兜底 `"agent"`）。未来 deepagents 若在 metadata 里带 agent 标识，可在 hook 处细化。前端据此不应假设 source 能区分 agent。
+4. 结论：token 流式对**自由文本**有效（用户能看到 agent 思考/回复逐字流出），对结构化 JSON 碎片正确过滤。这与原 caveat 的方向一致，但「靠 source 过滤」改为「靠 content 非空过滤」，更可靠。
+
 ### 3.4 interrupt 协议先就位、实现延后
 
 **已否决**：
@@ -156,7 +162,7 @@ SSE 帧格式（标准 `text/event-stream`，带 `event:` 类型行，每帧以�
 
 ```
 event: token
-data: {"content":"创建","source":"scene-agent","thread_id":"t1"}
+data: {"content":"创建","source":"model","thread_id":"t1"}
 
 event: tool_start
 data: {"tool_func":"createScenario","namespace":"scene_tools","tool_call_id":"<uuid>","thread_id":"t1"}
@@ -197,7 +203,7 @@ event_generator():
 ```
 
 `run_agent` 内部（迁移自 `api/websocket.py:run_agent` 的 `astream_events` 循环）：
-- `on_chat_model_stream` → `bridge._emit("token", {content, source})`（source 从 event metadata 解析）
+- `on_chat_model_stream` → `bridge._emit("token", {content, source})`（source 从 event metadata 取 `langgraph_node`；spike 证实目前统一为 `"model"`/`"agent"`，无法区分 agent，见 §3.3）
 - `on_tool_start`（非 AgentResponse）→ 可选 `bridge._emit` 一个带 `display` 的中间消息，或省略（由 tool_start 事件替代）
 - `on_chain_end` 且 `output.structured_response` 存在 → `rendered = response_util.render(...)` → `bridge._emit("done", {content: rendered})` → return
 - 异常 → `bridge._emit("error", {message: str(e)})`
