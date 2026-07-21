@@ -16,6 +16,7 @@ from space_aiagent.bridge import bridge_var
 from space_aiagent.models.enums import EntityType
 from space_aiagent.models.schemas import EntityConfig, EntityPosition
 
+_NAMESPACE:str = "entity_tools"
 
 @tool(args_schema=EntityConfig)
 async def add_point_entity(
@@ -49,6 +50,7 @@ async def add_point_entity(
     # 前端对应方法: SceneTools.addPointEntity(input)
     # 前端内部调用: ProtoTreeData.addEntityByData(data) 创建 CZML 兼容实体
     return await bridge.send_tool_call(
+        namespace=_NAMESPACE,
         tool_func="addPointEntity",
         args=args,
     )
@@ -61,6 +63,7 @@ async def query_entities() -> dict:
     """
     bridge = bridge_var.get()
     return await bridge.send_tool_call(
+        namespace=_NAMESPACE,
         tool_func="queryEntities",
         args={},
     )
@@ -72,6 +75,7 @@ async def clear_entities() -> dict:
     """
     bridge = bridge_var.get()
     return await bridge.send_tool_call(
+        namespace=_NAMESPACE,
         tool_func="clearEntities",
         args={},
     )

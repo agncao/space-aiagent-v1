@@ -14,7 +14,7 @@ from langchain_core.tools import tool
 
 from space_aiagent.bridge import bridge_var
 from space_aiagent.models.schemas import OrbitUpdateParam, SGP4Param
-
+_NAMESPACE = "entity_tools"
 
 @tool(args_schema=SGP4Param)
 async def create_sgp4_orbit(
@@ -50,6 +50,7 @@ async def create_sgp4_orbit(
     #   4. ProtoTreeData.dataSource.load(czml) 加载到场景
     #   5. 添加实体到场景树
     return await bridge.send_tool_call(
+        namespace=_NAMESPACE,
         tool_func="createSGP4Orbit",
         args=args,
     )
@@ -82,6 +83,7 @@ async def update_sgp4_orbit(
     #   2. 设置 Cesium.PolylineGlowMaterialProperty（颜色、发光、渐变）
     #   3. solarSystem.requestRender() 刷新渲染
     return await bridge.send_tool_call(
+        namespace=_NAMESPACE,
         tool_func="updateSGP4Orbit",
         args=args,
     )

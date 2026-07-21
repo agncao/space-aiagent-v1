@@ -32,6 +32,7 @@ class ToolCallMessage(WSMessage):
     """工具调用指令（后端 -> 前端）"""
 
     type: WSMessageType = WSMessageType.TOOL_CALL
+    namespace: str = Field(description="工具函数所在命名空间s")
     tool_func: str = Field(description="工具函数名")
     tool_func_args: dict = Field(default_factory=dict, description="工具参数")
     tool_call_id: str = Field(default="", description="工具调用ID")

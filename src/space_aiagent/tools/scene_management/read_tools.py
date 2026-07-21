@@ -20,7 +20,7 @@ from space_aiagent.bridge import bridge_var
 from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.schemas import ScenarioInfo
 
-
+_NAMESPACE = "scene_tools"
 def _normalize_scenario_query_result(
     result: dict[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, str]] | None]:
@@ -68,6 +68,7 @@ async def query_scenario(runtime: ToolRuntime, scene_name: str | None = None) ->
 
     bridge = bridge_var.get()
     result = await bridge.send_tool_call(
+        namespace=_NAMESPACE,
         tool_func=string_util.snake_to_camel(tool_func),
         args=args,
     )
@@ -110,6 +111,7 @@ async def open_scenario(
 
     bridge = bridge_var.get()
     result = await bridge.send_tool_call(
+        namespace=_NAMESPACE,
         tool_func=string_util.snake_to_camel(tool_func),
         args=args,
     )

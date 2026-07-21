@@ -44,6 +44,7 @@ class WSBridge:
 
     async def send_tool_call(
         self,
+        namespace: str,
         tool_func: str,
         args: dict,
         timeout: float = 60,
@@ -52,6 +53,8 @@ class WSBridge:
         发送工具调用指令到前端，等待执行结果
 
         Args:
+            namespace: 前端工具函数所在的明明空间, 例如:
+                sceneTools.createScenario, sceneTools为命名空间
             tool_func: 前端工具函数名（如 "createScenario"）
             args: 工具参数
             timeout: 等待超时时间（秒）
@@ -67,6 +70,7 @@ class WSBridge:
         # 构建 ToolCallMessage 并发送到前端
         message = ToolCallMessage(
             thread_id=self._thread_id,
+            namespace=namespace,
             tool_func=tool_func,
             tool_func_args=args,
             tool_call_id=tool_call_id,

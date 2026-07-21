@@ -21,7 +21,7 @@ from space_aiagent.models.schemas import ScenarioConfig
 
 logger = get_logger(__name__)
 
-
+_NAMESPACE = "scene_tools"
 def _build_command(
     result: dict,
     runtime: ToolRuntime,
@@ -68,6 +68,7 @@ async def create_scenario(
     args: dict = string_util.args_to_camel(create_scenario, locals())
 
     result = await bridge.send_tool_call(
+        namespace=_NAMESPACE,
         tool_func=string_util.snake_to_camel(tool_func),
         args=args,
     )
@@ -86,6 +87,7 @@ async def rename_scenario(runtime: ToolRuntime, scene_name: str) -> Command:
     args: dict = string_util.args_to_camel(rename_scenario, locals())
 
     result = await bridge.send_tool_call(
+        namespace=_NAMESPACE,
         tool_func=string_util.snake_to_camel(tool_func),
         args=args,
     )
@@ -103,6 +105,7 @@ async def delete_scene(runtime: ToolRuntime) -> Command:
     tool_func = inspect.currentframe().f_code.co_name
 
     result = await bridge.send_tool_call(
+        namespace=_NAMESPACE,
         tool_func=string_util.snake_to_camel(tool_func),
         args={},
     )
