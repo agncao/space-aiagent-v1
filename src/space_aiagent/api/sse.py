@@ -40,6 +40,7 @@ from space_aiagent.infrastructure.database import get_db
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
 from space_aiagent.middleware.primary_agent_middleware import orchestrator_task_streak_var
+from space_aiagent.models.messages import ToolResultMessage
 from space_aiagent.models.response_schema import response_util
 from space_aiagent.models.sse_events import TERMINAL_EVENTS, SSEEventType, format_sse_frame
 
@@ -63,6 +64,24 @@ class ChatRequest(BaseModel):
         default=None,
         description="当前已打开的场景名（注入 SpaceAgentState 初值）",
     )
+
+
+class ToolResultRequest(BaseModel):
+    """POST /tool-result 请求体
+
+    与 WS 时代的 ToolResultMessage 等价但剥离 WS 专用字段（type），
+    并显式携带 thread_id（原 ToolResultMessage 通过 WSMessage 基类携带 thread_id，
+    HTTP 入参需独立字段）。字段名/类型/默认值与 ToolResultMessage 对齐。
+    """
+
+    tool_func: str = Field(description="工具函数名")
+    args: dict = Field(default_factory=dict, description="工具参数")
+    tool_call_id: str = Field(description="工具调用ID（与 tool_start 帧一致）")
+    thread_id: str = Field(description="会话 thread_id（用于定位 StreamBridge）")
+    success: bool = Field(default=True, description="是否成功")
+    message: str = Field(default="", description="结果消息")
+    data: dict | list | None = Field(default=None, description="返回数据")
+    code: str = Field(default="", description="消息码")
 
 
 # ── Agent 实例缓存 + checkpointer（迁移自 websocket.py）───────────────────
@@ -295,3 +314,47 @@ async def chat(chat_request: ChatRequest) -> StreamingResponse:
             "Connection": "keep-alive",
         },
     )
+
+
+@router.post("/tool-result")
+async def tool_result(req: ToolResultRequest) -> dict:
+    """POST /tool-result — 解析前端返回的工具执行结果
+
+    流程：
+    1. 通过 thread_id 定位活跃会话的 StreamBridge；无 bridge → 404
+       （会话已结束 / 不存在 / 客户端未先 POST /chat）
+    2. 构造 ToolResultMessage，调用 bridge.resolve_tool_result
+       （resolve_tool_result 内部按 tool_call_id 找到 Future 并 set_result，
+       排除 type/thread_id/tool_call_id/tool_func 字段；未知 id 仅 warning）
+    3. 返回 {ok: true}
+
+    本 handler 是短请求，不需 await 重活（resolve_tool_result 是同步操作）。
+    """
+    bridge = session_manager.get_bridge(req.thread_id)
+    if bridge is None:
+        # 无活跃会话：会话已结束 / 客户端未先 POST /chat / thread_id 错误
+        logger.warning("tool-result 找不到活跃会话", thread_id=req.thread_id)
+        raise HTTPException(status_code=404, detail="无活跃会话")
+
+    # 构造 ToolResultMessage 并 resolve 对应 Future
+    # resolve_tool_result 会从 _pending 中弹出并 set_result，
+    # 触发正在 await 的 send_tool_call 继续执行 → emit tool_result / tool_end
+    msg = ToolResultMessage(
+        thread_id=req.thread_id,
+        tool_func=req.tool_func,
+        args=req.args,
+        tool_call_id=req.tool_call_id,
+        success=req.success,
+        message=req.message,
+        data=req.data,
+        code=req.code,
+    )
+    bridge.resolve_tool_result(msg)
+    logger.info(
+        "tool-result 已 resolve",
+        thread_id=req.thread_id,
+        tool_call_id=req.tool_call_id,
+        tool_func=req.tool_func,
+        success=req.success,
+    )
+    return {"ok": True}

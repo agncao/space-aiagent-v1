@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -216,3 +217,85 @@ async def test_chat_emits_error_on_exception(monkeypatch, chat_request_body: dic
     events = [ev for ev, _ in frames]
     assert events[-1] == "error"
     assert "boom" in frames[-1][1]["message"]
+
+
+# ── POST /tool-result 测试 ────────────────────────────────────────────────
+
+
+async def test_tool_result_resolves_pending_future() -> None:
+    """POST /tool-result → 定位 bridge → resolve 对应 Future
+
+    验证：手动在 bridge._pending 中放入已知 id 的 pending Future，
+    POST 携带匹配的 tool_call_id + thread_id 后，Future 应被 set_result，
+    且结果字段排除 type/thread_id/tool_call_id/tool_func（与 resolve_tool_result 契约一致）。
+    """
+    from space_aiagent.main import app
+
+    thread_id = "tr-thread-1"
+    tool_call_id = "tcid-1234"
+
+    # 注册活跃 session（POST /tool-result 前提条件）
+    bridge = sse_module.session_manager.register(thread_id)
+
+    # 手动构造 pending Future（模拟 send_tool_call 内部 await 的 Future）
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    bridge._pending[tool_call_id] = future
+
+    body = {
+        "tool_func": "createScenario",
+        "args": {"sceneName": "测试场景"},
+        "tool_call_id": tool_call_id,
+        "thread_id": thread_id,
+        "success": True,
+        "message": "ok",
+        "data": {"sceneId": 42},
+        "code": "SCENE_CREATED",
+    }
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post("/api/v1/space/tool-result", json=body)
+
+    # 响应应立即返回 {ok: true}
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True}
+
+    # Future 应已 resolve（done），携带排除 type/thread_id/tool_call_id/tool_func 的字段
+    assert future.done(), "Future 未被 resolve"
+    result = future.result()
+    assert result["success"] is True
+    assert result["message"] == "ok"
+    assert result["data"] == {"sceneId": 42}
+    assert result["code"] == "SCENE_CREATED"
+    assert result["args"] == {"sceneName": "测试场景"}
+    # resolve_tool_result 契约：排除 type/thread_id/tool_call_id/tool_func
+    assert "type" not in result
+    assert "thread_id" not in result
+    assert "tool_call_id" not in result
+    assert "tool_func" not in result
+
+    # bridge._pending 应已弹出对应 id
+    assert tool_call_id not in bridge._pending
+
+
+async def test_tool_result_no_session_404() -> None:
+    """POST /tool-result 对无活跃会话的 thread_id → 404"""
+    from space_aiagent.main import app
+
+    body = {
+        "tool_func": "createScenario",
+        "args": {},
+        "tool_call_id": "tcid-none",
+        "thread_id": "non-existent-thread",
+        "success": True,
+        "message": "",
+        "data": None,
+        "code": "",
+    }
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post("/api/v1/space/tool-result", json=body)
+
+    assert resp.status_code == 404
+    assert "无活跃会话" in resp.json()["detail"]
