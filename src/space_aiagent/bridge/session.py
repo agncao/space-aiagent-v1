@@ -1,73 +1,56 @@
 """
-会话管理器
+会话管理器（SSE 迁移）
 
-管理 WebSocket 连接与 thread_id 的映射关系。
-每个前端连接对应一个 thread_id，Agent 处理时需要找到对应的 WS 连接发送指令。
+管理 StreamBridge 实例与 thread_id 的映射。每个活跃 SSE 会话对应一个 thread_id
+与一个 StreamBridge；POST /chat 在 register 时创建，event_generator 终止时
+unregister。
+
+并发护栏：register 之前调用 get_bridge 检查是否已有活跃 session（活跃则返 409）。
+WS 时代单连接串行处理多轮，SSE+POST 时代每个 POST 独立，需要 SessionManager 守住
+「同 thread_id 同时只允许一个 agent 运行」的不变式，避免 checkpointer 冲突。
 """
-
-from fastapi import WebSocket
 
 from space_aiagent.infrastructure.logging import get_logger
 
-from .ws_bridge import WSBridge
+from .stream_bridge import StreamBridge
 
 logger = get_logger(__name__)
 
 
 class SessionManager:
-    """
-    会话管理器
+    """会话管理器
 
-    管理以下映射关系:
-    - thread_id -> WebSocket 连接
-    - thread_id -> WSBridge 实例
+    管理映射：thread_id -> StreamBridge。
     """
 
     def __init__(self) -> None:
-        # thread_id -> WebSocket
-        self._connections: dict[str, WebSocket] = {}
-        # thread_id -> WSBridge
-        self._bridges: dict[str, WSBridge] = {}
+        # thread_id -> StreamBridge
+        self._bridges: dict[str, StreamBridge] = {}
 
-    def register(self, thread_id: str, websocket: WebSocket) -> WSBridge:
-        """
-        注册新的 WebSocket 连接
+    def register(self, thread_id: str) -> StreamBridge:
+        """注册新会话并创建对应的 StreamBridge 实例
 
-        创建对应的 WSBridge 实例并存储映射关系。
-        如果 thread_id 已存在，先清理旧连接。
+        调用方必须先调 ``get_bridge`` 做并发检查（活跃则 409），再调本方法。
+        返回新建的 StreamBridge（事件出口由本 SSE 流消费）。
 
         Returns:
-            新创建的 WSBridge 实例
+            新创建的 StreamBridge 实例
         """
-        # 清理旧连接（同一 thread_id 重新连接的情况）
-        if thread_id in self._bridges:
-            old_bridge = self._bridges[thread_id]
-            old_bridge.cleanup()
-            logger.info("旧连接被替换", thread_id=thread_id)
-
-        bridge = WSBridge(websocket, thread_id)
-        self._connections[thread_id] = websocket
+        bridge = StreamBridge(thread_id)
         self._bridges[thread_id] = bridge
         logger.info("注册新连接", thread_id=thread_id)
         return bridge
 
     def unregister(self, thread_id: str) -> None:
-        """
-        注销连接（断开时调用）
+        """注销会话（SSE 流终止时调用）
 
         清理 bridge 的 pending futures，并从映射中移除。
         """
         bridge = self._bridges.pop(thread_id, None)
         if bridge:
             bridge.cleanup()
-
-        self._connections.pop(thread_id, None)
         logger.info("注销连接", thread_id=thread_id)
 
-    def get_websocket(self, thread_id: str) -> WebSocket | None:
-        """根据 thread_id 获取 WebSocket 连接"""
-        return self._connections.get(thread_id)
-
-    def get_bridge(self, thread_id: str) -> WSBridge | None:
-        """根据 thread_id 获取 WSBridge 实例"""
+    def get_bridge(self, thread_id: str) -> StreamBridge | None:
+        """根据 thread_id 获取 StreamBridge 实例"""
         return self._bridges.get(thread_id)
