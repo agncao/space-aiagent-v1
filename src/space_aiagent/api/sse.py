@@ -84,6 +84,18 @@ class ToolResultRequest(BaseModel):
     code: str = Field(default="", description="消息码")
 
 
+class ResumeRequest(BaseModel):
+    """POST /chat/{thread_id}/resume 请求体（interrupt 协议占位，当前 /resume 返 501）
+
+    interrupt 实现落地后，前端在收到 ``event: interrupt`` 帧后收集用户决策/补充数据，
+    通过此端点恢复 Agent 执行。resume 数据格式取决于中断类型（数据补充 /
+    HITL 审批等），故用宽松 dict。graph 级 ``interrupt()`` + resume 续跑是下一步
+    独立任务（见 CLAUDE.md 路线图 / spec §4.8）。
+    """
+
+    resume: dict = Field(default_factory=dict, description="恢复数据（格式取决于中断类型）")
+
+
 # ── Agent 实例缓存 + checkpointer（迁移自 websocket.py）───────────────────
 _agent_cache: dict[str, object] = {}
 
@@ -278,6 +290,11 @@ async def event_generator(
     agent_task = asyncio.create_task(run_agent(bridge, chat_request))
 
     try:
+        # 事件透传：bridge._queue 中的任意事件（token/tool_*/done/error，以及
+        # 未来 graph interrupt() 落地后由 agent emit 的 interrupt）都经
+        # format_sse_frame 转成 SSE 帧发给前端。interrupt 当前无 emit 源
+        # （graph interrupt() 是下一步任务），但事件类型已定义（T2）、
+        # 透传路径已就绪，无需此处理特分支。
         while True:
             item = await bridge._queue.get()
             event_name = item["event"]
@@ -368,3 +385,19 @@ async def tool_result(req: ToolResultRequest) -> dict:
         success=req.success,
     )
     return {"ok": True}
+
+
+@router.post("/chat/{thread_id}/resume")
+async def resume(thread_id: str, req: ResumeRequest) -> dict:
+    """POST /chat/{thread_id}/resume — interrupt 人工接管恢复（协议占位，当前返 501）
+
+    协议就位：前端在收到 ``event: interrupt`` 帧后，POST 此端点携带 resume 数据
+    恢复 Agent，响应未来为 SSE 流（续跑事件）。graph 级 ``interrupt()`` + resume
+    续跑 + 前端决策 UI 是下一步独立任务（见 CLAUDE.md 路线图 / spec §4.8），
+    当前直接返 501 NotImplemented。
+    """
+    logger.info("resume 请求（interrupt 未实现，返 501）", thread_id=thread_id)
+    raise HTTPException(
+        status_code=501,
+        detail="interrupt 实现延后（graph interrupt() + resume 续跑），见下一步任务",
+    )

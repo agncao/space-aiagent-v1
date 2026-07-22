@@ -357,3 +357,21 @@ async def test_tool_result_no_session_404() -> None:
 
     assert resp.status_code == 404
     assert "无活跃会话" in resp.json()["detail"]
+
+
+# ── POST /chat/{thread_id}/resume 测试（interrupt 协议占位）────────────────
+
+
+async def test_resume_returns_501() -> None:
+    """POST /chat/{thread_id}/resume — interrupt 未实现，返 501 NotImplemented"""
+    from space_aiagent.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post(
+            "/api/v1/space/chat/some-thread/resume",
+            json={"resume": {"supplement": "补充信息"}},
+        )
+
+    assert resp.status_code == 501
+    assert "interrupt" in resp.json()["detail"]
