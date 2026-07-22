@@ -11,14 +11,31 @@ copy_context() + asyncio.create_task(context=...) 隔离运行，
 ContextVar 不跨 task 边界传播）。
 """
 
-from typing import NotRequired
+from typing import Annotated, Any, NotRequired
 
 from deepagents.graph import DeepAgentState
+
+
+def update_tool_result(
+    left: list[dict[str, Any]] | None,
+    right: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """去重追加同一步产生的并发工具结果。"""
+    if right is None:
+        return None
+    merged = list(left or [])
+    merged.extend(result for result in right if result not in merged)
+    return merged
+
+
+def _keep_last_scene_name(left: str | None, right: str | None) -> str | None:
+    """current_scene_name 并发写入时取最后一个（last-write-wins）。"""
+    return right
 
 
 class SpaceAgentState(DeepAgentState):
     """航天 domain state schema"""
 
-    current_scene_name: NotRequired[str | None]
-    # 仅保存白名单展示字段；每轮 user_input 会重置，查询成功后由工具写入。
-    scenario_query_results: NotRequired[list[dict[str, str]] | None]
+    current_scene_name: NotRequired[Annotated[str | None, _keep_last_scene_name]]
+    # 仅保存白名单展示字段；并发结果由 Reducer 去重追加。
+    scenario_query_results: NotRequired[Annotated[list[dict[str, Any]] | None, update_tool_result]]

@@ -80,10 +80,8 @@ def render(
 ) -> str:
     """将结构化响应渲染为自然语言"""
 
-    if scenario_infos is None and response.code == ResponseCode.SCENE_QUERIED and response.args:
-        response_scenarios = response.args.get("scenarios")
-        if isinstance(response_scenarios, list):
-            scenario_infos = response_scenarios
+    if scenario_infos is None and response.code == ResponseCode.SCENE_QUERIED:
+        scenario_infos = []
 
     # 查询数据来自工具写入的 state，不让 LLM 负责复制列表。即使模型误判 code，
     # 只要本轮确实执行了场景查询，也优先输出完整、确定性的表格。
