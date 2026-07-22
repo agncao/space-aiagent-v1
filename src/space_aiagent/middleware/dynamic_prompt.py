@@ -3,8 +3,8 @@
 每次 LLM 调用前把运行时上下文（当前场景、未来可扩展用户身份等）作为动态内容
 追加到 system message，让 orchestrator 和子 Agent 的 LLM 都能感知前端状态。
 
-current_scene_name 通过 SpaceAgentState 跨节点同步：websocket handler 把
-user_input.current_scene_name 注入 astream_events input，工具返回 Command
+current_scene_name 通过 SpaceAgentState 跨节点同步：SSE handler（api/sse.py）把
+ChatRequest.current_scene_name 注入 astream_events input，工具返回 Command
 更新 state。本中间件只读不写。
 """
 

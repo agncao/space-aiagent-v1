@@ -21,7 +21,7 @@ async def invoke(request: InvokeRequest) -> InvokeResponse:
     """
     同步调用 Agent
 
-    适用于简单场景，复杂交互请使用 WebSocket。
+    适用于简单场景，复杂交互请使用 SSE（POST /api/v1/space/chat）。
     """
     from langchain_core.messages import HumanMessage
 

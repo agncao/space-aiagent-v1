@@ -135,4 +135,4 @@ class RetryMiddleware(AgentMiddleware):
                     ),
                     tool_call_id=tool_call_id,
                 )
-            # 非 TimeoutError 异常 tenacity 不重试、原样 reraise，不在此 catch，冒泡到 websocket handler
+            # 非 TimeoutError 异常 tenacity 不重试、原样 reraise，不在此 catch，冒泡到 sse.py run_agent 的 except（发 error SSE 帧）
