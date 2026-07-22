@@ -295,6 +295,8 @@ Orchestrator 返回 `SCENE_CREATED`/`SCENE_RENAMED`（命中 `response_constants
 
 ### SSE+POST 协议
 
+> 前端对接看 [`docs/前端SSE对接指南.md`](docs/前端SSE对接指南.md)（面向前端的接口契约 + 联调方法，不含内部实现细节）。
+
 **POST 端点（前端→后端）**：
 
 | 端点 | body 关键字段 | 说明 |
