@@ -16,10 +16,10 @@
 
 ### 1.2 借鉴了什么
 
-- **ERP_OPENCLAW**（`HarnessEngineeringBased_DeepAgents_Course` 课程的核心工程）—— 其 **SSE+POST 范式**（`POST` 触发、响应本身是 `text/event-stream` 流）与 **事件分类**（`onToken / onToolStart / onToolArgs / onToolResult / onToolEnd / onInterrupt / onDone / onError`）是本次直接对标的参考。**借鉴的是范式与事件分类，不是代码**（技术栈、业务场景不同）。
+- **ERP_OPENCLAW**（[HarnessEngineeringBased_DeepAgents_Course](https://github.com/agncao/HarnessEngineeringBased_DeepAgents_Course) 课程的核心工程）—— 其 **SSE+POST 范式**（`POST` 触发、响应本身是 `text/event-stream` 流）与 **事件分类**（`onToken / onToolStart / onToolArgs / onToolResult / onToolEnd / onInterrupt / onDone / onError`）是本次直接对标的参考。**借鉴的是范式与事件分类，不是代码**（技术栈、业务场景不同）。
 - **Vercel AI SDK / OpenAI 官方流式** 的通用范式（POST 触发 + 流式响应、`fetch + ReadableStream` 消费）。
 
-> 参考实现可看本地 ERP_OPENCLAW 前端：`/Users/caojianming/projects/mashibing/HarnessEngineeringBased_DeepAgents_Course/ERP_OPENCLAW/frontend/src/api/chat.js`（`streamChat` + `_processStream` 是 SSE 消费的现成范式）。
+> 参考实现可看HarnessEngineeringBased_DeepAgents_Course的ERP_OPENCLAW 前端：`HarnessEngineeringBased_DeepAgents_Course/ERP_OPENCLAW/frontend/src/api/chat.js`（`streamChat` + `_processStream` 是 SSE 消费的现成范式）。
 
 ### 1.3 解决了什么
 
