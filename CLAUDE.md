@@ -6,7 +6,7 @@
 
 为上海航天研究院 805 所定制的航天分析平台（基于 Cesium 的航天 GIS 系统）提供 AI 智能助手能力。
 
-核心通信链路：前端交互端 ←WebSocket→ 后端 Agent 服务。前端 Cesium 是 JS 库，所有场景操作在前端执行，Agent 不直接操作场景，而是生成指令通过 WebSocket 发送给前端调用 Cesium API。
+核心通信链路：前端交互端 ←SSE（后端→前端事件流）+ HTTP POST（前端→后端离散指令）→ 后端 Agent 服务。前端 Cesium 是 JS 库，所有场景操作在前端执行，Agent 不直接操作场景，而是生成指令通过 SSE `tool_start`/`tool_args` 事件发给前端，前端执行后通过 `POST /api/v1/space/tool-result` 回告。
 
 业务约束：创建实体（卫星等）前必须先有场景，前端会校验此依赖关系。
 
@@ -27,7 +27,7 @@ Skill，还能购买产品方或第三方的 Skill 包。
 |------|------|------|
 | **Phase 1A-1** | 可观测性 - AI 维度（OTel instrumentation + Langfuse v3 自部署，trace + token 归因）| ✅ 已完成（2026-07-02） |
 | **Phase 1B** | 失败恢复（重试 + 降级）| ✅ 已完成（2026-07-10）|
-| **传输层迁移** | WebSocket → SSE+POST 事件流（token/tool_start/tool_args/tool_result/tool_end/interrupt/done），删 WS（[spec](docs/superpowers/specs/2026-07-21-sse-migration-design.md) / [plan](docs/superpowers/plans/2026-07-21-sse-migration.md)）| 🔵 进行中（2026-07-21）|
+| **传输层迁移** | WebSocket → SSE+POST 事件流（token/tool_start/tool_args/tool_result/tool_end/interrupt/done），删 WS（[spec](docs/superpowers/specs/2026-07-21-sse-migration-design.md) / [plan](docs/superpowers/plans/2026-07-21-sse-migration.md)）| ✅ 已完成（2026-07-21）|
 | **Human-in-the-loop** | interrupt 人工接管（graph interrupt() + /resume 续跑 + 前端决策 UI）| 🟡 待启动（传输层迁移之后）|
 | **Phase 2** | Skill 系统第一版（Anthropic 风格协议 + LLM 主动检索 + load_skill 工具 + 3-5 个示例 + 多模型路由 + 基础审计）| 🔵 准备中 |
 | **Phase 1C** | 工具能力补全（数据查询、报告生成等）| 🟡 待启动 |
@@ -49,7 +49,7 @@ Skill，还能购买产品方或第三方的 Skill 包。
 ## 技术栈
 
 - Python 3.13
-- FastAPI (Web + WebSocket)
+- FastAPI (REST + SSE)
 - deepagents + LangGraph (Agent Harness)
 - langchain-openai (DeepSeek / Qwen 兼容接口)
 - OpenTelemetry SDK + Langfuse v3（AI 维度可观测性，自部署，对业务零依赖）
@@ -65,7 +65,7 @@ src/space_aiagent/
 ├── cli.py                  # CLI 管理入口
 ├── api/                    # API 层
 │   ├── routes.py           # REST 端点
-│   └── websocket.py        # WebSocket 端点（astream_events 流式执行）
+│   └── sse.py              # SSE + POST 端点（POST /chat 流 + POST /tool-result + POST /chat/{thread_id}/resume，astream_events 流式执行）
 ├── agents/                 # Agent 层
 │   ├── orchestrator.py     # 主控 Agent（DeepAgents + ToolStrategy 结构化输出）
 │   ├── state.py            # SpaceAgentState（state_schema，跨 task 边界自动同步字段）
@@ -89,14 +89,16 @@ src/space_aiagent/
 ├── models/                 # 数据模型
 │   ├── enums.py            # 枚举
 │   ├── schemas.py          # Pydantic 模型（工具参数、API 请求响应、SubagentClassification）
-│   ├── messages.py         # WebSocket 消息类型
+│   ├── messages.py         # WS 时代消息类型（POST body 模型字段来源，已去除 type 字段）
+│   ├── sse_events.py       # SSE 事件类型 + format_sse_frame 帧序列化（token/tool_start/tool_args/tool_result/tool_end/interrupt/done/error）
 │   └── response_schema/    # AgentResponse 模型包（拆分自原 response_schema.py）
 │       ├── agent_struct_response.py # AgentResponse + ResponseCode 枚举（suggestions 越界过滤）
 │       ├── response_constants.py    # INTENTION_TO_CATCH_CODES / INTENTION_RESUME_TRIGGER_CODES + SHORTCUT_RESPONSES（A 方案预构建 AgentResponse 注册表，原 bridge/response_shortcut.py 迁入）
 │       └── response_util.py         # find_agent_response_tool_call / get_agent_response_code_from_model_response / render（summary + suggestions 出口渲染，原 bridge/response_renderer.py 迁入）
 ├── bridge/                 # 远程工具桥接层
-│   ├── ws_bridge.py        # WebSocket Future 桥接
-│   └── session.py          # 会话管理
+│   ├── stream_bridge.py    # StreamBridge（asyncio.Queue 事件出口，Future 桥接）
+│   ├── ws_bridge.py        # **dead code**：旧 WSBridge，test_ws_bridge 引用，待后续删除
+│   └── session.py          # 会话管理（register 不再收 websocket，创建 StreamBridge）
 └── infrastructure/         # 基础设施
     ├── config.py           # 配置管理（YAML + .env，含 LLMConfig + LLMFlashConfig + ObservabilityConfig）
     ├── llm.py              # build_model() + build_flash_model()（OpenAI 兼容，Flash 专供路由分类等轻量调用）
@@ -145,7 +147,7 @@ ruff format src/ tests/
 ### 多 Agent + 工具组管理
 
 ```
-                        用户输入(WebSocket)
+                        用户输入(POST /chat)
                               │
                               ▼
                     ┌─────────────────┐
@@ -173,7 +175,7 @@ ruff format src/ tests/
                      └─────────────────┘
               │              │
               ▼              ▼
-        Remote Tool Bridge (WebSocket)
+        Remote Tool Bridge (SSE tool_start/tool_args + POST /tool-result)
               │              │
               ▼              ▼
          Cesium 前端执行
@@ -183,25 +185,27 @@ ruff format src/ tests/
 - **子 Agent**: 通过 `config/subagents.yaml` 声明式配置，`agents/subagents.py` 加载。新增 Agent 改配置 + 提示词 + `tools/registry.py` 注册。middleware 顺序为 `ToolValidationMiddleware(tool_groups=...)` → `ResponseStabilizationMiddleware`（**已退役占位**）→ `agents_dynamic_prompt`
 - **Analysis Agent**: 数据分析（未来扩展），独立领域单独扩展
 - **Agent 执行**: `astream_events` 流式执行，`on_tool_start`（工具进度提示钩子）+ `on_chain_end`（读 `output.structured_response` + `response_util.render()` 出口渲染发送）事件驱动。task 死循环兜底已下沉到 `PrimaryAgentMiddleware`（阈值 20，详见「任务循环防护」）。详见 `readme/python教程.md` 9.5 节
-- **结构化输出**: `ToolStrategy` 利用模型 tool calling API 强制输出 `AgentResponse` JSON。websocket `on_chain_end` 事件读 `output.structured_response`，调 `response_util.render()` 渲染为自然语言发前端——`render()` 直接返回 `summary` + 可选 suggestions 块（**模板渲染已废弃**，YAML 模板仅作 SHORTCUT_RESPONSES 的 summary 默认值）。**A 方案短路**：已知确定性 case（如 `NO_SCENE`）由 `ToolValidationMiddleware` 在工具调用前识别，返回 `Command(goto=END)` 短路（update 里塞携带 NO_SCENE 的 ToolMessage 关闭 AI 的 tool_call，跳过子 Agent 后续 LLM 调用）。state 由 LangGraph 自动持久化到 checkpointer（多轮对话上下文完整）。注册表在 `models/response_schema/response_constants.SHORTCUT_RESPONSES`
+- **结构化输出**: `ToolStrategy` 利用模型 tool calling API 强制输出 `AgentResponse` JSON。SSE handler 的 `on_chain_end` 事件（`api/sse.py:run_agent`）读 `output.structured_response`，调 `response_util.render()` 渲染为自然语言，作为 `done` 事件的 `content` 发前端——`render()` 直接返回 `summary` + 可选 suggestions 块（**模板渲染已废弃**，YAML 模板仅作 SHORTCUT_RESPONSES 的 summary 默认值）。**A 方案短路**：已知确定性 case（如 `NO_SCENE`）由 `ToolValidationMiddleware` 在工具调用前识别，返回 `Command(goto=END)` 短路（update 里塞携带 NO_SCENE 的 ToolMessage 关闭 AI 的 tool_call，跳过子 Agent 后续 LLM 调用）。state 由 LangGraph 自动持久化到 checkpointer（多轮对话上下文完整）。注册表在 `models/response_schema/response_constants.SHORTCUT_RESPONSES`
 
 ### 远程工具桥接（核心机制）
 
-工具在后端定义但实际在前端 Cesium 执行。通过 asyncio.Future 桥接：
+工具在后端定义但实际在前端 Cesium 执行。通过 `StreamBridge`（`bridge/stream_bridge.py`）持 `asyncio.Queue` 事件出口 + `asyncio.Future` 桥接：
 
 ```
-Agent 调用工具 → bridge.send_tool_call() → WebSocket 发送指令到前端
-                                                      ↓
-Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前端结果
+Agent 调用工具 → StreamBridge.send_tool_call()
+                  ├─ emit tool_start/tool_args 到 SSE queue → POST /chat 响应流出前端
+                  └─ await Future
+Agent 得到结果 ← await Future ← StreamBridge.resolve_tool_result() ← POST /tool-result handler
+                  └─ emit tool_result/tool_end 到 SSE queue → 流出前端
 ```
 
-每次工具调用创建 Future 绑定到唯一 tool_call_id，WebSocket 收到前端 tool_result 时根据 ID resolve。
+每次工具调用创建 Future 绑定到唯一 `tool_call_id`，`POST /tool-result` handler（通过 `SessionManager.get_bridge(thread_id)` 定位 bridge）收到前端结果时根据 ID resolve。Future / resolve / cleanup / 超时（默认 60s）语义从旧 `WSBridge` 原样迁移。
 
-**Bridge 注入方式**: `bridge.bridge_var` (ContextVar)，由 websocket handler 在创建 Agent 前通过 `bridge_var.set(bridge)` 注入，工具函数通过 `bridge_var.get()` 获取。
+**Bridge 注入方式**: `bridge.bridge_var` (ContextVar)，由 SSE `event_generator`（`api/sse.py`）在当前请求 context 内 `bridge_var.set(bridge)` 注入（Starlette 把 StreamingResponse body 迭代放在 copy 出来的 context 里，故 set/reset 都在 `event_generator` 内），`asyncio.create_task(run_agent)` 拷贝该 context → agent 任务及工具函数通过 `bridge_var.get()` 可见。
 
-**场景上下文注入（state_schema 双向同步）**: `current_scene_name` 通过 `SpaceAgentState`（`agents/state.py`）持久化，由 websocket handler 在 `astream_events` 的 input 中注入初值，scene 工具（`create_scenario`/`rename_scenario`/`query_scenario` 成功路径）通过返回 `Command(update={"current_scene_name": ...})` 更新，`ToolValidationMiddleware` 通过 `request.state.get("current_scene_name")` 读取。**关键**：deepagents `task` 工具自动双向同步 state（父→子 `_validate_and_prepare_state`，子→父 `_return_command_with_state_update`，排除 `_EXCLUDED_STATE_KEYS = {"messages","todos","structured_response","skills_*","memory_contents"}`），所以 scene-agent 创建场景后写入的 `current_scene_name` 会自动回传到 orchestrator，再自动传给后续 task 调用的 entity-agent——**避免 ContextVar 跨 task 边界丢失**（LangGraph 每个 node 用 `copy_context() + asyncio.create_task(context=...)` 隔离运行）。
+**场景上下文注入（state_schema 双向同步）**: `current_scene_name` 通过 `SpaceAgentState`（`agents/state.py`）持久化，由 SSE handler（`api/sse.py`）在 `astream_events` 的 input 中注入初值，scene 工具（`create_scenario`/`rename_scenario`/`query_scenario` 成功路径）通过返回 `Command(update={"current_scene_name": ...})` 更新，`ToolValidationMiddleware` 通过 `request.state.get("current_scene_name")` 读取。**关键**：deepagents `task` 工具自动双向同步 state（父→子 `_validate_and_prepare_state`，子→父 `_return_command_with_state_update`，排除 `_EXCLUDED_STATE_KEYS = {"messages","todos","structured_response","skills_*","memory_contents"}`），所以 scene-agent 创建场景后写入的 `current_scene_name` 会自动回传到 orchestrator，再自动传给后续 task 调用的 entity-agent——**避免 ContextVar 跨 task 边界丢失**（LangGraph 每个 node 用 `copy_context() + asyncio.create_task(context=...)` 隔离运行）。
 
-**9 个工具函数**: createScenario, renameScenario, deleteScene, clearEntities, queryScenario, queryEntities, addPointEntity, createSGP4Orbit, updateSGP4Orbit。每个工具函数发送 `tool_call` 消息（tool_func 字段为函数名），前端执行后返回 `tool_result`。scene 写工具（create/rename/delete/query）签名加 `runtime: ToolRuntime` 第一参数（langgraph 标准 API），从 `runtime.tool_call_id` 拿 ID 构造 `Command(update={...})` 返回。详细参数格式见 README。
+**9 个工具函数**: createScenario, renameScenario, deleteScene, clearEntities, queryScenario, queryEntities, addPointEntity, createSGP4Orbit, updateSGP4Orbit。每个工具函数调 `bridge.send_tool_call(namespace, tool_func, args)`（tool_func 为函数名），`StreamBridge` 依次 emit `tool_start`/`tool_args` → 前端 Cesium 执行后通过 `POST /tool-result` 回告 → resolve Future → emit `tool_result`/`tool_end`。scene 写工具（create/rename/delete/query）签名加 `runtime: ToolRuntime` 第一参数（langgraph 标准 API），从 `runtime.tool_call_id` 拿 ID 构造 `Command(update={...})` 返回。详细参数格式见 README。
 
 ### 场景依赖处理
 
@@ -210,13 +214,13 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 2. **Prompt 规则**：Orchestrator system prompt 中明确规则：创建实体前必须确保场景已创建
 3. **前端校验**：前端收到工具指令时也会检查场景状态，未创建则返回错误
 
-`current_scene_name` 由前端在 `user_input` 消息中携带（来源：`yyastk.CurrentScenario?.dataSource?.name`），由 WebSocket handler 通过 `astream_events` input 注入到 `SpaceAgentState`，中间件从 `request.state` 读取，scene 工具通过 `Command(update=...)` 写入。
+`current_scene_name` 由前端在 `POST /chat` 请求体（`ChatRequest.current_scene_name`，来源：`yyastk.CurrentScenario?.dataSource?.name`）中携带，由 SSE handler 通过 `astream_events` input 注入到 `SpaceAgentState`，中间件从 `request.state` 读取，scene 工具通过 `Command(update=...)` 写入。
 
 ### 动态提示词注入（DYNAMIC_PROMPT）
 
 `agents_dynamic_prompt`（`middleware/dynamic_prompt.py`，用 deepagents 内置 `@dynamic_prompt` 装饰器声明）挂在 orchestrator 和所有子 Agent 上，每次 LLM 调用前把 `request.state["current_scene_name"]` 当前值通过 `append_to_system_message` 追加到 system message 末尾（如「当前场景: 测试场景, 如果不为 None或者空字符串，说明当前场景已打开」），让 LLM 感知前端场景状态。
 
-- **只读不写**：本中间件只从 state 读取，写入由 websocket handler（每轮 user_input 时通过 astream_events input）和 scene 工具（成功后 `Command(update=...)`）负责
+- **只读不写**：本中间件只从 state 读取，写入由 SSE handler（`api/sse.py`，每轮 `POST /chat` 时通过 `astream_events` input）和 scene 工具（成功后 `Command(update=...)`）负责
 - **content blocks 兼容**：用 deepagents `append_to_system_message` 处理 SystemMessage.content 既可能是 str 也可能是 list[ContentBlock] 的情况（MemoryMiddleware/SubagentsMiddleware/TodoListMiddleware 会改写 content 结构），与 deepagents 其他内置 middleware 的拼接风格保持一致
 
 ### 任务循环防护（TASK_LOOP_GUARD）
@@ -226,7 +230,7 @@ Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前
 - 调用其他工具 → streak 重置为 0
 - streak ≥ `agent.primary_task_threshold`（默认 20）→ 在 `awrap_model_call` 后置阶段**改写 `ModelResponse`**：构造 `AIMessage`（content 为 `response_util.render()` 渲染后的提示文本，tool_calls 携带 AgentResponse tool_call，args 为 `task_loop_guard` shortcut 字段）+ `structured_response=shortcut`。**不返回 `Command(goto=END)`，不终止 orchestrator 图**，而是替换 LLM 原始输出，让 ToolStrategy 解析 + 后续 `on_chain_end` 事件照常走
 
-替代旧版 `api/websocket.py` 内 `LOOP_THRESHOLD=2` + `task_call_count` 的硬兜底逻辑：
+替代旧版 `api/websocket.py`（**该文件已删除，`run_agent` 逻辑迁至 `api/sse.py`**）内 `LOOP_THRESHOLD=2` + `task_call_count` 的硬兜底逻辑：
 - 优势：状态由 LangGraph 持久化到 checkpointer；复用 `response_constants.SHORTCUT_RESPONSES` 注册表 + `response_util.render` 渲染（与 A 方案共用同一渲染路径）；ContextVar 跨重置语义清晰
 - 与 A 方案 `ToolValidationMiddleware` 的关键区别：A 方案在子 Agent 上 `awrap_tool_call` 用 `Command(goto=END)` **终止子 Agent 图**（跳过"解释工具结果"那次 LLM 调用）；`PrimaryAgentMiddleware` 在 orchestrator 上 `awrap_model_call` **不终止 orchestrator 图**，只是替换 LLM 输出为短路响应，后续 ToolStrategy 解析与 `on_chain_end` 渲染照常进行
 
@@ -289,16 +293,28 @@ Orchestrator 返回 `SCENE_CREATED`/`SCENE_RENAMED`（命中 `response_constants
 
 工具按工具组（tool group）组织，每个子 Agent 通过 `config/subagents.yaml` 声明自己需要哪些工具组。`tools/registry.py` 用标准 `import` 静态导入所有 `@tool` 函数，按组分组并提供 `get_tools(["group_name"])` 接口。新增工具组只需：在 `tools/<group>/tools.py` 写 `@tool` 函数 + 在 `registry.py` 加一行 import + 一行字典条目。
 
-### WebSocket 消息协议
+### SSE+POST 协议
 
-| 方向 | 类型 | 关键字段 |
-|------|------|---------|
-| 前端→后端 | `user_input` | content, thread_id, message_id, current_scene_name |
-| 前端→后端 | `tool_result` | tool_func, args, tool_call_id, success, message |
-| 后端→前端 | `ai_message` | content, thread_id |
-| 后端→前端 | `tool_call` | tool_func, tool_func_args, tool_call_id, thread_id |
-| 后端→前端 | `end` | thread_id |
-| 后端→前端 | `error` | message, thread_id |
+**POST 端点（前端→后端）**：
+
+| 端点 | body 关键字段 | 说明 |
+|------|---------------|------|
+| `POST /api/v1/space/chat` | `content, thread_id, message_id, current_scene_name` | 响应体是 `text/event-stream`，逐帧推 SSE 事件直到 `done`/`error`。同 `thread_id` 并发重入返 409 Conflict |
+| `POST /api/v1/space/tool-result` | `tool_func, args, tool_call_id, thread_id, success, message, data, code` | 短请求，响应 `{ok: true}`。handler 通过 `SessionManager.get_bridge(thread_id)` 定位 StreamBridge，按 `tool_call_id` resolve Future |
+| `POST /api/v1/space/chat/{thread_id}/resume` | `{resume: {...}}` | **协议就位，暂返 501 NotImplemented**（interrupt 续跑，下一步独立任务） |
+
+**SSE 事件（后端→前端）**：帧格式 `event: <type>\ndata: <json>\n\n`，`done`/`error` 为终态帧，发送后流关闭、session 注销。
+
+| event | data 字段 | 终态？ |
+|-------|-----------|--------|
+| `token` | `content, source, thread_id` | 否（`source` 当前统一为 `model`/`agent`，无法区分 agent） |
+| `tool_start` | `tool_func, namespace, tool_call_id, thread_id` | 否 |
+| `tool_args` | `tool_func, tool_call_id, args, thread_id` | 否 |
+| `tool_result` | `tool_func, tool_call_id, result, thread_id` | 否 |
+| `tool_end` | `tool_func, tool_call_id, thread_id` | 否 |
+| `interrupt` | `interrupt_id, type, message, thread_id` | 否（**协议占位，暂不触发**） |
+| `done` | `thread_id, content`（content=`response_util.render()` 最终回复） | ✅ 是 |
+| `error` | `thread_id, message` | ✅ 是 |
 
 ### 环境配置
 
@@ -317,8 +333,8 @@ Orchestrator 返回 `SCENE_CREATED`/`SCENE_RENAMED`（命中 `response_constants
   - `langfuse_endpoint` / `langfuse_public_key` / `langfuse_secret_key` 凭证从 `.env` 注入（`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`），keys 为空时 SDK 优雅降级（warning 但不崩溃）
   - `sampler_ratio` 控制采样率（0.0-1.0，生产可降到 0.1）
   - Langfuse v3 自部署：`docker compose --env-file .env -f docker/observability/docker-compose.yml up -d`（6 服务：langfuse-web/worker + clickhouse + redis + postgres + minio，端口 3000），首次启动通过 `LANGFUSE_INIT_PROJECT_*` 自动创建项目。**`--env-file .env` 必须带**：`.env` 在仓库根目录，而 compose 用 `-f` 时默认从 compose 文件所在目录 `docker/observability/` 找 `.env`，不加会让 SALT / ENCRYPTION_KEY / NEXTAUTH_SECRET 为空、Langfuse 启动失败
-  - 业务 span 埋点位置：`PrimaryAgentMiddleware.awrap_model_call/awrap_tool_call`（`orchestrator.llm` / `orchestrator.task` / `orchestrator.tool.<name>`）、`SubagentToolValidationMiddleware.awrap_model_call/awrap_tool_call`（`subagent.llm` / `tool.<name>`）、`api/websocket.py:run_agent`（`ws.session` root span）。各业务 span 通过 `tracing.set_span_io()` 设 `input.value`/`output.value`（observation IO，`message_util.serialize_messages`/`serialize_model_response` 序列化 messages/ModelResponse）
-  - **trace root**：`main.py` 的 `FastAPIInstrumentor.instrument_app(app, excluded_urls="/health,/ws/space")` 排除 WebSocket 路径，让 `ws.session` 成为 trace root（否则 FastAPI WebSocket server span 当 root，无业务 IO 且 name 经常为空，导致 Langfuse Traces 列表 name/input/output 全空）；`ws.session` 的 input/output 按 root observation 规则自动成为 trace 级 IO
+  - 业务 span 埋点位置：`PrimaryAgentMiddleware.awrap_model_call/awrap_tool_call`（`orchestrator.llm` / `orchestrator.task` / `orchestrator.tool.<name>`）、`SubagentToolValidationMiddleware.awrap_model_call/awrap_tool_call`（`subagent.llm` / `tool.<name>`）、`api/sse.py:run_agent`（`agent.session` root span）。各业务 span 通过 `tracing.set_span_io()` 设 `input.value`/`output.value`（observation IO，`message_util.serialize_messages`/`serialize_model_response` 序列化 messages/ModelResponse）
+  - **trace root**：`main.py` 的 `FastAPIInstrumentor.instrument_app(app, excluded_urls="/health,/api/v1/space/chat")` 排除 SSE 路径，让手动 span `agent.session`（传输无关命名，未来换 transport 也不用改名）成为 trace root（否则 FastAPI 自动 server span 会包裹整条 SSE 流当 root，无业务 IO 且 name 经常为空，导致 Langfuse Traces 列表 name/input/output 全空）；`agent.session` 的 input/output 按 root observation 规则自动成为 trace 级 IO
   - structlog 已注入 `trace_id` / `span_id` 到每条日志，便于 Loki/ELK 与 Langfuse 串联
 - 环境差异：dev(全局INFO+项目DEBUG+Spring风格控制台+不写文件)、staging(INFO+JSON+写文件)、prod(WARNING+JSON+30备份)
 - 支持按包名单独控制日志级别（如 `openai: WARNING`、`space_aiagent: DEBUG`），通过 `logging.loggers` 配置
