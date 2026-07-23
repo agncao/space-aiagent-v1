@@ -1,8 +1,8 @@
 """StreamBridge 单测
 
-T1（SSE 迁移）：StreamBridge 解耦自 WSBridge，
+SSE 迁移后的远程工具桥接：
 - 用 asyncio.Queue 作为事件出口（替代 WebSocket）
-- Future / resolve / cleanup / 超时语义与 WSBridge 完全一致
+- Future / resolve / cleanup / 超时语义
 - send_tool_call 内部依次 emit tool_start → tool_args → tool_result → tool_end
 """
 
@@ -99,7 +99,7 @@ async def test_send_tool_call_emits_full_lifecycle():
 
 
 async def test_resolve_tool_result():
-    """resolve_tool_result：注册的 Future 被 resolve 且结果正确（按 WSBridge 字段排除规则）"""
+    """resolve_tool_result：注册的 Future 被 resolve 且结果正确（按字段排除规则）"""
     bridge = StreamBridge("thread-1")
 
     # 构造一个 pending future
@@ -121,7 +121,7 @@ async def test_resolve_tool_result():
     bridge.resolve_tool_result(result_msg)
 
     assert future.done()
-    # 排除 type / thread_id / tool_call_id / tool_func（与 WSBridge 一致）
+    # 排除 type / thread_id / tool_call_id / tool_func
     assert future.result() == {
         "args": {"name": "x"},
         "success": True,

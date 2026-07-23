@@ -1,16 +1,17 @@
-"""Stream 远程工具桥接（SSE 迁移 T1）
+"""Stream 远程工具桥接（SSE 事件流）
 
-与 WSBridge 的关系：StreamBridge 把 WSBridge 的 WebSocket 出口（self._ws.send_json）
-替换为 asyncio.Queue 事件出口（_emit → _queue.put）。Future / resolve / cleanup /
-超时语义原样保留（与 ws_bridge.py 等价）。
+StreamBridge 持 asyncio.Queue 作为事件出口（_emit → _queue.put），SSE handler
+（POST /chat 的 event_generator）消费队列转 SSE 帧。Future / resolve / cleanup /
+超时语义：每次工具调用建 Future 绑 tool_call_id，POST /tool-result 按 id resolve，
+超时抛 asyncio.TimeoutError（由 RetryMiddleware 捕获重试）。
 
-事件协议（T1 用字符串字面量，T2 抽到独立 SSE 事件类型模块）：
+事件协议（事件类型常量在 models/sse_events.py:SSEEventType）：
 - tool_start:  send_tool_call 入口
 - tool_args:   紧随 tool_start
 - tool_result: Future resolve 后
 - tool_end:    send_tool_call 返回前
 
-时序（与 WSBridge 一致）:
+时序:
     Agent 调用工具 → send_tool_call() → emit tool_start/tool_args + await Future
                                                                     ↑
     Agent 得到结果 ← await future ← resolve_tool_result() ← POST /tool-result handler
@@ -30,17 +31,16 @@ logger = get_logger(__name__)
 class StreamBridge:
     """SSE 事件流远程工具桥接
 
-    持 asyncio.Queue 作为事件出口，替代 WSBridge 的 WebSocket。
-    工具函数（scene/entity/orbit）调 ``bridge.send_tool_call(...)`` 的契约与
-    WSBridge 完全一致（同名、同参、同返回），只是内部把 tool_* 事件 emit 到 queue，
-    由 SSE handler 消费。
+    持 asyncio.Queue 作为事件出口。工具函数（scene/entity/orbit）调
+    ``bridge.send_tool_call(...)``（同名、同参、同返回），内部把 tool_* 事件 emit
+    到 queue，由 SSE handler（event_generator）消费转 SSE 帧。
     """
 
     def __init__(self, thread_id: str) -> None:
         self._thread_id = thread_id
-        # tool_call_id -> Future（与 WSBridge 一致）
+        # tool_call_id -> Future
         self._pending: dict[str, asyncio.Future] = {}
-        # 默认超时时间（秒，与 WSBridge 一致）
+        # 默认超时时间（秒）
         self._timeout = 60
         # 新增：事件出口队列，SSE handler 消费
         self._queue: asyncio.Queue = asyncio.Queue()
@@ -83,7 +83,7 @@ class StreamBridge:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[tool_call_id] = future
 
-        # emit 工具调用启动 + 参数（替代 WSBridge 的 ws.send_json(ToolCallMessage)）
+        # emit 工具调用启动 + 参数
         await self._emit(
             "tool_start",
             {"tool_func": tool_func, "namespace": namespace, "tool_call_id": tool_call_id},
@@ -137,8 +137,8 @@ class StreamBridge:
         由 POST /tool-result handler 在收到 tool_result 时调用，
         根据 tool_call_id 找到对应 Future 并 resolve。
 
-        与 WSBridge.resolve_tool_result 等价：排除 type / thread_id / tool_call_id /
-        tool_func 字段后设置 future 结果；未知 id 仅 warning（不抛异常）。
+        排除 type / thread_id / tool_call_id / tool_func 字段后设置 future 结果；
+        未知 id 仅 warning（不抛异常）。
         """
         tool_call_id = result.tool_call_id
         future = self._pending.pop(tool_call_id, None)

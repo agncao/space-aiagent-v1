@@ -97,7 +97,6 @@ src/space_aiagent/
 │       └── response_util.py         # find_agent_response_tool_call / get_agent_response_code_from_model_response / render（summary + suggestions 出口渲染，原 bridge/response_renderer.py 迁入）
 ├── bridge/                 # 远程工具桥接层
 │   ├── stream_bridge.py    # StreamBridge（asyncio.Queue 事件出口，Future 桥接）
-│   ├── ws_bridge.py        # **dead code**：旧 WSBridge，test_ws_bridge 引用，待后续删除
 │   └── session.py          # 会话管理（register 不再收 websocket，创建 StreamBridge）
 └── infrastructure/         # 基础设施
     ├── config.py           # 配置管理（YAML + .env，含 LLMConfig + LLMFlashConfig + ObservabilityConfig）
@@ -205,7 +204,7 @@ Agent 得到结果 ← await Future ← StreamBridge.resolve_tool_result() ← P
 
 **场景上下文注入（state_schema 双向同步）**: `current_scene_name` 通过 `SpaceAgentState`（`agents/state.py`）持久化，由 SSE handler（`api/sse.py`）在 `astream_events` 的 input 中注入初值，scene 工具（`create_scenario`/`rename_scenario`/`query_scenario` 成功路径）通过返回 `Command(update={"current_scene_name": ...})` 更新，`ToolValidationMiddleware` 通过 `request.state.get("current_scene_name")` 读取。**关键**：deepagents `task` 工具自动双向同步 state（父→子 `_validate_and_prepare_state`，子→父 `_return_command_with_state_update`，排除 `_EXCLUDED_STATE_KEYS = {"messages","todos","structured_response","skills_*","memory_contents"}`），所以 scene-agent 创建场景后写入的 `current_scene_name` 会自动回传到 orchestrator，再自动传给后续 task 调用的 entity-agent——**避免 ContextVar 跨 task 边界丢失**（LangGraph 每个 node 用 `copy_context() + asyncio.create_task(context=...)` 隔离运行）。
 
-**9 个工具函数**: createScenario, renameScenario, deleteScene, clearEntities, queryScenario, queryEntities, addPointEntity, createSGP4Orbit, updateSGP4Orbit。每个工具函数调 `bridge.send_tool_call(namespace, tool_func, args)`（tool_func 为函数名），`StreamBridge` 依次 emit `tool_start`/`tool_args` → 前端 Cesium 执行后通过 `POST /tool-result` 回告 → resolve Future → emit `tool_result`/`tool_end`。scene 写工具（create/rename/delete/query）签名加 `runtime: ToolRuntime` 第一参数（langgraph 标准 API），从 `runtime.tool_call_id` 拿 ID 构造 `Command(update={...})` 返回。详细参数格式见 README。
+**9 个工具函数**: createScenario, renameScenario, deleteScene, clearEntities, queryScenario, queryEntities, addPointEntity, createSGP4Orbit, updateSGP4Orbit。每个工具函数调 `bridge.send_tool_call(namespace, tool_func, args)`（tool_func 为函数名），`StreamBridge` 依次 emit `tool_start`/`tool_args` → 前端 Cesium 执行后通过 `POST /tool-result` 回告 → resolve Future → emit `tool_result`/`tool_end`。scene 写工具（create/rename/delete/query）签名加 `runtime: ToolRuntime` 第一参数（langgraph 标准 API），从 `runtime.tool_call_id` 拿 ID 构造 `Command(update={...})` 返回。详细参数格式见 README。**⚠️ 并行工具调用已强制关闭**：scene 工具写的是 `SpaceAgentState` 的 last_value 字段（`scenario_query_results`/`current_scene_name`，`agents/state.py` 无 reducer）。LLM 一次响应里并行发起两个工具调用时，同一 step 对同一 last_value 通道写入两次会抛 `InvalidUpdateError: Can receive only one value per step`（如两个 `query_scenario` 并行）。故 `build_model()`（`infrastructure/llm.py`）经 `model_kwargs={"parallel_tool_calls": False}` 关闭并行调用（DashScope Qwen 默认即 false 并完整支持），**勿误开**；同理 `current_scene_name`（两个 `open_scenario` 并行）隐患一并消除。除非给 state 字段补 reducer 并验证语义，否则不要放开。
 
 ### 场景依赖处理
 
