@@ -5,7 +5,7 @@
 工具通过远程桥接发送指令到前端 Cesium 执行。
 
 桥接注入: 使用 bridge.bridge_var (ContextVar) 在会话级别注入 bridge 实例，
-         由 websocket handler 在创建 Agent 前设置，工具函数通过 get() 获取。
+         由 SSE event_generator（api/sse.py）在 run_agent 前 set，工具函数通过 get() 获取。
 
 前置条件: 场景必须已创建（由 ToolValidationMiddleware 在工具调用前校验）
 """

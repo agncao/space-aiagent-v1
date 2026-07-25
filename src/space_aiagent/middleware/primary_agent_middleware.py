@@ -210,15 +210,10 @@ class PrimaryAgentMiddleware(AgentMiddleware):
                 span.set_attribute("tool.success", True)
                 set_span_io(span, output=result)
                 return result
-            except Exception:
+            except Exception as ex:
                 span.set_attribute("tool.success", False)
-                raise
+                logger.exception("主智能体 wrap_tool_call 异常", thread_id=self.thread_id,tool_name=tool_name)
+                raise ex
             finally:
                 latency_ms = int((time.perf_counter() - start_ts) * 1000)
                 span.set_attribute("tool.latency_ms", latency_ms)
-                logger.info(
-                    "tool call after",
-                    thread_id=self.thread_id,
-                    tool_name=tool_name,
-                    result=string_util.truncate(result, 200),
-                )

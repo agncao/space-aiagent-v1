@@ -29,6 +29,6 @@ async def client():
 # TODO: 添加更多 fixtures
 # - mock_settings: 测试用的配置
 # - mock_bridge: 模拟远程工具桥接
-# - mock_websocket: 模拟 WebSocket 连接
+# - mock_stream_bridge: 模拟远程工具桥接（SSE StreamBridge）
 # - sample_scenario_config: 示例场景配置
 # - sample_entity_config: 示例实体配置

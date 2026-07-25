@@ -39,7 +39,7 @@ flash_model:
 
 observability:
   # 总开关：false 时全链路 NoOp，业务零开销、零依赖
-  enabled: true
+  enabled: false
   service_name: space-aiagent
   # Langfuse v3 后端 OTLP 端点
   langfuse_endpoint: http://localhost:3000/api/public/otel
