@@ -103,7 +103,7 @@ class RetryMiddleware(AgentMiddleware):
                 # 不可重试异常：tenacity 不重试直接抛（不包装成 RetryError）
                 span.set_attribute("retry.outcome", "non_retryable")
                 span.set_attribute("retry.error", type(e).__name__)
-                logger.warning("LLM 不可重试异常，降级 LLM_UNAVAILABLE", error=type(e).__name__)
+                logger.exception("LLM 不可重试异常，降级 LLM_UNAVAILABLE", error=type(e).__name__)
                 return self._degrade_llm()
 
     async def awrap_tool_call(

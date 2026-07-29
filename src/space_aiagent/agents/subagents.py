@@ -40,8 +40,7 @@ def load_subagents() -> list[dict]:
         tools = get_tools(agent_cfg["tools"])
         prompt = (_PROMPTS_DIR / agent_cfg["prompt_file"]).read_text(encoding="utf-8")
 
-        subagents.append(
-            {
+        subagent:dict = {
                 "name": agent_cfg["name"],
                 "description": agent_cfg["description"],
                 "model": model,
@@ -56,6 +55,13 @@ def load_subagents() -> list[dict]:
                     RetryMiddleware(get_settings().retry),
                 ],
             }
-        )
+
+        # 可选配置
+        if interrupt_on := agent_cfg.get("interrupt_on"):
+            subagent["interrupt_on"] = interrupt_on
+
+        subagents.append(subagent)
+
+
 
     return subagents

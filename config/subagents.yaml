@@ -3,6 +3,13 @@ agents:
     description: 处理场景相关操作：创建、打开、删除、查询、修改场景。
     tools:
       - scene_management
+    interrupt_on:
+      delete_scene:
+        allowed_decisions: [ "approve", "reject" ]
+        description: "即将删除当前场景，场景内所有实体将一并清除且不可撤销，请确认是否继续。"
+      rename_scenario:
+        allowed_decisions: [ "approve", "reject" ]
+        description: "即将重命名当前场景，请确认是否继续。"
     prompt_file: scene_agent.md
 
   - name: entity-agent
@@ -10,4 +17,8 @@ agents:
     tools:
       - entity_management
       - orbit_management
+    interrupt_on:
+      clear_entities:
+        allowed_decisions: [ "approve", "reject" ]
+        description: "即将清除场景内所有实体将一并清除且不可撤销，请确认是否继续。"
     prompt_file: entity_agent.md

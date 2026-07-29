@@ -31,11 +31,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.agents.subagents import load_subagents
-from space_aiagent.bridge import SessionManager, bridge_var
+from space_aiagent.bridge import SessionManager, StreamBridge, bridge_var
 from space_aiagent.infrastructure.database import get_db
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
@@ -85,12 +86,15 @@ class ToolResultRequest(BaseModel):
 
 
 class ResumeRequest(BaseModel):
-    """POST /chat/{thread_id}/resume 请求体（interrupt 协议占位，当前 /resume 返 501）
+    """POST /chat/{thread_id}/resume 请求体（interrupt 续跑）
 
-    interrupt 实现落地后，前端在收到 ``event: interrupt`` 帧后收集用户决策/补充数据，
-    通过此端点恢复 Agent 执行。resume 数据格式取决于中断类型（数据补充 /
-    HITL 审批等），故用宽松 dict。graph 级 ``interrupt()`` + resume 续跑是下一步
-    独立任务（见 CLAUDE.md 路线图 / spec §4.8）。
+    前端收到 ``event: interrupt`` 帧并收集用户决策后，通过此端点恢复 Agent。
+    ``resume`` 作为 ``Command(resume=...)`` 的值送达 ``interrupt()`` 暂停点。
+    格式取决于中断类型：HITL 审批（hitl_approval）用 ``decisions``，故用宽松 dict。
+
+    HITL 审批的 resume 形如::
+
+        {"decisions": [{"type": "approve"} | {"type": "reject"}]}
     """
 
     resume: dict = Field(default_factory=dict, description="恢复数据（格式取决于中断类型）")
@@ -158,101 +162,148 @@ def _extract_chunk_text(chunk: Any) -> str:
     return ""
 
 
-async def run_agent(bridge: Any, chat_request: ChatRequest) -> None:
-    """后台执行 agent（流式），把事件 emit 到 bridge._queue
+async def _handle_interrupts(bridge: StreamBridge, interrupts: list) -> None:
+    """把 LangGraph interrupt 列表转成 SSE interrupt 帧，随后发 done(interrupted) 收尾。
+
+    emit 顺序：先逐个 interrupt 帧（一次暂停可能含多个），再一个 done（终态）。
+    ``bridge._emit`` 自动注入 thread_id，故 payload 不再手传。
+
+    payload 形状判别（与 ERP chat.py 对齐）：
+    - 含 ``action_requests``：声明式 ``interrupt_on``（子 Agent 的
+      HumanInTheLoopMiddleware）→ ``hitl_approval``，前端据此渲染审批 UI
+      （action_requests 携带工具名/参数/description，review_configs 携带允许的决策）。
+    - 其它：unknown 透传（截断 2000 字符），保证任何中断都不会让流挂死。
+    """
+    for intr in interrupts:
+        value = getattr(intr, "value", intr)
+        if isinstance(value, dict) and "action_requests" in value:
+            await bridge._emit(
+                SSEEventType.INTERRUPT,
+                {
+                    "interrupt_type": "hitl_approval",
+                    "action_requests": value["action_requests"],
+                    "review_configs": value.get("review_configs", []),
+                },
+            )
+        else:
+            await bridge._emit(
+                SSEEventType.INTERRUPT,
+                {
+                    "interrupt_type": "unknown",
+                    "interrupt_value": str(value)[:2000],
+                },
+            )
+    await bridge._emit(SSEEventType.DONE, {"content": "", "interrupted": True})
+
+
+async def run_agent(bridge: StreamBridge, input_data: ChatRequest | Command) -> None:
+    """后台执行 agent（流式），把事件 emit 到 bridge._queue。
 
     本函数在 agent_task（独立 asyncio.Task）中运行，task 创建时拷贝当前 context，
     故能通过 bridge_var.get() 拿到 bridge。ContextVar 的 set/reset 由 handler /
-    event_generator 负责，本函数内不重复 set/reset。
+    stream_chat_response 负责，本函数内不重复 set/reset。
+
+    两种输入模式：
+    - chat（ChatRequest）：首轮对话，input 为 messages + state 初值。
+    - resume（Command(resume=...)）：interrupt 续跑，input 即 Command 本身，
+      LangGraph 把其 resume 值送达 ``interrupt()`` 暂停点，图继续。current_scene_name
+      等状态由 checkpoint 恢复，不再从请求体注入。
     """
-    thread_id = chat_request.thread_id
+    thread_id = bridge._thread_id
+    if isinstance(input_data, Command):
+        graph_input: ChatRequest | Command | dict = input_data
+        span_event: dict = {"id": "agent.interrupt", "attributes": {"agent.thread_id": thread_id}}
+        span_input_repr = f"resume:{input_data.resume!r}"
+    else:
+        graph_input = {
+            "messages": [HumanMessage(content=input_data.content)],
+            # 注入 SpaceAgentState.current_scene_name 初值，后续工具返回 Command
+            # 更新该字段，跨 task 边界自动同步
+            "current_scene_name": input_data.current_scene_name,
+            # 查询结果只属于当前轮次，避免历史数据影响后续响应渲染
+            "scenario_query_results": None,
+        }
+        span_event = {"id": "agent.session", "attributes": {"agent.thread_id": thread_id,
+                                                            "agent.scene_name": input_data.current_scene_name or ""}}
+        span_input_repr = input_data.content
+
     # agent.session 是 trace root（main.py 用 excluded_urls 排除 /api/v1/space/chat
     # 的 FastAPI 自动 server span，让本手动 span 当 root，input/output 自动成 trace IO）
     with optional_span(
-        "agent.session",
-        **{
-            "agent.thread_id": thread_id,
-            "agent.scene_name": chat_request.current_scene_name or "",
-        },
+            span_event.get("id", "agent.session"),
+            **span_event.get("attributes", {"agent.thread_id": thread_id}),
     ) as span:
         try:
             agent = await _get_or_create_agent(thread_id)
             # 记录输入 IO：放在 try 内部，避免 set_span_io 自身异常（如 OTel 误配置）
             # 时绕过下方 except，导致 SSE 流静默截断（无 error 帧）
-            set_span_io(span, input=chat_request.content)
+            set_span_io(span, input=span_input_repr)
 
-            async for event in agent.astream_events(
-                {
-                    "messages": [HumanMessage(content=chat_request.content)],
-                    # 注入 SpaceAgentState.current_scene_name 初值，
-                    # 后续工具返回 Command 更新该字段，跨 task 边界自动同步
-                    "current_scene_name": chat_request.current_scene_name,
-                    # 查询结果只属于当前轮次，避免历史数据影响后续响应渲染
-                    "scenario_query_results": None,
-                },
-                config={
-                    "configurable": {"thread_id": thread_id},
-                    "recursion_limit": 100,
-                },
-                version="v2",
+            config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 100}
+            # 切 astream（spec D2）：astream_events 检测不到 graph interrupt()。
+            # subgraphs=True 让子 Agent 的 interrupt 上浮到顶层流；version="v2" 统一
+            # chunk 形状（dict：type/data/ns，values 事件额外带 interrupts）。
+            async for chunk in agent.astream(
+                    graph_input,
+                    config=config,
+                    stream_mode=["messages", "values"],
+                    subgraphs=True,
+                    version="v2",
             ):
-                kind = event["event"]
-                name = event.get("name", "")
-                data = event.get("data", {})
+                chunk_type = chunk.get("type")
                 try:
-                    if kind == "on_chat_model_stream":
-                        chunk = data.get("chunk")
-                        if chunk is None:
+                    # values 流：先判中断（必须在 messages 处理之前）。interrupt 由
+                    # 子 Agent 的 HumanInTheLoopMiddleware 触发（声明式 interrupt_on），
+                    # payload 形如 {action_requests, review_configs}。_handle_interrupts
+                    # 负责 emit interrupt(s) + done(interrupted=True)，发完即结束本流。
+                    if chunk_type == "values" and chunk.get("interrupts"):
+                        await _handle_interrupts(bridge, chunk["interrupts"])
+                        return
+                    # messages 流：token。subgraphs=True 下所有消息类型都会上浮，必须
+                    # 跳过 ToolMessage（content 是工具结果 JSON，已由 bridge 的
+                    # tool_result 帧发出）与空 content（结构化输出的 tool_call 碎片）。
+                    if chunk_type == "messages":
+                        msg, metadata = chunk["data"]
+                        if getattr(msg, "type", None) == "tool":
                             continue
-                        text = _extract_chunk_text(chunk)
+                        text = _extract_chunk_text(msg)
                         if not text:
                             continue
-                        # source 从 metadata best-effort 解析。spike 确认当前
-                        # astream_events 的 langgraph_node 全为 "model"、tags 为空，
-                        # 无法区分 orchestrator / 子 agent，故 source 暂为统一值；
-                        # 未来 deepagents 若丰富 metadata（node/tags 带 agent 标识），
-                        # 在此细化即可实现前端按来源过滤。
-                        source = (event.get("metadata") or {}).get("langgraph_node") or "agent"
+                        # source 从 metadata best-effort 解析。spike 确认 langgraph_node
+                        # 实测统一为 "model"，无法区分 orchestrator / 子 agent，故 source
+                        # 暂为统一值；未来 metadata 带 agent 标识时在此细化即可。
+                        source = (metadata or {}).get("langgraph_node") or "agent"
                         await bridge._emit(
                             SSEEventType.TOKEN,
                             {"content": text, "source": source},
                         )
-                    elif kind == "on_tool_start":
-                        # AgentResponse 是结构化输出占位工具，不向前端发事件
-                        if name == "AgentResponse":
-                            continue
-                        # StreamBridge.send_tool_call 已负责 emit tool_start/tool_args，
-                        # 此处不再额外发进度消息
-                    elif kind == "on_chain_end":
-                        output = data.get("output")
-                        if output is None or not isinstance(output, dict):
-                            continue
-                        agent_response = output.get("structured_response")
-                        if agent_response is None:
-                            continue
-                        rendered = response_util.render(
-                            agent_response,
-                            scenario_infos=output.get("scenario_query_results"),
-                        )
-                        set_span_io(span, output=rendered)
-                        await bridge._emit(
-                            SSEEventType.DONE,
-                            {"content": rendered},
-                        )
-                        return
                 except Exception as ex:
                     logger.exception(
                         "Agent 事件处理出错",
-                        event_kind=kind,
-                        event_name=name,
+                        chunk_type=chunk_type,
                         thread_id=thread_id,
                     )
                     raise ex
 
-            # 流正常结束但未收到 AgentResponse on_chain_end：兜底发 done
-            logger.warning("流结束未收到 AgentResponse on_chain_end 事件", thread_id=thread_id)
-            set_span_io(span, output="处理完成。")
-            await bridge._emit(SSEEventType.DONE, {"content": "处理完成。"})
+            # 流正常结束（图到达 END，未触发 interrupt）：从最终 state 取
+            # structured_response 渲染。注意：不能在 values 流里早判 structured_response
+            # —— astream(stream_mode="values") 每步吐的是累计 state 快照，且
+            # structured_response 跨轮不清空，新一轮的首个 values chunk 仍带着上一轮的
+            # structured_response，早判会误触发 done。旧的 on_chain_end 路径安全是因为
+            # 其 output 是调用作用域的新值；切 astream 后改用 aget_state 取终态值。
+            state = await agent.aget_state(config)
+            values: dict = getattr(state, "values", None) or {}
+            agent_response = values.get("structured_response")
+            if agent_response is not None:
+                rendered = response_util.render(
+                    agent_response,
+                    scenario_infos=values.get("scenario_query_results"),
+                )
+            else:
+                logger.warning("流结束但 state 无 structured_response", thread_id=thread_id)
+                rendered = "处理完成。"
+            set_span_io(span, output=rendered)
+            await bridge._emit(SSEEventType.DONE, {"content": rendered})
 
         except Exception as e:
             logger.exception("Agent 执行出错", thread_id=thread_id)
@@ -260,9 +311,9 @@ async def run_agent(bridge: Any, chat_request: ChatRequest) -> None:
                 await bridge._emit(SSEEventType.ERROR, {"message": str(e)})
 
 
-async def event_generator(
-    bridge: Any,
-    chat_request: ChatRequest,
+async def stream_chat_response(
+        bridge: StreamBridge,
+        input_data: ChatRequest | Command,
 ) -> AsyncIterator[str]:
     """SSE 事件生成器：注入 ContextVar + 启动 agent_task + 消费 bridge._queue
 
@@ -282,12 +333,14 @@ async def event_generator(
     客户端断开：Starlette 在下一次 yield 抛 asyncio.CancelledError，
     finally 同样执行，agent_task 被 cancel，避免流挂死。
     """
-    thread_id = chat_request.thread_id
-    # 在 generator 当前 context 注入 ContextVar（同 context 内后续 reset）
+    thread_id = bridge._thread_id
+    # 在 generator 当前 context 注入 ContextVar（同 context 内后续 reset）。
+    # chat 与 resume 都必须注入 bridge_var：resume 续跑时工具函数（delete_scene 等）
+    # 仍通过 bridge_var.get() 拿到 bridge 执行前端调用。streak 每流重置为 0。
     bridge_token = bridge_var.set(bridge)
     task_streak_token = orchestrator_task_streak_var.set(0)
-    # create_task 拷贝当前 context → agent_task 内 bridge_var.get() 可见
-    agent_task = asyncio.create_task(run_agent(bridge, chat_request))
+    # create_task 拷贝当前 context → run_agent 与工具函数内 bridge_var.get() 可见
+    agent_task = asyncio.create_task(run_agent(bridge, input_data))
 
     try:
         # 事件透传：bridge._queue 中的任意事件（token/tool_*/done/error，以及
@@ -333,7 +386,7 @@ async def chat(chat_request: ChatRequest) -> StreamingResponse:
     bridge = session_manager.register(thread_id)
 
     return StreamingResponse(
-        event_generator(bridge, chat_request),
+        stream_chat_response(bridge, chat_request),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -388,16 +441,26 @@ async def tool_result(req: ToolResultRequest) -> dict:
 
 
 @router.post("/chat/{thread_id}/resume")
-async def resume(thread_id: str, req: ResumeRequest) -> dict:
-    """POST /chat/{thread_id}/resume — interrupt 人工接管恢复（协议占位，当前返 501）
+async def resume(thread_id: str, req: ResumeRequest) -> StreamingResponse:
+    """POST /chat/{thread_id}/resume — interrupt 续跑，新开 SSE 流
 
-    协议就位：前端在收到 ``event: interrupt`` 帧后，POST 此端点携带 resume 数据
-    恢复 Agent，响应未来为 SSE 流（续跑事件）。graph 级 ``interrupt()`` + resume
-    续跑 + 前端决策 UI 是下一步独立任务（见 CLAUDE.md 路线图 / spec §4.8），
-    当前直接返 501 NotImplemented。
+    前端收到 ``event: interrupt`` 帧并收集用户决策后，POST 此端点恢复 Agent。
+    本端点新开一条 SSE 流（spec D1）：interrupt 时首轮 /chat 流已 done+cleanup+
+    unregister，故此处 register 全新 StreamBridge，复用同一 thread_id 的 checkpointer
+    续跑。``req.resume`` 作为 ``Command(resume=...)`` 的值送达 ``interrupt()`` 暂停点。
     """
-    logger.info("resume 请求（interrupt 未实现，返 501）", thread_id=thread_id)
-    raise HTTPException(
-        status_code=501,
-        detail="interrupt 实现延后（graph interrupt() + resume 续跑），见下一步任务",
+    # 并发护栏：同 thread_id 已有活跃 session → 409（与 /chat 同一不变式）
+    if session_manager.get_bridge(thread_id) is not None:
+        logger.warning("拒绝并发 resume：thread_id 已有活跃 session", thread_id=thread_id)
+        raise HTTPException(status_code=409, detail="该会话已有活跃请求在处理")
+
+    bridge = session_manager.register(thread_id)
+    return StreamingResponse(
+        stream_chat_response(bridge, Command(resume=req.resume)),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
