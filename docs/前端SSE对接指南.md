@@ -35,7 +35,7 @@
 
 1. **token 逐字流式**（头号目标）：agent 的自由文本回复逐字流出，用户看着字一个个出现，体感延迟骤降。
 2. **工具执行可视化**：`tool_start`/`tool_args`/`tool_result`/`tool_end` 让用户看见 agent 在调用什么工具、传什么参数、得到什么结果——透明度与信任。
-3. **可中断（未来）**：`interrupt` 事件协议已就位（当前后端返回 501 占位），前端可预留人工接管（HITL）决策 UI。
+3. **人工接管（HITL）**：`interrupt` 事件 + `POST /resume` 续跑已落地。两类中断点：声明式审批（删除/改名/清空实体前的 approve/reject）与自定义中断（`open_scenario` 的多场景选择、未保存变更确认）。前端按帧的 `interrupt_type` 分发渲染决策 UI。详见第 4.5 节。
 
 ---
 
@@ -44,7 +44,7 @@
 ```
 前端 ──HTTP POST──> 后端        POST /chat（触发，返回 SSE 流）
                       /tool-result（工具执行结果回告）
-                      /chat/{thread_id}/resume（中断恢复，暂 501）
+                      /chat/{thread_id}/resume（中断恢复，返回续跑 SSE 流）
 
 前端 <──SSE───────── 后端        token / tool_start / tool_args / tool_result / tool_end
                                         / interrupt / done / error
@@ -94,11 +94,19 @@
 
 **响应**：`200 { "ok": true }`。无活跃会话时返回 **`404`**（会话已结束 / 未先 `POST /chat` / `thread_id` 错误）。
 
-### 4.3 `POST /api/v1/space/chat/{thread_id}/resume`（中断恢复，暂未实现）
+### 4.3 `POST /api/v1/space/chat/{thread_id}/resume`（中断恢复，返回续跑 SSE 流）
 
-**请求体**：`{ "resume": { ... } }`（resume 数据格式取决于中断类型）。
+前端收到 `event: interrupt` 帧、收集用户决策后，POST 此端点恢复 Agent。本端点**新开一条 SSE 流**（interrupt 时首轮 `/chat` 流已 `done`+cleanup+unregister，此处 register 全新 StreamBridge，复用同一 `thread_id` 的 checkpointer 续跑）。
 
-**响应**：当前返回 **`501 NotImplemented`**（`interrupt` 的 graph 级实现是下一步任务）。协议先就位，前端可先按此契约预留对接；实现落地后响应将变为 SSE 流（续跑事件）。
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `resume` | object | 是 | 恢复数据，作为 `Command(resume=...)` 的值送达 `interrupt()` 暂停点。**格式取决于中断类型**（见 4.5 节） |
+
+**响应**：`Content-Type: text/event-stream`，事件同 `/chat`（`token` / `tool_*` / `interrupt` / `done` / `error`），最终以 `done`（无 `interrupted`，`content` 为最终回复）收尾。
+
+**并发护栏**：同 `thread_id` 已有活跃会话时返回 **`409 Conflict`**——前端发 resume 前确保上一条流已收到终态 `done`。`thread_id` 必须与触发中断的 `/chat` 一致，否则 checkpointer 取不到暂停点。
 
 ### 4.4 SSE 事件契约（后端→前端）
 
@@ -119,7 +127,7 @@ data: <JSON 对象>
 | `tool_args` | `{tool_func, tool_call_id, args, thread_id}` | 否 | 工具参数（紧跟 `tool_start`） |
 | `tool_result` | `{tool_func, tool_call_id, result, thread_id}` | 否 | 工具执行结果（前端回告的数据回显，供事件时间线展示） |
 | `tool_end` | `{tool_func, tool_call_id, thread_id}` | 否 | 工具结束（紧跟 `tool_result`） |
-| `interrupt` | `{interrupt_id, type, message, thread_id}` | 否 | **协议占位，当前后端不触发**（graph `interrupt()` 未实现） |
+| `interrupt` | `{is_custom, interrupt_type, message, data, thread_id}` | 否（暂停态） | 人工接管中断。**后跟终态 `done{interrupted:true}` 关流**，前端收集决策后 `POST /resume` 续跑。按 `interrupt_type` 分发渲染，详见 4.5 节 |
 | `done` | `{thread_id, content}` | ✅ 是 | 本轮结束。`content` 是最终回复（后端 `render` 后的自然语言） |
 | `error` | `{thread_id, message}` | ✅ 是 | 出错。流终止 |
 
@@ -127,6 +135,48 @@ data: <JSON 对象>
 - `done` / `error` 是**终态帧**，收到后流关闭，本轮结束。`content`（done）是权威的最终回复文本。
 - 一次工具调用的完整生命周期：`tool_start` → `tool_args` →（前端执行 + `POST /tool-result`）→ `tool_result` → `tool_end`。
 - 帧里 `data` 的 JSON 含中文时**不转义**（`ensure_ascii=False`），直接是 UTF-8 可读文本。
+- `done` 在中断暂停态时 data 为 `{thread_id, content:"", interrupted:true}`（流同样关闭，等 `/resume` 续跑）；正常完成时为 `{thread_id, content:<最终回复>}`。
+
+### 4.5 HITL 中断契约（`interrupt` + `/resume`）
+
+判断分支**只看帧里的 `interrupt_type`**（`is_custom` 仅冗余标记）。当前三类：
+
+| `interrupt_type` | 来源 | 触发条件 | 前端 UI | `/resume` 的 `resume` 内容 |
+|---|---|---|---|---|
+| `hitl_select` | `open_scenario` skill（自定义） | `query_scenario` 命中 ≥2 个场景 | 列表选择（`data.scene_info_list` 带候选） | `{"scene_name": "<选中名>"}` |
+| `hitl_yn` | `open_scenario` skill（自定义） | `open_scenario` 返回 `SCENE_UNSAVED_CHANGES` | Y/N 确认 | `{"save_on_change": true\|false}` |
+| `hitl_approval` | 声明式 `interrupt_on`（删除/改名/清空实体前） | 工具调用前的审批闸门 | approve/reject | `{"decisions": [{"type":"approve"} \| {"type":"reject"}]}` |
+
+**`hitl_select` 帧示例**：
+
+```jsonc
+// event: interrupt
+{ "is_custom": true, "interrupt_type": "hitl_select",
+  "message": "找到多个匹配场景，请选择要打开的场景：",
+  "data": { "scene_info_list": [
+      {"scene_name":"测试场景A","update_time":"2026-08-01","uploader_name":"u1"},
+      {"scene_name":"测试场景B","update_time":"2026-08-02","uploader_name":"u2"} ] },
+  "thread_id": "t1" }
+// 紧跟：event: done  data: {"thread_id":"t1","content":"","interrupted":true}  ← 流关闭
+```
+
+**`hitl_yn` 帧示例**：
+
+```jsonc
+// event: interrupt
+{ "is_custom": true, "interrupt_type": "hitl_yn",
+  "message": "当前场景存在未保存的变更，是否在切换前保存？(Y/N)",
+  "data": { "scene_name": "当前场景", "target_scene_name": "目标场景" },
+  "thread_id": "t1" }
+```
+
+**前端要点**：
+- 收到 `interrupt` 后继续读到紧跟的终态 `done(interrupted:true)` 再关流；用户决策就绪后 `POST /chat/{thread_id}/resume`（新开 SSE 流）。
+- `scene_info_list` 固定三字段（`scene_name`/`update_time`/`uploader_name`）；resume 回传用户选中的 `scene_name` **原值**。
+- `save_on_change` 必须是布尔（不是 `is_save_on_change`/字符串）。
+- **已知噪声（非 bug）**：resume 续跑时被中断的节点会从头重跑，故 `query_scenario`/`open_scenario` 的 `tool_*` 帧会重复一次（幂等探测），前端正常忽略即可。
+
+完整联调清单（时序图 / 易错点速查）见对话记录 2026-08-04「open_scenario HITL 前后端联调清单」。
 
 ---
 
@@ -143,6 +193,8 @@ data: <JSON 对象>
 | **并发护栏** | 同 `thread_id` 重入返回 `409`，避免 checkpointer 冲突 |
 | **客户端断开自动清理** | 前端关页 / `AbortController` 取消 → 后端自动取消正在跑的 agent + 清理资源，不留僵尸会话 |
 | **场景上下文同步** | `current_scene_name` 跨 agent 自动同步（创建实体前必须先有场景的依赖由后端校验） |
+| **人工接管（HITL）** | `interrupt` 帧按 `interrupt_type` 分类（`hitl_select`/`hitl_yn`/`hitl_approval`），前端收集决策后 `/resume` 续跑。`open_scenario` skill 已联调通过 |
+| **Skill 加载（progressive disclosure）** | scene-agent 启动时注入 `open_scenario` skill 元数据，LLM 按需读取 SKILL.md 全文执行 SOP（前端无感，仅感知到工具调用顺序符合流程） |
 | **可观测性** | 全链路 trace（OTel + Langfuse），便于联调时定位问题（前端不直接用，但出问题时可让后端查 trace） |
 
 ---
@@ -190,7 +242,7 @@ curl -X POST http://localhost:8028/api/v1/space/tool-result \
 
 - **并发**：同 `thread_id` 第二个 `POST /chat` → `409`。
 - **断开**：`curl` 中途 `Ctrl+C` → 后端日志应见 agent 取消 + 清理。
-- **/resume**：`POST /api/v1/space/chat/t1/resume -d '{"resume":{}}'` → `501`。
+- **/resume**：`POST /api/v1/space/chat/t1/resume -d '{"resume":{"scene_name":"测试场景B"}}'` → 返回续跑 SSE 流（`token`/`tool_*`/`done`）。
 
 ---
 

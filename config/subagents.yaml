@@ -3,6 +3,8 @@ agents:
     description: 处理场景相关操作：创建、打开、删除、查询、修改场景。
     tools:
       - scene_management
+    skills:
+      - /skills/scene/
     interrupt_on:
       delete_scene:
         allowed_decisions: [ "approve", "reject" ]
@@ -17,6 +19,8 @@ agents:
     tools:
       - entity_management
       - orbit_management
+    skills:
+      - /skills/entity/
     interrupt_on:
       clear_entities:
         allowed_decisions: [ "approve", "reject" ]

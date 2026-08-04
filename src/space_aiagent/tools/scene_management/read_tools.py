@@ -58,10 +58,10 @@ def _normalize_scenario_query_result(
 @tool
 async def query_scenario(runtime: ToolRuntime, scene_name: str | None = None) -> Command:
     """
-    查询场景信息。不传参数时查询当前场景(即当前打开的场景)。
+    查询场景信息。
 
     args:
-        scene_name(str|None) :  要匹配的场景名，当为None时表示查询当前(已打开的)场景
+        scene_name(str|None) :  要匹配的场景名。
     """
     tool_func = inspect.currentframe().f_code.co_name  # → "query_scenario"
     args: dict = string_util.args_to_camel(query_scenario, locals())

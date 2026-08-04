@@ -11,8 +11,6 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AIMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
-from space_aiagent.agents.subagents_util import resolve_subagent_type
-from space_aiagent.infrastructure.llm import build_flash_model
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
 from space_aiagent.infrastructure.utils import collection_util, message_util, string_util
@@ -32,36 +30,8 @@ class PrimaryAgentMiddleware(AgentMiddleware):
 
     职责:
     1. TASK_LOOP_GUARD: 连续 task 死循环兜底（现有）
-    2. 意图捕获: Orchestrator 返回 NO_SCENE 时，把用户原始意图写入
-       AIMessage.additional_kwargs["pending_intent"]，由 checkpointer 跨轮持久化；
-       同时若 task 历史中能找到 subagent_type，一并写入 pending_subagent
-    3. 自动续接: 前置条件满足后（默认 SCENE_CREATED），若 messages 中存在
-       pending_intent，按以下优先级解析 subagent_type 并委派 task：
-       (a) captured_subagent（来自 task 历史，覆盖流程 2 主路径）
-       (b) LLM 路由分类（流程 1 fallback：orchestrator 直接 NO_SCENE 未调 task）
     """
 
-    # 用户确认短句——不视为原始意图（避免覆盖上一轮的真实意图）
-    _CONFIRMATION_PHRASES = frozenset(
-        {
-            "好的",
-            "好",
-            "好啊",
-            "好吧",
-            "行",
-            "可以",
-            "没问题",
-            "确认",
-            "ok",
-            "okay",
-            "yes",
-            "是",
-            "是的",
-            "嗯",
-            "嗯嗯",
-            "继续",
-        }
-    )
 
     def __init__(
         self,
@@ -70,13 +40,14 @@ class PrimaryAgentMiddleware(AgentMiddleware):
     ) -> None:
         self.thread_id = thread_id
         self._threshold = max(1, int(task_loop_threshold))
-        self._model = build_flash_model()
 
     @staticmethod
     def _build_shortcut_response() -> ModelResponse:
         shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.TASK_LOOP_GUARD]
-        display = response_util.render(shortcut)
-        return message_util.build_primary_agent_response(display, shortcut, "call_primary_agent_guard")
+        return ModelResponse(
+            result=[AIMessage(content=shortcut.summary)],
+            structured_response=shortcut,
+        )
 
     # ── 中间件钩子 ────────────────────────────────────────────
 
@@ -121,50 +92,6 @@ class PrimaryAgentMiddleware(AgentMiddleware):
                     streak=streak,
                 )
                 return self._build_shortcut_response()
-
-        # ── 职责 2: 意图捕获 ──
-        if code and code in response_constants.INTENTION_TO_CATCH_CODES:
-            existing_intent, existing_subagent, _ = message_util.extract_last_existing_intent(request.messages)
-            intent, _ = message_util.extract_last_human_intent(
-                request.messages,
-                ignore_messages=list(self._CONFIRMATION_PHRASES),
-            )
-            # 优先沿用历史 pending_intent：避免本轮「好的」「创建测试场景」等
-            # 确认/推进型输入覆盖上一轮真实意图（注意顺序：existing 在前）
-            intent = existing_intent or intent
-            if intent:
-                subagent_name, _, _ = message_util.extract_last_task(request.messages)
-                subagent_name = subagent_name or existing_subagent
-                logger.info(
-                    "model call after 捕获意图",
-                    intent=intent,
-                    subagent=subagent_name,
-                    code=code,
-                )
-                for msg in response.result:
-                    if not isinstance(msg, AIMessage) or not msg.tool_calls:
-                        continue
-                    if any(tc.get("name") == "AgentResponse" for tc in msg.tool_calls):
-                        additional = msg.additional_kwargs or {}
-                        additional["pending_intent"] = intent
-                        if subagent_name:
-                            additional["pending_subagent"] = subagent_name
-                        msg.additional_kwargs = additional
-                        logger.info("model call after 捕获意图，保存到状态", msg=msg)
-                        break
-
-        # ── 职责 3: 自动续接 ──
-        if code and code in response_constants.INTENTION_RESUME_TRIGGER_CODES:
-            pending, captured_subagent, _ = message_util.extract_last_existing_intent(request.messages)
-            if pending:
-                # 清除历史 messages 中的 pending_intent/pending_subagent，防止后续重复续接
-                for msg in request.messages:
-                    if isinstance(msg, AIMessage) and msg.additional_kwargs:
-                        msg.additional_kwargs.pop("pending_intent", None)
-                        msg.additional_kwargs.pop("pending_subagent", None)
-                # 手动的恢复一下用户意图
-                subagent_type = await resolve_subagent_type(pending, captured_subagent, self._model)
-                response = message_util.build_task_response(pending, subagent_type, "call_pending_intent_auto")
 
         for msg in response.result:
             if hasattr(msg, "tool_calls") and msg.tool_calls:

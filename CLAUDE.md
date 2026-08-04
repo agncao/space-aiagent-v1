@@ -28,8 +28,9 @@ Skill，还能购买产品方或第三方的 Skill 包。
 | **Phase 1A-1** | 可观测性 - AI 维度（OTel instrumentation + Langfuse v3 自部署，trace + token 归因）| ✅ 已完成（2026-07-02） |
 | **Phase 1B** | 失败恢复（重试 + 降级）| ✅ 已完成（2026-07-10）|
 | **传输层迁移** | WebSocket → SSE+POST 事件流（token/tool_start/tool_args/tool_result/tool_end/interrupt/done），删 WS（[spec](docs/superpowers/specs/2026-07-21-sse-migration-design.md) / [plan](docs/superpowers/plans/2026-07-21-sse-migration.md)）| ✅ 已完成（2026-07-21）|
-| **Human-in-the-loop** | interrupt 人工接管（graph interrupt() + /resume 续跑 + 前端决策 UI）| 🟡 待启动（传输层迁移之后）|
-| **Phase 2** | Skill 系统第一版（Anthropic 风格协议 + LLM 主动检索 + load_skill 工具 + 3-5 个示例 + 多模型路由 + 基础审计）| 🔵 准备中 |
+| **Human-in-the-loop** | interrupt 人工接管（graph interrupt() + /resume 续跑 + 前端决策 UI）；含声明式 interrupt_on + 自定义中断（scene-agent 的 SceneAgentHitlMiddleware 两个中断点）| ✅ 已完成（2026-08-04，[spec](docs/superpowers/specs/2026-07-29-hitl-transport-design.md)）|
+| **Phase 2（Package 层）** | Skill 加载：Anthropic 风格 progressive disclosure（内置 SkillsMiddleware + CompositeBackend 路由 `/skills/`）。首个内置 skill `open_scenario` 已联调通过。**Backend/Policy 层（CommandGuard/Docker/审计）待首个带 `scripts/` 的 skill 出现再做**（[design](docs/superpowers/specs/2026-07-29-skill-system-design.md)）| 🟡 进行中（Package 层 ✅）|
+| **Phase 2（Backend/Policy 层）** | OS 自适应 LocalBackend + 命令真白名单 CommandGuard + 超时 + 审计 + 配置式选 backend + install 脚本 | 🔵 准备中（待脚本型 skill 驱动）|
 | **Phase 1C** | 工具能力补全（数据查询、报告生成等）| 🟡 待启动 |
 | **Phase 1A-2** | 可观测性 - 系统指标（Prometheus 采集，QPS/延迟/资源）| 🟡 待启动（延后至 1C 之后）|
 | **Phase 5** | 横切关注点简化版（用户/角色权限 + 完整审计 + Skill 版本管理）| 🟡 待启动 |
@@ -76,7 +77,11 @@ src/space_aiagent/
 │   ├── primary_agent_middleware.py # PrimaryAgentMiddleware（orchestrator task 死循环硬兜底 + 意图捕获 + 自动续接 + 内联 LLM/工具调用日志）
 │   ├── dynamic_prompt.py   # agents_dynamic_prompt（@dynamic_prompt 装饰器声明，每次 LLM 调用前把 current_scene_name 注入 system message）
 │   ├── response_stabilization.py # ResponseStabilizationMiddleware（**已退役**：模板渲染废弃后无职责，类保留挂在中间件链上作为占位，参考 LoggingMiddleware 退役模式）
-│   └── tool_validation.py  # ToolValidationMiddleware（bridge + 场景上下文 fail-fast + suggestion 候选集注入）
+│   ├── subagent_tool_validation.py # SubagentToolValidationMiddleware（bridge + 场景上下文 fail-fast + suggestion 候选集注入）
+│   ├── retry.py            # RetryMiddleware（LLM/工具失败重试 + 降级，Phase 1B）
+│   └── scene_hitl.py       # SceneAgentHitlMiddleware（scene-agent 两个条件性 HITL 中断点：query 多场景选择 / open_scenario 未保存变更确认，中间件驱动 interrupt()）
+├── skills/                 # Skill 包（按 scope 组织：scene/open_scenario/SKILL.md；通过 CompositeBackend `/skills/` 路由加载）
+├── prompts/                # 提示词模板
 ├── prompts/                # 提示词模板
 │   ├── orchestrator.md     # 主控 Agent 提示词
 │   ├── scene_agent.md      # 场景子 Agent 提示词
@@ -180,8 +185,8 @@ ruff format src/ tests/
          Cesium 前端执行
 ```
 
-- **Orchestrator**: 意图识别、任务规划、子 Agent 调度。不直接绑定工具，只持有工具组摘要。使用 `ToolStrategy(AgentResponse)` 强制结构化输出，state_schema 用 `SpaceAgentState`（`agents/state.py`，含 `current_scene_name` 字段，跨 task 边界自动同步）。middleware 顺序为 `PrimaryAgentMiddleware`（task 死循环硬兜底 + 意图捕获 + 自动续接 + 内联 LLM/工具调用日志，详见「任务循环防护」和「意图追踪与自动续接」）→ `ResponseStabilizationMiddleware`（**已退役占位**，模板渲染废弃后无职责）→ `agents_dynamic_prompt`（动态注入 current_scene_name 到 system message）。**LoggingMiddleware 已退役**——orchestrator 不再挂载，可观测性职责由 `PrimaryAgentMiddleware.awrap_model_call` / `awrap_tool_call` 内联日志承担（类保留供未来复用）
-- **子 Agent**: 通过 `config/subagents.yaml` 声明式配置，`agents/subagents.py` 加载。新增 Agent 改配置 + 提示词 + `tools/registry.py` 注册。middleware 顺序为 `ToolValidationMiddleware(tool_groups=...)` → `ResponseStabilizationMiddleware`（**已退役占位**）→ `agents_dynamic_prompt`
+- **Orchestrator**: 意图识别、任务规划、子 Agent 调度。不直接绑定工具，只持有工具组摘要。使用 `ToolStrategy(AgentResponse)` 强制结构化输出，state_schema 用 `SpaceAgentState`（`agents/state.py`，含 `current_scene_name` 字段，跨 task 边界自动同步）。middleware 顺序为 `PrimaryAgentMiddleware`（task 死循环硬兜底 + 意图捕获 + 自动续接 + 内联 LLM/工具调用日志，详见「任务循环防护」和「意图追踪与自动续接」）→ `agents_dynamic_prompt`（动态注入 current_scene_name 到 system message）→ `RetryMiddleware`（Phase 1B 失败重试+降级）。**LoggingMiddleware / ResponseStabilizationMiddleware 已退役**——orchestrator 不再挂载（类保留供未来复用），可观测性职责由 `PrimaryAgentMiddleware.awrap_model_call` / `awrap_tool_call` 内联日志承担。backend 为 `CompositeBackend`（`/skills/` 路由见「Skill 加载」节）
+- **子 Agent**: 通过 `config/subagents.yaml` 声明式配置，`agents/subagents.py` 加载。新增 Agent 改配置 + 提示词 + `tools/registry.py` 注册。middleware 顺序为 `SubagentToolValidationMiddleware(tool_groups=...)` → `agents_dynamic_prompt` → `RetryMiddleware`；**scene-agent 额外在 index 1 插入 `SceneAgentHitlMiddleware`**（open_scenario 两个 HITL 中断点，见「Human-in-the-loop」节）。子 Agent 可选挂 `skills`（`subagents.yaml` 的 `skills: ["/skills/<scope>/"]`，经共享 backend 加载）
 - **Analysis Agent**: 数据分析（未来扩展），独立领域单独扩展
 - **Agent 执行**: `astream_events` 流式执行，`on_tool_start`（工具进度提示钩子）+ `on_chain_end`（读 `output.structured_response` + `response_util.render()` 出口渲染发送）事件驱动。task 死循环兜底已下沉到 `PrimaryAgentMiddleware`（阈值 20，详见「任务循环防护」）。详见 `readme/python教程.md` 9.5 节
 - **结构化输出**: `ToolStrategy` 利用模型 tool calling API 强制输出 `AgentResponse` JSON。SSE handler 的 `on_chain_end` 事件（`api/sse.py:run_agent`）读 `output.structured_response`，调 `response_util.render()` 渲染为自然语言，作为 `done` 事件的 `content` 发前端——`render()` 直接返回 `summary` + 可选 suggestions 块（**模板渲染已废弃**，YAML 模板仅作 SHORTCUT_RESPONSES 的 summary 默认值）。**A 方案短路**：已知确定性 case（如 `NO_SCENE`）由 `ToolValidationMiddleware` 在工具调用前识别，返回 `Command(goto=END)` 短路（update 里塞携带 NO_SCENE 的 ToolMessage 关闭 AI 的 tool_call，跳过子 Agent 后续 LLM 调用）。state 由 LangGraph 自动持久化到 checkpointer（多轮对话上下文完整）。注册表在 `models/response_schema/response_constants.SHORTCUT_RESPONSES`
@@ -204,7 +209,7 @@ Agent 得到结果 ← await Future ← StreamBridge.resolve_tool_result() ← P
 
 **场景上下文注入（state_schema 双向同步）**: `current_scene_name` 通过 `SpaceAgentState`（`agents/state.py`）持久化，由 SSE handler（`api/sse.py`）在 `astream_events` 的 input 中注入初值，scene 工具（`create_scenario`/`rename_scenario`/`query_scenario` 成功路径）通过返回 `Command(update={"current_scene_name": ...})` 更新，`ToolValidationMiddleware` 通过 `request.state.get("current_scene_name")` 读取。**关键**：deepagents `task` 工具自动双向同步 state（父→子 `_validate_and_prepare_state`，子→父 `_return_command_with_state_update`，排除 `_EXCLUDED_STATE_KEYS = {"messages","todos","structured_response","skills_*","memory_contents"}`），所以 scene-agent 创建场景后写入的 `current_scene_name` 会自动回传到 orchestrator，再自动传给后续 task 调用的 entity-agent——**避免 ContextVar 跨 task 边界丢失**（LangGraph 每个 node 用 `copy_context() + asyncio.create_task(context=...)` 隔离运行）。
 
-**9 个工具函数**: createScenario, renameScenario, deleteScene, clearEntities, queryScenario, queryEntities, addPointEntity, createSGP4Orbit, updateSGP4Orbit。每个工具函数调 `bridge.send_tool_call(namespace, tool_func, args)`（tool_func 为函数名），`StreamBridge` 依次 emit `tool_start`/`tool_args` → 前端 Cesium 执行后通过 `POST /tool-result` 回告 → resolve Future → emit `tool_result`/`tool_end`。scene 写工具（create/rename/delete/query）签名加 `runtime: ToolRuntime` 第一参数（langgraph 标准 API），从 `runtime.tool_call_id` 拿 ID 构造 `Command(update={...})` 返回。详细参数格式见 README。**⚠️ 并行工具调用已强制关闭**：scene 工具写的是 `SpaceAgentState` 的 last_value 字段（`scenario_query_results`/`current_scene_name`，`agents/state.py` 无 reducer）。LLM 一次响应里并行发起两个工具调用时，同一 step 对同一 last_value 通道写入两次会抛 `InvalidUpdateError: Can receive only one value per step`（如两个 `query_scenario` 并行）。故 `build_model()`（`infrastructure/llm.py`）经 `model_kwargs={"parallel_tool_calls": False}` 关闭并行调用（DashScope Qwen 默认即 false 并完整支持），**勿误开**；同理 `current_scene_name`（两个 `open_scenario` 并行）隐患一并消除。除非给 state 字段补 reducer 并验证语义，否则不要放开。
+**10 个工具函数**: createScenario, renameScenario, deleteScene, clearEntities, queryScenario, queryEntities, addPointEntity, createSGP4Orbit, updateSGP4Orbit, **openScenario**（打开/切换已存在场景，由 `open_scenario` SKILL.md 驱动，含两处 HITL 中断点）。每个工具函数调 `bridge.send_tool_call(namespace, tool_func, args)`（tool_func 为函数名），`StreamBridge` 依次 emit `tool_start`/`tool_args` → 前端 Cesium 执行后通过 `POST /tool-result` 回告 → resolve Future → emit `tool_result`/`tool_end`。scene 写工具（create/rename/delete/query）签名加 `runtime: ToolRuntime` 第一参数（langgraph 标准 API），从 `runtime.tool_call_id` 拿 ID 构造 `Command(update={...})` 返回。详细参数格式见 README。**⚠️ 并行工具调用已强制关闭**：scene 工具写的是 `SpaceAgentState` 的 last_value 字段（`scenario_query_results`/`current_scene_name`，`agents/state.py` 无 reducer）。LLM 一次响应里并行发起两个工具调用时，同一 step 对同一 last_value 通道写入两次会抛 `InvalidUpdateError: Can receive only one value per step`（如两个 `query_scenario` 并行）。故 `build_model()`（`infrastructure/llm.py`）经 `model_kwargs={"parallel_tool_calls": False}` 关闭并行调用（DashScope Qwen 默认即 false 并完整支持），**勿误开**；同理 `current_scene_name`（两个 `open_scenario` 并行）隐患一并消除。除非给 state 字段补 reducer 并验证语义，否则不要放开。
 
 ### 场景依赖处理
 
@@ -288,6 +293,30 @@ Orchestrator 返回 `SCENE_CREATED`/`SCENE_RENAMED`（命中 `response_constants
 
 候选集生成方式（description 提取）：当前用 `_extract_first_sentence` 正则提取 description 首段首句（如「创建航天场景。场景是所有实体的容器...」→「创建航天场景」）。前提是工具 description 第一段第一句必须是用户视角的能力描述。Phase 2 升级路径见「待优化项」。
 
+### Skill 加载（Package 层 / SKILL_LOADING）
+
+按 Anthropic Agent Skills 规范的 **progressive disclosure**：每个 skill 是 `skills/<scope>/<name>/SKILL.md`（YAML frontmatter + Markdown，可选 `scripts/`/`references/`/`assets/`）。启动时把 skill 的 `name + description` 元数据注入对应 Agent 的 system prompt，LLM 按需用内置 `read_file` 读 SKILL.md 全文。
+
+- **目录**：`skills/` 在 `src/space_aiagent/skills/`，按 scope 组织（`scene/`/`entity/`/...，scope = 挂载该 skill 的子 Agent）。**首个内置 skill**：`skills/scene/open_scenario/SKILL.md`（打开/切换场景的 6 步 SOP，含两处 HITL 中断点），已与前端联调通过。
+- **backend 路由（关键）**：orchestrator（`agents/orchestrator.py`）的 backend 改为 `CompositeBackend(default=knowledge, routes={"/skills/": skills})`——`/skills/` 路由到 `FilesystemBackend(root_dir=src/space_aiagent/skills)`，其余（memory `AGENTS.md` 等）走 default=`config/knowledge`。`virtual_mode=True` 把 source 路径当虚拟绝对路径强制压到各 backend root 下、禁止逃逸。**所以 skills 与 knowledge 可在不同根目录，靠 CompositeBackend 前缀路由统一寻址**。
+- **接入**：orchestrator 经 `create_deep_agent` 共享 backend；子 Agent 在 `config/subagents.yaml` 加 `skills: ["/skills/<scope>/"]`，`agents/subagents.py` 透传 `skills` 字段（**list[str]，backend 虚拟路径，不做文件系统拼接**），deepagents `graph.py:628-630` 自动挂 `SkillsMiddleware`。
+- **state 隔离**：`skills_*` 在 deepagents task 工具的 `_EXCLUDED_STATE_KEYS` 内（父→子不透传），各 Agent 的 `skills_metadata` 互不污染。
+- **Backend/Policy 层（未做）**：当前 skill 是纯流程文档（LLM 读 SKILL.md + 调已有工具），无 `scripts/` 可执行脚本，故不需要 CommandGuard/沙箱。待首个带 `scripts/` 的 skill 出现再做（spec §5/§6）。
+
+### Human-in-the-loop（HITL / SCENE_HITL）
+
+两类中断点共存，传输层 `_handle_interrupts`（`api/sse.py`）按帧的 `is_custom` 顶层判别符分发：
+
+1. **声明式 `interrupt_on`**（`config/subagents.yaml`）：工具调用**前**的 approve/reject 闸门（delete_scene/rename_scenario/clear_entities）。由 deepagents `HumanInTheLoopMiddleware` 产出 `action_requests`/`review_configs`，传输层 emit `interrupt_type=hitl_approval`、`is_custom=False`。
+2. **自定义中断 `SceneAgentHitlMiddleware`**（`middleware/scene_hitl.py`）：工具调用**后**按返回码/结果的条件中断，覆盖 `open_scenario` SKILL.md 的两个中断点：
+   - 多场景匹配（`query_scenario` 命中 ≥2）→ `interrupt_type=hitl_select`，`data.scene_info_list` 带候选；resume 回 `{"scene_name": <选中>}`，中间件把选中名写回 ToolMessage 由 LLM 续调 open_scenario。
+   - 未保存变更（`open_scenario` 返回 `SCENE_UNSAVED_CHANGES`）→ `interrupt_type=hitl_yn`，`data` 带当前/目标场景名；resume 回 `{"save_on_change": true|false}`，中间件经 bridge 带 `isSaveOnChange` 重试 openScenario，成功时同步 `current_scene_name`。
+   - 自定义中断 emit 四件套 `is_custom=True + interrupt_type + message + data`，前端按 `interrupt_type` 分发渲染。
+
+**挂载**：`SceneAgentHitlMiddleware` 仅挂在 scene-agent，排在 `SubagentToolValidationMiddleware` 之后（无场景时后者 `Command(goto=END)` 短路、不调 handler，避免误入 HITL）。**LangGraph interrupt() resume 语义**：含 interrupt() 的节点 resume 时从头重跑，故被中断的工具会再执行一次（query 只读/open 以 `isSaveOnChange=None` 探测，均幂等无副作用，仅多一帧 SSE 噪声）。
+
+**中断→续跑链路**：`interrupt` 帧后必跟终态 `done{interrupted:true}` 关流 → 前端 `POST /chat/{thread_id}/resume {resume:{...}}` 新开 SSE 流 → `Command(resume=...)` 送达 `interrupt()` 暂停点续跑。详见 [`docs/前端SSE对接指南.md`](docs/前端SSE对接指南.md) HITL 节。
+
 ### 工具组管理
 
 工具按工具组（tool group）组织，每个子 Agent 通过 `config/subagents.yaml` 声明自己需要哪些工具组。`tools/registry.py` 用标准 `import` 静态导入所有 `@tool` 函数，按组分组并提供 `get_tools(["group_name"])` 接口。新增工具组只需：在 `tools/<group>/tools.py` 写 `@tool` 函数 + 在 `registry.py` 加一行 import + 一行字典条目。
@@ -302,7 +331,7 @@ Orchestrator 返回 `SCENE_CREATED`/`SCENE_RENAMED`（命中 `response_constants
 |------|---------------|------|
 | `POST /api/v1/space/chat` | `content, thread_id, message_id, current_scene_name` | 响应体是 `text/event-stream`，逐帧推 SSE 事件直到 `done`/`error`。同 `thread_id` 并发重入返 409 Conflict |
 | `POST /api/v1/space/tool-result` | `tool_func, args, tool_call_id, thread_id, success, message, data, code` | 短请求，响应 `{ok: true}`。handler 通过 `SessionManager.get_bridge(thread_id)` 定位 StreamBridge，按 `tool_call_id` resolve Future |
-| `POST /api/v1/space/chat/{thread_id}/resume` | `{resume: {...}}` | **协议就位，暂返 501 NotImplemented**（interrupt 续跑，下一步独立任务） |
+| `POST /api/v1/space/chat/{thread_id}/resume` | `{resume: {...}}` | interrupt 续跑，新开 SSE 流。`resume` 值送达 `interrupt()` 暂停点。同 `thread_id` 并发重入返 409 |
 
 **SSE 事件（后端→前端）**：帧格式 `event: <type>\ndata: <json>\n\n`，`done`/`error` 为终态帧，发送后流关闭、session 注销。
 
@@ -313,7 +342,7 @@ Orchestrator 返回 `SCENE_CREATED`/`SCENE_RENAMED`（命中 `response_constants
 | `tool_args` | `tool_func, tool_call_id, args, thread_id` | 否 |
 | `tool_result` | `tool_func, tool_call_id, result, thread_id` | 否 |
 | `tool_end` | `tool_func, tool_call_id, thread_id` | 否 |
-| `interrupt` | `interrupt_id, type, message, thread_id` | 否（**协议占位，暂不触发**） |
+| `interrupt` | `is_custom, interrupt_type, message, data, thread_id` | 否（暂停态，后跟终态 `done{interrupted:true}` 关流；`/resume` 续跑） |
 | `done` | `thread_id, content`（content=`response_util.render()` 最终回复） | ✅ 是 |
 | `error` | `thread_id, message` | ✅ 是 |
 

@@ -279,23 +279,24 @@
 **已具备的 L2 能力**：
 - ✅ Orchestrator + 子 Agent 路由（SubagentsMiddleware）
 - ✅ State Schema 跨步骤状态同步（`current_scene_name`）
-- ✅ 中间件链机制（PrimaryAgentMiddleware / ToolValidationMiddleware / MemoryMiddleware / agents_dynamic_prompt）
+- ✅ 中间件链机制（PrimaryAgentMiddleware / SubagentToolValidationMiddleware / MemoryMiddleware / agents_dynamic_prompt / RetryMiddleware）
 - ✅ Task loop guard（防死循环）
 - ✅ 意图追踪 + 自动续接（pending_intent）
 - ✅ 场景依赖 fail-fast（NO_SCENE 短路）
 - ✅ 结构化输出（ToolStrategy + AgentResponse）
+- ✅ Human-in-the-loop（`interrupt` + `/resume` 续跑：声明式 interrupt_on + 自定义中断 SceneAgentHitlMiddleware）
 
-**未具备的 L3 能力**：
-- ❌ SkillsMiddleware 加载
-- ❌ Skill 路由机制（load_skill 工具）
-- ❌ Skill 元数据协议
+**已具备的 L3 能力（雏形）**：
+- ✅ Skill 加载 Package 层（Anthropic 风格 progressive disclosure：内置 SkillsMiddleware + CompositeBackend 路由 `/skills/`，元数据注入 system prompt，LLM 按需 `read_file` 读全文）
+- ✅ 首个内置 skill `open_scenario`（含两处 HITL 中断点，已与前端联调）
 - ❌ Skill 调试/校验工具
+- ❌ Skill Backend/Policy 层（CommandGuard 命令白名单 / Docker 沙箱 / 审计——待首个带 `scripts/` 的 skill 驱动）
 
 **未具备的 L4 能力**：
-- ❌ 完整 trace（每步耗时）
-- ❌ Metric（成功率、失败率、token 消耗）
-- ❌ 失败自动重试与降级
-- ❌ 多模型动态选择
+- ✅ 完整 trace（OTel + Langfuse，每步耗时 + token 归因）—— Phase 1A-1
+- ❌ Metric（成功率、失败率、QPS/延迟——Phase 1A-2 待启动）
+- ✅ 失败自动重试与降级（RetryMiddleware）—— Phase 1B
+- ❌ 多模型动态选择（Flash 模型仅用于路由分类，全量动态路由未做）
 
 ### 4.3 目标等级
 
@@ -456,15 +457,19 @@ OpenTelemetry 标准（协议层，可换后端）
 ```
 Phase 1A-1: 可观测性 - AI 维度（OTel + Langfuse，trace + token 归因）✅
    ↓
-Phase 1B: 失败恢复（工具失败重试 + 部分降级 + 状态回滚）
+Phase 1B: 失败恢复（工具失败重试 + 部分降级 + 状态回滚）✅
+   ↓
+传输层迁移: WebSocket → SSE+POST 事件流 ✅
+   ↓
+Human-in-the-loop: interrupt + /resume 续跑（声明式 interrupt_on + 自定义中断）✅
    ↓
 Phase 2: Skill 系统第一版
-   - Skill frontmatter 协议（Anthropic 风格）
-   - SkillsMiddleware（LLM 主动检索模式）
-   - load_skill 工具
-   - 3-5 个示例 Skill
-   - 多模型路由（Flash 做路由，主模型做执行）
-   - 基础 Skill 审计日志
+   ✅ Package 层：Skill frontmatter 协议（Anthropic 风格）+ SkillsMiddleware（progressive
+        disclosure）+ CompositeBackend 路由 `/skills/`；首个内置 skill `open_scenario` 已联调
+   ⬜ Backend/Policy 层：命令真白名单 CommandGuard + OS 自适应 LocalBackend + Docker 沙箱
+        + 基础审计 + 配置式选 backend（待首个带 scripts/ 的 skill 驱动）
+   ⬜ 多模型路由（Flash 做路由，主模型做执行——Flash 当前仅用于路由分类）
+   ⬜ 3-5 个示例 Skill
    ↓
 Phase 1C: 工具能力补全（数据查询、报告生成等）
    ↓
@@ -778,6 +783,7 @@ python -m space_aiagent.cli skill history --thread-id xxx
 | 版本 | 日期 | 修订内容 | 作者 |
 |------|------|---------|------|
 | v1.0 | 2026-07-01 | 初版：基于 2026-07-01 架构讨论定稿 | caojm |
+| v1.1 | 2026-08-04 | 同步进度：传输层迁移（SSE+POST）、HITL（interrupt+/resume，含自定义中断）、Phase 1B 失败恢复、Skill Package 层（SkillsMiddleware + CompositeBackend 路由 `/skills/`，首个内置 skill `open_scenario` 联调通过）；更新 §4.2 当前位置与 §6.1 路线 | caojm |
 
 ---
 

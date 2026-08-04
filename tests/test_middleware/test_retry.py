@@ -91,6 +91,25 @@ async def test_llm_exhausted_degrades_to_unavailable():
     assert handler.call_count == 3
 
 
+async def test_llm_unavailable_shortcut_is_plain_text_aimessage():
+    """退役：降级 ModelResponse 是纯文本 AIMessage（content=summary，无 AgentResponse tool_call）。
+
+    其 content 由 langgraph messages 流 emit 走 token 流到前端（不再依赖 done.content
+    渲染）。structured_response 保留作观测/流程控制元数据。response_format 退役后
+    AgentResponse 不是注册工具，若仍构造其 tool_call 会让 ToolNode 报错，故必须纯文本。
+    """
+    mw = RetryMiddleware(_fast_cfg())
+    handler = AsyncMock(side_effect=_make_rate_limit_error())
+    result = await mw.awrap_model_call(SimpleNamespace(), handler)
+    # structured_response 保留（观测/流程控制元数据）
+    assert result.structured_response.code == "LLM_UNAVAILABLE"
+    # AIMessage 纯文本：content == 降级 summary，无 tool_calls
+    assert len(result.result) == 1
+    ai = result.result[0]
+    assert ai.content == result.structured_response.summary
+    assert not ai.tool_calls
+
+
 async def test_llm_non_retryable_degrades_immediately():
     """不可重试异常(BadRequestError) → 不重试，直接降级"""
     mw = RetryMiddleware(_fast_cfg())

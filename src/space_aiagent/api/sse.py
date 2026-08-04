@@ -42,7 +42,6 @@ from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
 from space_aiagent.middleware.primary_agent_middleware import orchestrator_task_streak_var
 from space_aiagent.models.messages import ToolResultMessage
-from space_aiagent.models.response_schema import response_util
 from space_aiagent.models.sse_events import TERMINAL_EVENTS, SSEEventType, format_sse_frame
 
 logger = get_logger(__name__)
@@ -168,18 +167,40 @@ async def _handle_interrupts(bridge: StreamBridge, interrupts: list) -> None:
     emit 顺序：先逐个 interrupt 帧（一次暂停可能含多个），再一个 done（终态）。
     ``bridge._emit`` 自动注入 thread_id，故 payload 不再手传。
 
-    payload 形状判别（与 ERP chat.py 对齐）：
+    payload 形状判别（三分支，按 ``is_custom`` 顶层判别符区分来源）：
+    - ``is_custom`` 为 True：自定义/编程式 interrupt（中间件驱动，如
+      SceneAgentHitlMiddleware）。四件套 ``is_custom + interrupt_type + message
+      + data`` 透传，前端按 ``interrupt_type`` 分发渲染（scene_select 带候选列表
+      走列表选择 UI；save_confirm 仅消息走 Y/N UI）。新增自定义中断点只需在中间件
+      里 emit 同样四件套，无需改本函数。
     - 含 ``action_requests``：声明式 ``interrupt_on``（子 Agent 的
       HumanInTheLoopMiddleware）→ ``hitl_approval``，前端据此渲染审批 UI
       （action_requests 携带工具名/参数/description，review_configs 携带允许的决策）。
     - 其它：unknown 透传（截断 2000 字符），保证任何中断都不会让流挂死。
+
+    ⚠️ ``interrupt_type`` 命名空间：``hitl_approval`` 为声明式专用，自定义中断
+    用描述性名字（scene_select / save_confirm / ...），两者不重叠，前端可仅凭
+    ``interrupt_type`` 区分渲染，``is_custom`` 仅作冗余显式标记。
     """
     for intr in interrupts:
         value = getattr(intr, "value", intr)
-        if isinstance(value, dict) and "action_requests" in value:
+        if isinstance(value, dict) and value.get("is_custom",False):
+            # 自定义/编程式 interrupt：四件套透传，前端按 interrupt_type 分发
             await bridge._emit(
                 SSEEventType.INTERRUPT,
                 {
+                    "is_custom": True,
+                    "interrupt_type": value.get("interrupt_type", "unknown"),
+                    "message": value.get("message", ""),
+                    "data": value.get("data"),
+                },
+            )
+        elif isinstance(value, dict) and "action_requests" in value:
+            # 声明式 interrupt_on：HumanInTheLoopMiddleware 的 HITLRequest
+            await bridge._emit(
+                SSEEventType.INTERRUPT,
+                {
+                    "is_custom": False,
                     "interrupt_type": "hitl_approval",
                     "action_requests": value["action_requests"],
                     "review_configs": value.get("review_configs", []),
@@ -189,6 +210,7 @@ async def _handle_interrupts(bridge: StreamBridge, interrupts: list) -> None:
             await bridge._emit(
                 SSEEventType.INTERRUPT,
                 {
+                    "is_custom": False,
                     "interrupt_type": "unknown",
                     "interrupt_value": str(value)[:2000],
                 },
@@ -284,26 +306,10 @@ async def run_agent(bridge: StreamBridge, input_data: ChatRequest | Command) -> 
                         thread_id=thread_id,
                     )
                     raise ex
-
-            # 流正常结束（图到达 END，未触发 interrupt）：从最终 state 取
-            # structured_response 渲染。注意：不能在 values 流里早判 structured_response
-            # —— astream(stream_mode="values") 每步吐的是累计 state 快照，且
-            # structured_response 跨轮不清空，新一轮的首个 values chunk 仍带着上一轮的
-            # structured_response，早判会误触发 done。旧的 on_chain_end 路径安全是因为
-            # 其 output 是调用作用域的新值；切 astream 后改用 aget_state 取终态值。
-            state = await agent.aget_state(config)
-            values: dict = getattr(state, "values", None) or {}
-            agent_response = values.get("structured_response")
-            if agent_response is not None:
-                rendered = response_util.render(
-                    agent_response,
-                    scenario_infos=values.get("scenario_query_results"),
-                )
-            else:
-                logger.warning("流结束但 state 无 structured_response", thread_id=thread_id)
-                rendered = "处理完成。"
-            set_span_io(span, output=rendered)
-            await bridge._emit(SSEEventType.DONE, {"content": rendered})
+            # 退役 AgentResponse 渲染：回复内容由 token 流承载（LLM 自由文本 / shortcut
+            # 降级文本均经 messages 流 emit 为 TOKEN 帧），done 仅作纯终态信号关流，
+            # 不再 render(structured_response)；trace output 省略（回复分散在 token 帧）。
+            await bridge._emit(SSEEventType.DONE, {"content": ""})
 
         except Exception as e:
             logger.exception("Agent 执行出错", thread_id=thread_id)

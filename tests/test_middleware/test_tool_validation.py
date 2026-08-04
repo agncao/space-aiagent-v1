@@ -163,3 +163,78 @@ async def test_all_checks_pass_call_handler():
 
     assert result["data"] == "ok"
     handler.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 字符串化 null 归一化（_normalize_null_args）
+# ---------------------------------------------------------------------------
+
+from space_aiagent.middleware.subagent_tool_validation import _normalize_null_args  # noqa: E402
+
+
+def test_normalize_null_args_converts_string_none():
+    """字符串 "None" / "null" / "" → Python None（顶层 str 值）"""
+    assert _normalize_null_args({"scene_name": "None"}) == {"scene_name": None}
+    assert _normalize_null_args({"scene_name": "null"}) == {"scene_name": None}
+    assert _normalize_null_args({"scene_name": ""}) == {"scene_name": None}
+
+
+def test_normalize_null_args_case_insensitive_and_stripped():
+    """大小写不敏感 + 容忍前后空白"""
+    assert _normalize_null_args({"scene_name": "NONE"}) == {"scene_name": None}
+    assert _normalize_null_args({"scene_name": " Null "}) == {"scene_name": None}
+
+
+def test_normalize_null_args_preserves_real_values():
+    """真实场景名与非 str 值原样保留"""
+    assert _normalize_null_args({"scene_name": "测试场景"}) == {"scene_name": "测试场景"}
+    assert _normalize_null_args({"is_save_on_change": True}) == {"is_save_on_change": True}
+    assert _normalize_null_args({"count": 0}) == {"count": 0}
+
+
+def test_normalize_null_args_non_dict_passthrough():
+    """非 dict 入参原样返回（防御）"""
+    assert _normalize_null_args(None) is None
+    assert _normalize_null_args("None") == "None"
+
+
+def test_normalize_null_args_does_not_mutate_input():
+    """不就地修改原 dict"""
+    original = {"scene_name": "None"}
+    _normalize_null_args(original)
+    assert original == {"scene_name": "None"}
+
+
+class _OverrideableRequest:
+    """支持 override() 的 mock ToolCallRequest（ducktyping）"""
+
+    def __init__(self, tool_call: dict, state: dict | None = None) -> None:
+        self.tool_call = tool_call
+        self.state = state or {}
+
+    def override(self, **changes) -> "_OverrideableRequest":
+        return _OverrideableRequest(
+            tool_call={**self.tool_call, **changes.get("tool_call", {})},
+            state=changes.get("state", self.state),
+        )
+
+
+async def test_middleware_forwards_normalized_args_to_handler():
+    """LLM 吐 scene_name="None" → handler 收到的是 None（白名单工具，跳过场景校验）"""
+    bridge_var.set(AsyncMock())
+
+    captured: dict = {}
+
+    async def handler(req):
+        captured["args"] = req.tool_call.get("args")
+        return {"success": True}
+
+    mw = SubagentToolValidationMiddleware()
+    request = _OverrideableRequest(
+        tool_call={"name": "open_scenario", "args": {"scene_name": "None"}, "id": "call_1"},
+        state={"current_scene_name": "场景A"},
+    )
+
+    await mw.awrap_tool_call(request, handler)
+
+    assert captured["args"] == {"scene_name": None}

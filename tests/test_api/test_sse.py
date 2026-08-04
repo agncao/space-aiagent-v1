@@ -180,7 +180,7 @@ def _clear_session():
 
 
 async def test_chat_streams_done(monkeypatch, chat_request_body: dict) -> None:
-    """fake agent aget_state 返 structured_response → SSE 流以 done 帧终止"""
+    """流以 done 帧终止；退役 AgentResponse 渲染后 done 是纯终态信号（content 空）"""
     monkeypatch.setattr(sse_module, "_get_or_create_agent", _factory_done)
 
     from space_aiagent.main import app
@@ -195,11 +195,46 @@ async def test_chat_streams_done(monkeypatch, chat_request_body: dict) -> None:
     assert "done" in events, f"未在帧中找到 done，实际事件: {events}"
     # done 帧应是最后一个
     assert events[-1] == "done"
-    # done data 携带 rendered content
+    # 退役：done 是纯终态信号，content 为空（回复内容由 token 流承载，见下个测试）
     done_idx = events.index("done")
-    assert "已添加文昌地面站" in frames[done_idx][1]["content"]
+    assert frames[done_idx][1]["content"] == ""
     # 流结束后 session 应已注销
     assert sse_module.session_manager.get_bridge(chat_request_body["thread_id"]) is None
+
+
+async def test_chat_done_is_pure_terminal_and_token_carries_reply(monkeypatch, chat_request_body: dict) -> None:
+    """退役 AgentResponse 渲染：回复内容由 token 流承载，done 退化为纯终态信号。
+
+    验证链路（shortcut 降级文本 / LLM 自由文本均走此路）：
+      node output 的 AIMessage（含中间件构造的纯文本降级 AIMessage）→
+      langgraph messages 流 emit（_messages.py v2 _find_and_emit_messages 会 emit
+      node output 的 BaseMessage，仅跳过 ToolMessage）→
+      sse.py _extract_chunk_text 取 content → TOKEN 帧 → 前端。
+    流结束 done 仅作终态信号，content 为空，不再 render(structured_response)。
+    """
+    # 模拟 langgraph 把 node output AIMessage content 吐到 messages 流
+    chunks = [_msg_chunk("已添加文昌地面站")]
+
+    async def _factory(_thread_id: str) -> Any:
+        return _FakeAgent(chat_chunks=chunks, state=_StateSnapshot({}))
+
+    monkeypatch.setattr(sse_module, "_get_or_create_agent", _factory)
+    from space_aiagent.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.post("/api/v1/space/chat", json=chat_request_body)
+
+    assert resp.status_code == 200
+    frames = _parse_sse_frames(resp.text)
+    events = [ev for ev, _ in frames]
+    # token 帧承载回复内容
+    assert "token" in events
+    token_text = "".join(d["content"] for ev, d in frames if ev == "token")
+    assert token_text == "已添加文昌地面站"
+    # done 纯终态，content 空
+    assert events[-1] == "done"
+    assert frames[events.index("done")][1]["content"] == ""
 
 
 async def test_chat_concurrent_409(monkeypatch, chat_request_body: dict) -> None:

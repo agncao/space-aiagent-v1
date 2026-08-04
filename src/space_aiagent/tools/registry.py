@@ -144,7 +144,7 @@ def get_suggestion_candidates(group_names: list[str]) -> list[str]:
         group_names: 工具组名列表，如 ["scene_management"]
 
     Returns:
-        去重保序的能力描述列表，供 AgentResponse.suggestions validator 反向校验
+        去重保序的能力描述列表
     """
     candidates: list[str] = []
     for group_name in group_names:

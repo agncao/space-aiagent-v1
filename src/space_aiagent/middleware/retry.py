@@ -15,7 +15,7 @@ from typing import Any
 
 import openai
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, AIMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from opentelemetry.trace.span import Span
 from pydantic import ValidationError
@@ -30,8 +30,7 @@ from tenacity import (
 from space_aiagent.infrastructure.config import RetryConfig
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span
-from space_aiagent.infrastructure.utils import message_util
-from space_aiagent.models.response_schema import response_constants, response_util
+from space_aiagent.models.response_schema import response_constants
 from space_aiagent.models.response_schema.agent_struct_response import ResponseCode
 
 logger = get_logger(__name__)
@@ -73,10 +72,12 @@ class RetryMiddleware(AgentMiddleware):
         self._retryable_llm_errors = _build_retryable_llm_errors(config.llm.retry_on_parse_error)
 
     def _degrade_llm(self) -> ModelResponse:
-        """复用 task_loop_guard 改写模式：构造 LLM_UNAVAILABLE 降级 ModelResponse"""
+        """构造 LLM_UNAVAILABLE 降级纯文本响应（content 走 token 流到前端）"""
         shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.LLM_UNAVAILABLE]
-        display = response_util.render(shortcut)
-        return message_util.build_primary_agent_response(display, shortcut, "call_llm_unavailable")
+        return ModelResponse(
+            result=[AIMessage(content=shortcut.summary)],
+            structured_response=shortcut,
+        )
 
     async def awrap_model_call(
         self,

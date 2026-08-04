@@ -13,6 +13,7 @@ from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.middleware import (
     RetryMiddleware,
+    SceneAgentHitlMiddleware,
     SubagentToolValidationMiddleware,
     agents_dynamic_prompt,
 )
@@ -20,9 +21,8 @@ from space_aiagent.tools.registry import get_tools
 
 logger = get_logger(__name__)
 
-# 路径常量
+# 提示词路径（打包在包内：src/space_aiagent/prompts/）
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
-
 
 def load_subagents() -> list[dict]:
     """
@@ -56,9 +56,22 @@ def load_subagents() -> list[dict]:
                 ],
             }
 
+        # scene-agent 专属：open_scenario 的两个条件性 HITL 中断点（中间件驱动）
+        # 排在 SubagentToolValidationMiddleware 之后（内层）：后者在无场景时返回
+        # Command(goto=END) 且不调 handler，故本中间件的 awrap_tool_call 不会触发，
+        # 避免无场景时误入 HITL。其余子 Agent 不挂载。
+        if agent_cfg["name"] == "scene-agent":
+            subagent["middleware"].insert(1, SceneAgentHitlMiddleware())
+
         # 可选配置
         if interrupt_on := agent_cfg.get("interrupt_on"):
             subagent["interrupt_on"] = interrupt_on
+
+        # skills 是 backend 虚拟路径（如 /skills/scene/），由 orchestrator 的 CompositeBackend
+        # 路由解析到 src/space_aiagent/skills/<scope>/。原样透传给 deepagents（list[str]），
+        # 不做文件系统拼接——SkillsMiddleware 经 backend.ls/download_files 读取。
+        if skills_paths := agent_cfg.get("skills"):
+            subagent["skills"] = list(skills_paths)
 
         subagents.append(subagent)
 

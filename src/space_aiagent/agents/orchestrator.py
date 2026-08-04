@@ -12,6 +12,7 @@ from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
+from deepagents.backends.composite import CompositeBackend
 from langchain.agents.structured_output import ToolStrategy
 from langgraph.types import Checkpointer
 
@@ -23,12 +24,13 @@ from space_aiagent.middleware import (
     RetryMiddleware,
     agents_dynamic_prompt,
 )
-from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
 
 # 提示词路径（打包在包内）
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 # 知识文件路径（外部化到 config/，生产环境可动态修改）
 _KNOWLEDGE_DIR = PROJECT_ROOT / "config" / "knowledge"
+# Skill 包路径（src 内，按 scope 组织：main/scene/entity）
+_SKILLS_DIR = PROJECT_ROOT / "src" / "space_aiagent" / "skills"
 
 
 def _build_subagent_summaries(subagents: list[dict]) -> str:
@@ -63,10 +65,10 @@ def create_orchestrator(
     settings = get_settings()
     model = build_model()
 
-    # 知识文件通过 FilesystemBackend + memory 加载
-    backend = FilesystemBackend(
-        root_dir=str(_KNOWLEDGE_DIR),
-        virtual_mode=True,
+    # 复合后端：按路径前缀路由到不同根目录。
+    backend = CompositeBackend(
+        default=FilesystemBackend(root_dir=str(_KNOWLEDGE_DIR), virtual_mode=True),
+        routes={"/skills/": FilesystemBackend(root_dir=str(_SKILLS_DIR), virtual_mode=True)},
     )
 
     agent = create_deep_agent(
@@ -76,7 +78,6 @@ def create_orchestrator(
         backend=backend,
         memory=["AGENTS.md"],
         checkpointer=checkpointer,
-        response_format=ToolStrategy(AgentResponse),
         state_schema=SpaceAgentState,
         middleware=[
             PrimaryAgentMiddleware(

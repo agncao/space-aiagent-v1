@@ -49,6 +49,25 @@ from space_aiagent.tools.scene_management import tools
 
 logger = get_logger(__name__)
 
+# LLM 偶尔把可选参数的「无值」输出成字符串化的 null 字面量（JSON 里没有 Python
+# 的 None，LLM 会吐 "None" / "null" / ""），而不是 JSON null。统一归一化回
+# Python None，让下游 args_to_camel(skip_none=True) 直接丢弃该参数，避免把
+# 字符串 "None" 当真实值发给前端（如 sceneName="None" 导致前端查不到结果）。
+_NULL_STRING_LITERALS = frozenset({"none", "null", ""})
+
+
+def _normalize_null_args(args: Any) -> Any:
+    """把字符串化的 null 字面量（"None"/"null"/""）归一化为 Python None。
+
+    仅处理顶层 str 值；非 dict 原样返回。返回值始终是新 dict（不就地修改）。
+    """
+    if not isinstance(args, dict):
+        return args
+    return {
+        key: (None if isinstance(val, str) and val.strip().lower() in _NULL_STRING_LITERALS else val)
+        for key, val in args.items()
+    }
+
 
 class SubagentToolValidationMiddleware(AgentMiddleware):
     """工具调用前置条件统一校验 + suggestion 候选集注入"""
@@ -132,6 +151,24 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
         tool_name = request.tool_call.get("name", "")
         tool_call_id = request.tool_call.get("id", "")
         thread_id = get_config().get("configurable", {}).get("thread_id", "")
+
+        # 校验 0: 归一化字符串化的 null 字面量（"None"/"null"/"" → None）
+        # 见模块顶部 _NULL_STRING_LITERALS 说明。args 变更时重建 request，
+        # 让后续 handler / 日志 / span 都拿到清洗后的参数。
+        raw_args = request.tool_call.get("args", {})
+        normalized_args = _normalize_null_args(raw_args)
+        if normalized_args != raw_args:
+            logger.info(
+                "args 归一化字符串 null → None",
+                agent=self._agent_name,
+                thread_id=thread_id,
+                tool_name=tool_name,
+                before=raw_args,
+                after=normalized_args,
+            )
+            request = request.override(
+                tool_call={**request.tool_call, "args": normalized_args}
+            )
 
         logger.info(
             "tool call before",
