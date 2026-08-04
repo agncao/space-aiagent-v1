@@ -81,6 +81,7 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
     _SCENE_EXEMPT_TOOLS = {
         AgentResponse.__name__,
         "task",
+        "read_file",
         tools.create_scenario.name,
         tools.query_scenario.name,
         tools.open_scenario.name,
@@ -124,10 +125,9 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
             current_suggestion_candidates_var.set(self._suggestion_candidates)
 
         logger.info(
-            "model call before 增加 suggestion 候选集",
+            "model call before ",
             agent=self._agent_name,
             thread_id=thread_id,
-            candidates=self._suggestion_candidates,
         )
         start_ts = time.perf_counter()
         with optional_span(
@@ -153,19 +153,9 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
         thread_id = get_config().get("configurable", {}).get("thread_id", "")
 
         # 校验 0: 归一化字符串化的 null 字面量（"None"/"null"/"" → None）
-        # 见模块顶部 _NULL_STRING_LITERALS 说明。args 变更时重建 request，
-        # 让后续 handler / 日志 / span 都拿到清洗后的参数。
         raw_args = request.tool_call.get("args", {})
         normalized_args = _normalize_null_args(raw_args)
         if normalized_args != raw_args:
-            logger.info(
-                "args 归一化字符串 null → None",
-                agent=self._agent_name,
-                thread_id=thread_id,
-                tool_name=tool_name,
-                before=raw_args,
-                after=normalized_args,
-            )
             request = request.override(
                 tool_call={**request.tool_call, "args": normalized_args}
             )
