@@ -27,12 +27,12 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 from typing import Any
+import json
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
-from pydantic import BaseModel, Field
 
 from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.agents.subagents import load_subagents
@@ -42,7 +42,8 @@ from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
 from space_aiagent.middleware.primary_agent_middleware import orchestrator_task_streak_var
 from space_aiagent.models.messages import ToolResultMessage
-from space_aiagent.models.sse_events import TERMINAL_EVENTS, SSEEventType, format_sse_frame
+from space_aiagent.models.sse_schemas import ChatRequest, ToolResultRequest, ResumeRequest,TERMINAL_EVENTS, SSEEventType
+
 
 logger = get_logger(__name__)
 
@@ -51,53 +52,6 @@ router = APIRouter(prefix="/api/v1/space", tags=["space"])
 session_manager = SessionManager()
 
 
-class ChatRequest(BaseModel):
-    """POST /chat 请求体
-
-    与 WS 时代的 UserInputMessage 等价但剥离 WS 专用字段（type），是纯 HTTP 入参。
-    """
-
-    content: str = Field(description="用户输入的文本")
-    thread_id: str = Field(description="会话 thread_id（用于 checkpointer 持久化）")
-    message_id: str = Field(default="", description="消息唯一ID（前端生成）")
-    current_scene_name: str | None = Field(
-        default=None,
-        description="当前已打开的场景名（注入 SpaceAgentState 初值）",
-    )
-
-
-class ToolResultRequest(BaseModel):
-    """POST /tool-result 请求体
-
-    与 WS 时代的 ToolResultMessage 等价但剥离 WS 专用字段（type），
-    并显式携带 thread_id（原 ToolResultMessage 通过 WSMessage 基类携带 thread_id，
-    HTTP 入参需独立字段）。字段名/类型/默认值与 ToolResultMessage 对齐。
-    """
-
-    tool_func: str = Field(description="工具函数名")
-    args: dict = Field(default_factory=dict, description="工具参数")
-    tool_call_id: str = Field(description="工具调用ID（与 tool_start 帧一致）")
-    thread_id: str = Field(description="会话 thread_id（用于定位 StreamBridge）")
-    success: bool = Field(default=True, description="是否成功")
-    message: str = Field(default="", description="结果消息")
-    data: dict | list | None = Field(default=None, description="返回数据")
-    code: str = Field(default="", description="消息码")
-
-
-class ResumeRequest(BaseModel):
-    """POST /chat/{thread_id}/resume 请求体（interrupt 续跑）
-
-    前端收到 ``event: interrupt`` 帧并收集用户决策后，通过此端点恢复 Agent。
-    ``resume`` 作为 ``Command(resume=...)`` 的值送达 ``interrupt()`` 暂停点。
-    格式取决于中断类型：HITL 审批（hitl_approval）用 ``decisions``，故用宽松 dict。
-
-    HITL 审批的 resume 形如::
-
-        {"decisions": [{"type": "approve"} | {"type": "reject"}]}
-    """
-
-    resume: dict = Field(default_factory=dict, description="恢复数据（格式取决于中断类型）")
-
 
 # ── Agent 实例缓存 + checkpointer（迁移自 websocket.py）───────────────────
 _agent_cache: dict[str, object] = {}
@@ -105,6 +59,28 @@ _agent_cache: dict[str, object] = {}
 # 数据库 checkpointer（全局共享，SQLite 持久化）
 _checkpointer: Any = None
 
+def _format_sse_frame(event: str, data: dict) -> str:
+    """生成标准 SSE 帧
+
+    输出格式（SSE spec）：
+        event: <event>\\n
+        data: <json>\\n
+        \\n
+
+    - 两个字段行（event: / data:），各自以 ``\\n`` 结尾
+    - 末尾空行（``\\n``）作为帧分隔符
+    - json.dumps 单行输出（无内部换行），故只需一行 ``data:``
+    - ensure_ascii=False：保留中文可读性（仓库面向用户的文本为中文）
+
+    Args:
+        event: 事件类型（建议传 SSEEventType 成员或其字符串值）
+        data: 事件数据，将以 JSON 序列化进 ``data:`` 行
+
+    Returns:
+        标准 SSE 帧字符串
+    """
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
 
 async def _get_checkpointer() -> Any:
     """获取或初始化全局 AsyncSqliteSaver checkpointer（延迟初始化）"""
@@ -347,18 +323,29 @@ async def stream_chat_response(
     task_streak_token = orchestrator_task_streak_var.set(0)
     # create_task 拷贝当前 context → run_agent 与工具函数内 bridge_var.get() 可见
     agent_task = asyncio.create_task(run_agent(bridge, input_data))
+    token_parts: list[str] = []
 
     try:
         # 事件透传：bridge._queue 中的任意事件（token/tool_*/done/error，以及
         # 未来 graph interrupt() 落地后由 agent emit 的 interrupt）都经
-        # format_sse_frame 转成 SSE 帧发给前端。interrupt 当前无 emit 源
+        # _format_sse_frame 转成 SSE 帧发给前端。interrupt 当前无 emit 源
         # （graph interrupt() 是下一步任务），但事件类型已定义（T2）、
         # 透传路径已就绪，无需此处理特分支。
         while True:
             item = await bridge._queue.get()
             event_name = item["event"]
-            yield format_sse_frame(event_name, item["data"])
+            if event_name == SSEEventType.TOKEN:
+                content = item["data"].get("content", "")
+                if content:
+                    token_parts.append(str(content))
+            yield _format_sse_frame(event_name, item["data"])
             if event_name in TERMINAL_EVENTS:
+                if token_parts:
+                    logger.info(
+                        "SSE token 输出完成",
+                        thread_id=thread_id,
+                        content="".join(token_parts),
+                    )
                 break
     finally:
         # cancel 防御性：agent_task 可能已完成（done 后 return），cancel 对已完成的 task 是 no-op

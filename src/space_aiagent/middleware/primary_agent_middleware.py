@@ -213,6 +213,17 @@ class PrimaryAgentMiddleware(AgentMiddleware):
                 )
                 return self._build_shortcut_response()
 
+        latest_ai_message = next(
+            (msg for msg in reversed(response.result) if isinstance(msg, AIMessage)),
+            None,
+        )
+        if latest_ai_message is not None:
+            logger.info(
+                "model call after 最近一条 AIMessage",
+                thread_id=self.thread_id,
+                ai_message=message_util.serialize_messages([latest_ai_message])[0],
+            )
+
         for msg in response.result:
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:

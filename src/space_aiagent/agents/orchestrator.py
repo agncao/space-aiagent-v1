@@ -13,7 +13,6 @@ from pathlib import Path
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.backends.composite import CompositeBackend
-from langchain.agents.structured_output import ToolStrategy
 from langgraph.types import Checkpointer
 
 from space_aiagent.agents.state import SpaceAgentState
@@ -22,7 +21,6 @@ from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.middleware import (
     PrimaryAgentMiddleware,
     RetryMiddleware,
-    agents_dynamic_prompt,
 )
 
 # 提示词路径（打包在包内）
@@ -84,7 +82,6 @@ def create_orchestrator(
                 thread_id=thread_id,
                 task_loop_threshold=settings.agent.primary_task_threshold,
             ),
-            agents_dynamic_prompt,
             RetryMiddleware(settings.retry),
         ],
     )

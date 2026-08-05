@@ -5,11 +5,6 @@
 当前校验项:
 - bridge 注入：所有远程工具都需要 bridge 实例。失败时返回 ToolMessage（系统级错误，
   让 LLM 兜底回复）
-- 场景上下文：除白名单外，工具调用时必须有 current_scene_name。失败时返回
-  Command(goto=END)，update 里塞一条携带 NO_SCENE 错误的 ToolMessage——
-  ToolMessage 是 LLM API 协议层的"关闭 tool_call"动作（不能省），Command(goto=END)
-  则强制终止子 Agent 图，跳过"解释工具结果"那次 LLM 调用。状态由 LangGraph
-  自动持久化到 checkpointer，多轮对话能正确恢复上下文。
 
 附加职责:
 - suggestion 候选集注入：awrap_model_call 在每次 LLM 调用前把当前 agent 工具组
@@ -182,13 +177,15 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
         # 校验 2: 场景上下文（白名单外）→ 返回 Command(goto=END) 终止子 Agent 图
         # ToolMessage 关闭 AI 的 tool_call（LLM API 协议要求），Command(goto=END)
         # 跳过子 Agent 后续 LLM 调用，state 含 NO_SCENE ToolMessage 持久化
-        # current_scene_name 通过 state_schema 双向同步（替代 ContextVar）
+        # current_scene_name 通过 state_schema 双向同步
         state_scene = (
             request.state.get("current_scene_name")
             if isinstance(request.state, dict)
             else getattr(request.state, "current_scene_name", None)
         )
-        if tool_name not in self._SCENE_EXEMPT_TOOLS and not state_scene:
+        # 增加 1==0，表示让是否打开场景的校验实效，统一交给前端接口校验，
+        # 如果需要则个校验，把1==0 给删除掉就行
+        if 1==0 and tool_name not in self._SCENE_EXEMPT_TOOLS and not state_scene:
             logger.warning("校验失败 无场景上下文", tool_name=tool_name)
             shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.NO_SCENE]
             return Command(

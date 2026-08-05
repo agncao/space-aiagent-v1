@@ -4,7 +4,7 @@
 仅响应用户查询，无前后置流程。
 
 query_scenario 成功后通过 Command 把当前场景名同步到 state（用户查询某场景时
-前端会切换激活，state 跟着更新），替代旧版 current_scene_name_var.set。
+前端会切换激活，state 跟着更新）。
 """
 
 import inspect

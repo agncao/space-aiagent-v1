@@ -158,7 +158,7 @@ def get_suggestion_candidates(group_names: list[str]) -> list[str]:
 # ContextVar：保存当前 agent 的 suggestion 候选集
 # 接入点：ToolValidationMiddleware.awrap_model_call（已挂在每个子 agent 上，
 # 通过 subagents.py 传入 tool_groups 参数），在每个 LLM 调用前 set
-# 参考现有 bridge_var / current_scene_name_var 模式
+# 参考现有 bridge_var 模式
 current_suggestion_candidates_var: ContextVar[frozenset[str]] = ContextVar(
     "current_suggestion_candidates", default=frozenset()
 )

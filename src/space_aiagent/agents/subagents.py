@@ -15,7 +15,6 @@ from space_aiagent.middleware import (
     RetryMiddleware,
     SceneAgentHitlMiddleware,
     SubagentToolValidationMiddleware,
-    agents_dynamic_prompt,
 )
 from space_aiagent.tools.registry import get_tools
 
@@ -51,7 +50,6 @@ def load_subagents() -> list[dict]:
                         tool_groups=agent_cfg["tools"],
                         agent_name=agent_cfg["name"],
                     ),
-                    agents_dynamic_prompt,
                     RetryMiddleware(get_settings().retry),
                 ],
             }
