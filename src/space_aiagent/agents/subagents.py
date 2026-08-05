@@ -60,8 +60,8 @@ def load_subagents() -> list[dict]:
         # 排在 SubagentToolValidationMiddleware 之后（内层）：后者在无场景时返回
         # Command(goto=END) 且不调 handler，故本中间件的 awrap_tool_call 不会触发，
         # 避免无场景时误入 HITL。其余子 Agent 不挂载。
-        if agent_cfg["name"] == "scene-agent":
-            subagent["middleware"].insert(1, SceneAgentHitlMiddleware())
+        # if agent_cfg["name"] == "scene-agent":
+        #     subagent["middleware"].insert(1, SceneAgentHitlMiddleware())
 
         # 可选配置
         if interrupt_on := agent_cfg.get("interrupt_on"):

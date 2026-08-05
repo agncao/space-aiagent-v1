@@ -2,9 +2,8 @@
 name: open-scenario
 description: >
   打开场景的标准操作流程技能包。当用户表达「打开场景 / 切换场景 / 进入场景 /
-  打开 xxx 场景 /打开场景xxx」等意图，或指定一个已存在的场景名要求激活时加载此技能。流程内含两处
-  Human-in-the-loop 中断点：多场景歧义时让用户选择要打开的场景、目标场景存在未保存变更时
-  让用户确认是否保存。处理工具返回码 SCENE_UNSAVED_CHANGES / SCENE_NOT_FOUND。
+  打开 xxx场景 / 打开场景xxx」等意图，或指定一个已存在的场景名要求激活时加载此技能。
+  先查询再打开：唯一结果直接打开，多个结果原样返回，处理工具返回码 SCENE_NOT_FOUND。
 ---
 
 # 打开场景技能（操作手册）
@@ -24,149 +23,87 @@ description: >
 | `query_scenario` | 按名查询场景，写回 `scenario_query_results` 与 `current_scene_name` | `scene_name`（用户输入的场景名） |
 | `open_scenario` | 打开（激活）指定场景 | `scene_name`、`is_save_on_change` |
 
-`open_scenario` 的 `is_save_on_change` 语义（**理解清楚再调用**）：
+## 场景名匹配规则（核心）
 
-| 取值 | 含义 |
-|------|------|
-| `None`（缺省） | 未知用户是否要保存当前场景的未保存变更，**首次打开一律用此值** |
-| `true` | 用户已明确「要保存」当前场景变更 |
-| `false` | 用户已明确「不保存」当前场景变更 |
+用户说的「场景」二字**可能不属于真实场景名**，真实库里的名字可能含「场景」也可能不含。按下表确定**查询关键字**，先查精确形式，命中为空再扩大查基础形式：
 
-## 工具返回码（来自前端 `tool_result`）
+| 用户意图 | 真实名可能 | 第 1 次查询（优先） | 命中为空再查（扩大） |
+|----------|------------|----------------------|------------------------|
+| 打开**xxx场景**（场景在后） | `xxx场景` 或 `xxx` | `xxx场景` | `xxx` |
+| 打开**场景xxx**（场景在前） | `场景xxx` 或 `xxx` | `场景xxx` | `xxx` |
+| 打开场景 / 切换场景 / 进入场景（无名） | —— | 查询全部场景 | —— |
 
-| 码 | 含义 | 处理 |
-|----|------|------|
-| `SCENE_OPENED`（success=true） | 打开成功 | 流程结束 ✅ |
-| `SCENE_UNSAVED_CHANGES` | 当前已打开场景有未保存变更，需用户确认是否保存 | 进入中断点 2 |
-| `SCENE_NOT_FOUND` | 目标场景不存在 | 流程结束（告知用户未找到） |
+> 「xxx」= 用户提到的实际场景名主体（如「测试」「文昌发射」）。匹配关键字时**去掉空格**。
+> 用户没带具体名字时（如「打开场景」「切换场景」），`query_scenario` 不传 `scene_name`（或传空），返回全部场景。
 
-## 完整流程（6 步）
+## 完整流程（3 步）
 
 ### 第 1 步：按名查询场景
 
-从用户输入中提取场景名，调用：
+按「场景名匹配规则」确定查询关键字，调用：
 
 ```
-query_scenario(scene_name="<用户提到的场景名>")
+# 用户带了名字（两种语序都要处理）
+query_scenario(scene_name="<优先形式，如 xxx场景>")
+#   ↳ 若 data 为空，再用扩大形式查一次
+query_scenario(scene_name="<基础形式，如 xxx>")
+
+# 用户没带名字 → 查全部
+query_scenario()
 ```
 
 读取返回的 `data`（场景列表）。**不要**在这一步直接 `open_scenario`，先看查询结果数量分流。
 
 ### 第 2 步：按查询结果数量分流
 
-#### 情况 A — 命中多个场景（`len(data) > 1`）→ 🔴 中断点 1：用户选择
+- **命中多个（`len(data) > 1`）** → 把查询结果原样返回给用户（让用户看到候选并自行决定下一步），**不打开、不进入中断**，流程结束。
+- **命中唯一（`len(data) == 1`）** → 用 `data[0]` 的场景名进入第 3 步。
+- **未命中（`len(data) == 0`）** → 告知用户「未找到名为 xxx 的场景」，流程结束。
 
-存在多个匹配场景，不能擅自替用户决定打开哪一个。**触发 Human-in-the-loop**，向用户列出候选并等待选择：
-
-```jsonc
-interrupt({
-    "is_custom": True,
-    "interrupt_type": "hitl_select",    // 业务自定义 type，前端据此渲染选择 UI
-    "message": "找到多个匹配场景，请选择要打开的场景：",
-    "data": {"scene_info_list":list[space_aiagent.models.schemas.ScenarioInfo]},
-})
-```
-
-用户在前端选择后，通过 `resume` 返回所选场景名。**收到 resume 后**：把用户选中的场景名带入第 3 步的 `open_scenario`。
-
-> resume 期望返回值：`{ "scene_name": "<用户选中的场景名>" }`
-
-#### 情况 B — 命中唯一场景（`len(data) == 1`）→ 直接进入第 3 步
-
-用 `data[0]` 的场景名。
-
-#### 情况 C — 未命中（`len(data) == 0`）→ 流程结束
-
-告知用户「未找到名为 xxx 的场景」，结束。不进入第 3 步。
-
-### 第 3 步：首次打开（不带保存决策）
-
-用第 2 步确定的场景名，**`is_save_on_change` 留空（None）**：
+### 第 3 步：打开唯一场景
 
 ```
-open_scenario(scene_name="<确定的目标场景名>")
+open_scenario(scene_name="<唯一匹配的场景名>")
 ```
 
-### 第 4 步：处理 `open_scenario` 返回码
+按 `tool_result.code` / `success` 给用户回复：
 
-根据 `tool_result.code` 分流：
+| 返回 | 回复 |
+|------|------|
+| 成功（`SCENE_OPENED` / `success=true`） | 「已打开场景 xxx」，`current_scene_name` 已由工具写回 state。 |
+| `SCENE_NOT_FOUND` | 「场景 xxx 不存在或已被删除」。 |
+| `SCENE_UNSAVED_CHANGES` | 把该返回码原样告知用户（说明当前场景有未保存变更），**不重试、不进入中断**，结束。 |
 
-- **`SCENE_UNSAVED_CHANGES`** → 🔴 进入中断点 2
-- **`SCENE_NOT_FOUND`** → 第 5 步
-- **成功（`SCENE_OPENED` / `success=true`）** → 第 6 步
-
-### 第 5 步：`SCENE_NOT_FOUND` → 流程结束
-
-目标场景不存在（极少发生于查询命中之后，通常是并发删除等边界情况）。告知用户「场景 xxx 不存在或已被删除」，流程结束。
-
-### 🔴 中断点 2：未保存变更确认
-
-`open_scenario` 返回 `SCENE_UNSAVED_CHANGES`，说明当前已打开场景有未保存变更，切换会丢失。**必须得到明确的 Y / N 答案**，不能替用户假设。触发 Human-in-the-loop：
-
-```jsonc
-interrupt({
-    "is_custom": True,
-    "interrupt_type": "hitl_yn",
-    "message": "当前场景存在未保存的变更，是否在切换前保存？(Y/N)",
-    "data": {
-        "scene_name": "<即将被切走的当前场景名>",
-        "target_scene_name": "<即将打开的目标场景名>",
-    },
-})
-```
-
-用户 Y/N 决策通过 `resume` 返回。**收到 resume 后**，按答案带上 `is_save_on_change` 重新打开：
-
-```
-# 用户选「保存」(Y)
-open_scenario(scene_name="<目标场景名>", is_save_on_change=true)
-
-# 用户选「不保存」(N)
-open_scenario(scene_name="<目标场景名>", is_save_on_change=false)
-```
-
-> resume 期望返回值：`{ "save_on_change": true | false }`
-
-这次重试通常直接成功（`SCENE_OPENED`）。若仍返回 `SCENE_UNSAVED_CHANGES`（异常，理论上不应发生），向用户报错并结束，不要无限循环重试。
-
-### 第 6 步：打开成功 → 流程结束
-
-`open_scenario` 返回成功，`current_scene_name` 已由工具写回 state。向用户简要确认「已打开场景 xxx」，流程结束。
+> `open_scenario` 不再处理「是否保存」决策：不传 `is_save_on_change`（缺省），收到 `SCENE_UNSAVED_CHANGES` 直接告知用户即可，不要带 `is_save_on_change` 反复重试。
 
 ## 流程总览
 
 ```
-query_scenario(scene_name)
+确定查询关键字（按语序：优先形式 → 扩大形式 / 无名则全部）
         │
         ▼
+query_scenario(scene_name)
+        │
    ┌────┴────┐
    │ 数量?   │
    └────┬────┘
-        ├─ 0  ───────────────────────────► 告知未找到 → 结束
-        ├─ >1 ─► 🔴 中断点1(选择) ─► resume(scene_name)
-        └─ 1  ─────────────────────────────┐
-                                            ▼
-                          open_scenario(scene_name, is_save_on_change=None)
-                                            │
-                              ┌─────────────┼──────────────┐
-                              ▼             ▼              ▼
-                    SCENE_UNSAVED    SCENE_NOT_FOUND     成功
-                    _CHANGES             │                │
-                        │                │                │
-              🔴 中断点2(Y/N)            └─► 告知不存在 ─► 结束
-                        │
-                  resume(save_on_change)
-                        │
-                        ▼
-        open_scenario(scene_name, is_save_on_change=Y/N)
-                        │
-                        ▼
-                     成功 ───────────────────────────► 告知已打开 → 结束
+        ├─ 0  ───────► 告知未找到 → 结束
+        ├─ >1 ───────► 返回查询结果 → 结束
+        └─ 1  ─┐
+                ▼
+        open_scenario(scene_name)
+                │
+        ┌───────┼───────────┐
+        ▼       ▼           ▼
+     成功   NOT_FOUND   UNSAVED_CHANGES
+        │       │           │
+     告知已打开  告知不存在   告知有未保存变更
+        │       │       （不重试、不中断）
+        └───────┴───────────┴──► 结束
 ```
 
 ## 关键原则
 
-- **先查后开**：绝不跳过 `query_scenario` 直接 `open_scenario`，否则无法处理多场景歧义。
-- **首次打开不带保存决策**：第 3 步一律 `is_save_on_change=None`，把「是否保存」的决策权交给用户（中断点 2），不要默认 `false` 丢数据、也不要默认 `true` 擅自保存。
-- **两个中断点不可跳过**：多场景选择、未保存变更确认都是用户决策，不可由 LLM 代答。
-- **不无限重试**：中断点 2 重试后若仍 `SCENE_UNSAVED_CHANGES`，报错结束而非循环。
+- **先查后开**：绝不跳过 `query_scenario` 直接 `open_scenario`。
+- **关键字优先形式优先**：先查带「场景」的精确形式，命中为空才扩大到基础形式，避免把「测试」误匹配到「测试场景」之外的无关项。
+- **唯一才打开、多个则返回**：歧义时只把候选列给用户，不擅自打开某一个。
