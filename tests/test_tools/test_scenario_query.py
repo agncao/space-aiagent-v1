@@ -55,6 +55,25 @@ def test_query_result_normalization_keeps_every_valid_scenario() -> None:
     assert normalized["data"] == scenarios
 
 
+def test_query_result_normalization_preserves_scene_name_verbatim() -> None:
+    normalized, scenarios = _normalize_scenario_query_result(
+        {
+            "success": True,
+            "code": "SCENE_QUERIED",
+            "message": "查询场景成功",
+            "data": [
+                {"name": "场景0942_ 1个火箭_1个卫星关节动画"},
+                {"name": "A地球-CZ4C火箭Demon"},
+            ],
+        }
+    )
+
+    expected_names = ["场景0942_ 1个火箭_1个卫星关节动画", "A地球-CZ4C火箭Demon"]
+    assert scenarios is not None
+    assert [item["scene_name"] for item in scenarios] == expected_names
+    assert [item["scene_name"] for item in normalized["data"]] == expected_names
+
+
 async def test_query_tool_writes_sanitized_results_to_state_and_tool_message() -> None:
     bridge = AsyncMock()
     bridge.send_tool_call.return_value = {

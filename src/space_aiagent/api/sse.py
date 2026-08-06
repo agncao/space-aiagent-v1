@@ -42,6 +42,7 @@ from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
 from space_aiagent.middleware.primary_agent_middleware import orchestrator_task_streak_var
 from space_aiagent.models.messages import ToolResultMessage
+from space_aiagent.models.response_schema import response_util
 from space_aiagent.models.sse_schemas import ChatRequest, ToolResultRequest, ResumeRequest,TERMINAL_EVENTS, SSEEventType
 
 
@@ -282,10 +283,26 @@ async def run_agent(bridge: StreamBridge, input_data: ChatRequest | Command) -> 
                         thread_id=thread_id,
                     )
                     raise ex
-            # 退役 AgentResponse 渲染：回复内容由 token 流承载（LLM 自由文本 / shortcut
-            # 降级文本均经 messages 流 emit 为 TOKEN 帧），done 仅作纯终态信号关流，
-            # 不再 render(structured_response)；trace output 省略（回复分散在 token 帧）。
-            await bridge._emit(SSEEventType.DONE, {"content": ""})
+
+            # 流正常结束（图到达 END，未触发 interrupt）：从最终 state 取
+            # structured_response 渲染。注意：不能在 values 流里早判 structured_response
+            # —— astream(stream_mode="values") 每步吐的是累计 state 快照，且
+            # structured_response 跨轮不清空，新一轮的首个 values chunk 仍带着上一轮的
+            # structured_response，早判会误触发 done。旧的 on_chain_end 路径安全是因为
+            # 其 output 是调用作用域的新值；切 astream 后改用 aget_state 取终态值。
+            state = await agent.aget_state(config)
+            values: dict = getattr(state, "values", None) or {}
+            agent_response = values.get("structured_response")
+            if agent_response is not None:
+                rendered = response_util.render(
+                    agent_response,
+                    scenario_infos=values.get("scenario_query_results"),
+                )
+            else:
+                logger.warning("流结束但 state 无 structured_response", thread_id=thread_id)
+                rendered = "处理完成。"
+            set_span_io(span, output=rendered)
+            await bridge._emit(SSEEventType.DONE, {"content": rendered})
 
         except Exception as e:
             logger.exception("Agent 执行出错", thread_id=thread_id)

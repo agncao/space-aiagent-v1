@@ -12,6 +12,7 @@ from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
+from langchain.agents.structured_output import ToolStrategy
 from deepagents.backends.composite import CompositeBackend
 from langgraph.types import Checkpointer
 
@@ -22,6 +23,7 @@ from space_aiagent.middleware import (
     PrimaryAgentMiddleware,
     RetryMiddleware,
 )
+from space_aiagent.models.response_schema.agent_struct_response import AgentResponse
 
 # 提示词路径（打包在包内）
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -76,6 +78,7 @@ def create_orchestrator(
         backend=backend,
         memory=["AGENTS.md"],
         checkpointer=checkpointer,
+        response_format=ToolStrategy(AgentResponse),
         state_schema=SpaceAgentState,
         middleware=[
             PrimaryAgentMiddleware(
