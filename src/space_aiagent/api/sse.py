@@ -357,12 +357,12 @@ async def stream_chat_response(
                     token_parts.append(str(content))
             yield _format_sse_frame(event_name, item["data"])
             if event_name in TERMINAL_EVENTS:
-                if token_parts:
-                    logger.info(
-                        "SSE token 输出完成",
-                        thread_id=thread_id,
-                        content="".join(token_parts),
-                    )
+                # if token_parts:
+                    # logger.info(
+                    #     "SSE token 输出完成",
+                    #     thread_id=thread_id,
+                    #     content="".join(token_parts),
+                    # )
                 break
     finally:
         # cancel 防御性：agent_task 可能已完成（done 后 return），cancel 对已完成的 task 是 no-op
