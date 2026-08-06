@@ -274,29 +274,33 @@
 
 ### 4.2 当前位置评估
 
-**当前等级：L2（部分 L3 雏形）**
+**当前等级：L3 雏形（L2 稳定，部分 L4 横切能力已提前落地）**
 
 **已具备的 L2 能力**：
-- ✅ Orchestrator + 子 Agent 路由（SubagentsMiddleware）
-- ✅ State Schema 跨步骤状态同步（`current_scene_name`）
-- ✅ 中间件链机制（PrimaryAgentMiddleware / SubagentToolValidationMiddleware / MemoryMiddleware / agents_dynamic_prompt / RetryMiddleware）
-- ✅ Task loop guard（防死循环）
-- ✅ 意图追踪 + 自动续接（pending_intent）
-- ✅ 场景依赖 fail-fast（NO_SCENE 短路）
+- ✅ Orchestrator + YAML 声明式子 Agent 路由
+- ✅ State Schema 跨 task 边界同步（`current_scene_name`）
+- ✅ 中间件链（PrimaryAgentMiddleware / SubagentToolValidationMiddleware / RetryMiddleware）
+- ✅ Task loop guard（防连续 task 死循环）
 - ✅ 结构化输出（ToolStrategy + AgentResponse）
-- ✅ Human-in-the-loop（`interrupt` + `/resume` 续跑：声明式 interrupt_on + 自定义中断 SceneAgentHitlMiddleware）
+- ✅ SSE + POST 传输及 SQLite checkpointer 持久化
+- ✅ 声明式 Human-in-the-loop（`interrupt_on` + `/resume`）
 
 **已具备的 L3 能力（雏形）**：
-- ✅ Skill 加载 Package 层（Anthropic 风格 progressive disclosure：内置 SkillsMiddleware + CompositeBackend 路由 `/skills/`，元数据注入 system prompt，LLM 按需 `read_file` 读全文）
-- ✅ 首个内置 skill `open_scenario`（含两处 HITL 中断点，已与前端联调）
-- ❌ Skill 调试/校验工具
-- ❌ Skill Backend/Policy 层（CommandGuard 命令白名单 / Docker 沙箱 / 审计——待首个带 `scripts/` 的 skill 驱动）
+- ✅ Skill Package 层（内置 SkillsMiddleware + CompositeBackend `/skills/` 路由 + progressive disclosure）
+- ✅ 3 个内置 Skill：`open-scenario`、`query-scenario`、`add-entity`
+- ❌ Skill 基础审计与稳定的校验/回归测试（当前下一任务）
+- ❌ Skill Backend/Policy 层（CommandGuard、脚本沙箱、完整审计；待首个带 `scripts/` 的 Skill 驱动）
 
-**未具备的 L4 能力**：
-- ✅ 完整 trace（OTel + Langfuse，每步耗时 + token 归因）—— Phase 1A-1
-- ❌ Metric（成功率、失败率、QPS/延迟——Phase 1A-2 待启动）
+**已提前具备或仍缺失的 L4 能力**：
+- ✅ AI 维度 trace（OTel + Langfuse，每步耗时 + token 归因）—— Phase 1A-1
 - ✅ 失败自动重试与降级（RetryMiddleware）—— Phase 1B
-- ❌ 多模型动态选择（Flash 模型仅用于路由分类，全量动态路由未做）
+- ❌ 系统 Metric（成功率、失败率、QPS/延迟）—— Phase 1A-2
+- ❌ 多模型动态选择（主/Flash 模型工厂已具备，完整动态路由未做）
+
+**当前暂不计为已完成的能力**：
+- 后端场景依赖 fail-fast 当前被临时关闭，最终由前端工具结果兜底。
+- `SceneAgentHitlMiddleware` 当前未挂载，自定义 `hitl_select` / `hitl_yn` 只保留协议兼容。
+- 旧的 pending_intent 意图捕获与自动续接已移除。
 
 ### 4.3 目标等级
 
@@ -452,38 +456,36 @@ OpenTelemetry 标准（协议层，可换后端）
 
 ## 6. 演进路线与决策依据
 
-### 6.1 路线总览
+### 6.1 执行进度看板（单一事实源）
 
-```
-Phase 1A-1: 可观测性 - AI 维度（OTel + Langfuse，trace + token 归因）✅
-   ↓
-Phase 1B: 失败恢复（工具失败重试 + 部分降级 + 状态回滚）✅
-   ↓
-传输层迁移: WebSocket → SSE+POST 事件流 ✅
-   ↓
-Human-in-the-loop: interrupt + /resume 续跑（声明式 interrupt_on + 自定义中断）✅
-   ↓
-Phase 2: Skill 系统第一版
-   ✅ Package 层：Skill frontmatter 协议（Anthropic 风格）+ SkillsMiddleware（progressive
-        disclosure）+ CompositeBackend 路由 `/skills/`；首个内置 skill `open_scenario` 已联调
-   ⬜ Backend/Policy 层：命令真白名单 CommandGuard + OS 自适应 LocalBackend + Docker 沙箱
-        + 基础审计 + 配置式选 backend（待首个带 scripts/ 的 skill 驱动）
-   ⬜ 多模型路由（Flash 做路由，主模型做执行——Flash 当前仅用于路由分类）
-   ⬜ 3-5 个示例 Skill
-   ↓
-Phase 1C: 工具能力补全（数据查询、报告生成等）
-   ↓
-Phase 1A-2: 可观测性 - 系统指标（Prometheus，QPS/延迟/资源）
-   ↓
-Phase 5: 横切关注点（简化版）
-   - 用户/角色权限（不做多租户）
-   - 完整审计（在 Phase 2 基础审计上扩展）
-   - Skill 版本管理
-   ↓
-Phase 3: 客户工具插件机制（暂缓，协议预留）
-   ↓
-Phase 1A-3: 可观测性 - 可视化（Grafana 统一面板 + 跨数据源关联）
-```
+> 本节是架构阶段、当前焦点和下一任务的唯一权威来源。`AGENTS.md`、`README.md`、
+> `CLAUDE.md` 只链接到这里，不复制进度表。
+
+状态含义：`✅ 已完成`、`▶ 下一任务`、`⬜ 待开始`、`⏸ 条件等待`、`⏳ 延后`。
+
+| 顺序 | 阶段 / 任务 | 交付与验收证据 | 状态 |
+| --- | --- | --- | --- |
+| 1 | Phase 1A-1：AI 维度可观测性 | OTel + Langfuse v3；trace、token 归因、NoOp 降级 | ✅ 已完成（2026-07-02） |
+| 2 | Phase 1B：失败恢复 | RetryMiddleware；LLM/工具重试与结构化降级 | ✅ 已完成（2026-07-10） |
+| 3 | 传输层迁移 | WebSocket → SSE + POST；8 类事件、StreamBridge、并发清理 | ✅ 已完成（2026-07-21） |
+| 4 | HITL 传输与声明式审批 | graph interrupt、`/resume`、删除/重命名/清空实体审批 | ✅ 已完成（2026-08-04） |
+| 5 | Phase 2A：Skill Package 层 | SkillsMiddleware、CompositeBackend `/skills/` 路由；3 个内置 Skill | ✅ 已完成（2026-08-06） |
+| 6 | Phase 2B：Skill 基础审计与质量门槛 | 记录 Skill 加载/命中/失败；建立格式校验和稳定回归测试，修复当前陈旧测试 | ▶ **下一任务** |
+| 7 | Phase 2C：多模型动态路由 | 明确主/Flash 模型职责，路由可配置、可观测、可降级 | ⬜ 待开始 |
+| 8 | Phase 2D：Backend/Policy | CommandGuard、OS 自适应 Backend、脚本沙箱、执行审计 | ⏸ 首个带 `scripts/` 的生产 Skill 出现后启动 |
+| 9 | Phase 1C：工具能力补全 | 按真实 Skill 需求补数据查询、报告生成等原子工具 | ⬜ 待开始 |
+| 10 | Phase 1A-2：系统指标 | Prometheus 采集 QPS、延迟、错误率与资源指标 | ⏳ Phase 1C 后 |
+| 11 | Phase 5：横切关注点简化版 | 用户/角色权限、完整审计、Skill 版本与生命周期 | ⬜ 待开始 |
+| 12 | Phase 3：客户工具插件机制 | 客户私有工具协议、隔离与兼容机制 | ⏸ 需求触发，当前暂缓 |
+| 13 | Phase 1A-3：统一可视化 | Grafana 关联 Langfuse、Prometheus、Loki | ⏳ Phase 3 后，依赖 1A-2 |
+
+#### 看板维护规则
+
+1. 开始架构层任务前，先确认它对应看板中的 `▶ 下一任务`；临时插队必须记录原因。
+2. 完成任务时必须同时补充完成日期和可验证证据（实现、测试、设计文档或联调记录）。
+3. 完成后将 `▶ 下一任务` 移到下一个可执行项；被条件阻塞的任务保持 `⏸`，不阻塞后续可执行项。
+4. 阶段拆分、重排或范围变化时，在第 9 节追加修订记录，不静默覆盖历史决策。
+5. 代码事实与看板冲突时，先核实代码和测试，再修正看板；不能为了匹配看板而虚报完成。
 
 ### 6.2 每个阶段的决策依据
 
@@ -784,6 +786,7 @@ python -m space_aiagent.cli skill history --thread-id xxx
 |------|------|---------|------|
 | v1.0 | 2026-07-01 | 初版：基于 2026-07-01 架构讨论定稿 | caojm |
 | v1.1 | 2026-08-04 | 同步进度：传输层迁移（SSE+POST）、HITL（interrupt+/resume，含自定义中断）、Phase 1B 失败恢复、Skill Package 层（SkillsMiddleware + CompositeBackend 路由 `/skills/`，首个内置 skill `open_scenario` 联调通过）；更新 §4.2 当前位置与 §6.1 路线 | caojm |
+| v1.2 | 2026-08-06 | 将 §6.1 升级为进度看板单一事实源；同步 3 个内置 Skill、当前实现边界，并明确下一任务为 Phase 2B（Skill 基础审计与质量门槛） | Codex |
 
 ---
 

@@ -1,73 +1,78 @@
 # space-aiagent
 
-航天分析平台智能助手 - 基于 DeepAgents (LangChain) 的多 Agent 系统
+面向航天 GIS 分析平台的多 Agent 智能助手，基于 FastAPI、DeepAgents 和 LangGraph。
+后端理解用户意图、编排专业 Agent 并生成工具指令；场景操作仍由前端 Cesium 执行。
 
-## 项目背景
+## 当前能力
 
-本项目为上海航天研究院 805 所定制的航天分析平台（基于 Cesium 的航天 GIS 系统）提供 AI 智能助手能力。
+- Orchestrator 将场景、实体与轨道任务委派给专业子 Agent。
+- SSE + HTTP POST 实时传输 token、工具调用过程、人工审批和最终结果。
+- `StreamBridge` 用 `asyncio.Future` 将后端工具调用与前端 Cesium 执行结果关联。
+- SQLite checkpointer 按 `thread_id` 保存多轮状态，并支持 LangGraph interrupt/resume。
+- `ToolStrategy(AgentResponse)` 约束最终输出，统一渲染 summary、suggestions 和场景查询表格。
+- 内置 Skills 通过 progressive disclosure 提供可扩展业务 SOP。
+- RetryMiddleware 提供 LLM/工具重试与降级。
+- OpenTelemetry + Langfuse v3 提供可选的 trace、token 归因和日志关联。
 
-### 业务场景
+当前内置 Skill：
 
-航天分析平台是一个基于 Cesium（前端 JS 库）的 GIS 系统，核心能力均以前端技术实现。智能助手的交互入口在前端，用户通过自然语言提出需求（如"创建场景"、"添加卫星"），后端 Agent 服务解析意图后，生成操作指令通过 WebSocket 发送到前端，前端根据指令调用 Cesium API 完成操作。
+| Scope | Skill | 用途 |
+| --- | --- | --- |
+| scene | `open-scenario` | 查询并打开唯一匹配场景，多结果返回候选 |
+| scene | `query-scenario` | 查询、筛选或列出现有场景 |
+| entity | `add-entity` | 校验参数后添加点实体或 SGP4 卫星 |
 
-### 通信架构
-
-```
-用户输入 → 智能助手交互端（前端） → WebSocket → AI Agent 服务（后端）
-                                                    ↓
-前端调用 Cesium API ← 操作指令 ← WebSocket ← Agent 工具调用
-```
-
-### 核心业务流程
-
-以"创建卫星"为例：
-1. 用户输入"我要创建卫星"，前端携带 `current_scene_name`（来自 Cesium CurrentScenario）
-2. 智能体识别意图，调用 entity 工具
-3. 后端 `ToolValidationMiddleware` 检查 `current_scene_name`：
-   - 如果为 null → **A 方案短路**：中间件返回 `Command(goto=END)` 携带 NO_SCENE 的 ToolMessage，强制终止子 Agent 图（跳过"解释工具结果"那次 LLM 调用），ToolMessage 内容回流到 orchestrator，由 orchestrator LLM 生成 AgentResponse，**状态由 LangGraph 自动持久化**保证多轮对话上下文完整
-   - 如果非 null → 工具通过 WebSocket 发指令到前端
-
-   > orchestrator 上的 `PrimaryAgentMiddleware` 是另一种短路机制：监测连续 `task` 调用 ≥ 20 次时，在 `awrap_model_call` 后置阶段直接**改写 `ModelResponse`**（构造一个携带 AgentResponse tool_call 的 AIMessage），输出 `task_loop_guard` 模板。与 A 方案 `ToolValidationMiddleware` 用 `Command(goto=END)` 终止子 Agent 图不同——`PrimaryAgentMiddleware` 不终止图，而是把 LLM 输出替换为短路响应（详见 CLAUDE.md「任务循环防护」）。
-4. 前端收到指令后调用 Cesium API 执行创建卫星
-5. 前端返回结果给后端，`on_chain_end` 事件读 `output.structured_response` 字段调 `response_util.render()` 渲染为自然语言（直接返回 `AgentResponse.summary` + 可选 suggestions 块），通过 `ai_message` 发送给前端
-
-## 技术选型
-
-| 类别 | 选择 | 理由 |
-|------|------|------|
-| 语言 | Python 3.13 | 现代异步生态 |
-| Web 框架 | FastAPI | 异步支持、自动文档、WebSocket 内建 |
-| Agent Harness | [deepagents](https://docs.langchain.com/oss/python/deepagents/overview) | LangChain 团队开发的 Agent Harness，内置任务规划、子 Agent 生成、长期记忆 |
-| Agent 运行时 | LangGraph | DeepAgent 底层运行时，支持持久化执行、流式输出（astream_events） |
-| 结构化输出 | ToolStrategy | 利用模型 tool calling API 强制输出 AgentResponse 结构，保证回复一致性 |
-| 可观测性 | PrimaryAgentMiddleware 内联日志 + OpenTelemetry + Langfuse v3 | 内联日志输出业务调用流水；OTel + Langfuse v3 自部署采集 trace + token 归因（`observability.enabled=false` 时全链路 NoOp，业务零依赖） |
-| LLM 接口 | langchain-openai | OpenAI 兼容接口，统一支持 DeepSeek 和阿里 DashScope（Qwen） |
-| 持久化 | SQLite + aiosqlite | 开发阶段使用，后续可迁移 PostgreSQL |
-| 配置管理 | YAML + .env | YAML 放业务配置，.env 放敏感信息（不提交 Git），knowledge 外部化到 config/ 可动态修改 |
-| 日志 | structlog | 结构化 JSON 日志，控制台 + 文件轮转，可接入 ELK；每条日志自动注入 `trace_id` / `span_id`（来自 OTel current span，便于和 Langfuse trace 串联） |
-| 代码质量 | ruff + pre-commit | 格式化 + lint + Git hooks |
+> Skill Package 层已经落地；脚本沙箱、命令白名单、完整审计等 Backend/Policy 能力仍在后续阶段。
 
 ## 架构设计
+
+### 整体工作流
+
+```text
+用户
+  |
+  | POST /api/v1/space/chat（响应为 SSE）
+  v
+Orchestrator -- task --> Scene Agent / Entity Agent
+                              |
+                              | Python tool
+                              v
+                         StreamBridge
+                              |
+                              | SSE tool_start / tool_args
+                              v
+                         前端 Cesium
+                              |
+                              | POST /api/v1/space/tool-result
+                              v
+                         StreamBridge Future
+                              |
+                              | SSE tool_result / tool_end / done
+                              v
+                             用户
+```
+
+一轮普通对话由一个 `POST /chat` 流和零到多个 `POST /tool-result` 组成。同一
+`thread_id` 同时只能有一个活跃流，否则返回 `409 Conflict`。
 
 ### 多 Agent + 工具组管理
 
 ```
-                        用户输入(WebSocket)
+                        用户输入(POST /chat)
                               │
                               ▼
                     ┌─────────────────┐
                     │  Orchestrator   │  主控Agent：意图识别、任务规划
                     │  (DeepAgents)    │  只知道工具组摘要列表
-                    │  + ToolStrategy │  结构化输出 AgentResponse
-                    │  + LoggingMW    │  执行日志中间件
-                    │  + astream      │  流式事件驱动
+                    │  + ToolStrategy │  结构化输出（AgentResponse）
+                    │  + LoggingMW    │  LLM调用/工具执行日志
                     └───────┬─────────┘
-                            │ subagent 调度
+                            │ 路由到子Agent
               ┌─────────────┼─────────────┐
               ▼             ▼             ▼
         ┌──────────┐  ┌──────────┐  ┌──────────┐
         │  Scene   │  │  Entity  │  │ Analysis │
-        │  Agent   │  │  Agent   │  │  Agent   │  ← 未来扩展
+        │  Agent   │  │  Agent   │  │  Agent   │
         └────┬─────┘  └────┬─────┘  └──────────┘
              │              │
      ┌───────┴──┐    ┌─────┴──────────┐
@@ -81,132 +86,173 @@
                      └─────────────────┘
               │              │
               ▼              ▼
-        Remote Tool Bridge (WebSocket)
+        Remote Tool Bridge (SSE tool_start/tool_args + POST /tool-result)
               │              │
               ▼              ▼
          Cesium 前端执行
 ```
 
-### Agent 职责
+- **Orchestrator**: 意图识别、任务规划、子 Agent 调度。不直接绑定工具，只持有工具组摘要。使用 `ToolStrategy(AgentResponse)` 强制结构化输出，state_schema 用 `SpaceAgentState`（`agents/state.py`，含 `current_scene_name` 字段，跨 task 边界自动同步）。middleware 顺序为 `PrimaryAgentMiddleware`（task 死循环硬兜底 + 意图捕获 + 自动续接 + 内联 LLM/工具调用日志，详见「任务循环防护」和「意图追踪与自动续接」）→ `agents_dynamic_prompt`（动态注入 current_scene_name 到 system message）→ `RetryMiddleware`（Phase 1B 失败重试+降级）。**LoggingMiddleware / ResponseStabilizationMiddleware 已退役**——orchestrator 不再挂载（类保留供未来复用），可观测性职责由 `PrimaryAgentMiddleware.awrap_model_call` / `awrap_tool_call` 内联日志承担。backend 为 `CompositeBackend`（`/skills/` 路由见「Skill 加载」节）
+- **子 Agent**: 通过 `config/subagents.yaml` 声明式配置，`agents/subagents.py` 加载。新增 Agent 改配置 + 提示词 + `tools/registry.py` 注册。middleware 顺序为 `SubagentToolValidationMiddleware(tool_groups=...)` → `agents_dynamic_prompt` → `RetryMiddleware`；**scene-agent 额外在 index 1 插入 `SceneAgentHitlMiddleware`**（open_scenario 两个 HITL 中断点，见「Human-in-the-loop」节）。子 Agent 可选挂 `skills`（`subagents.yaml` 的 `skills: ["/skills/<scope>/"]`，经共享 backend 加载）
+- **Analysis Agent**: 数据分析（未来扩展），独立领域单独扩展
+- **Agent 执行**: `astream_events` 流式执行，`on_tool_start`（工具进度提示钩子）+ `on_chain_end`（读 `output.structured_response` + `response_util.render()` 出口渲染发送）事件驱动。task 死循环兜底已下沉到 `PrimaryAgentMiddleware`（阈值 20，详见「任务循环防护」）。详见 `readme/python教程.md` 9.5 节
+- **结构化输出**: `ToolStrategy` 利用模型 tool calling API 强制输出 `AgentResponse` JSON。SSE handler 的 `on_chain_end` 事件（`api/sse.py:run_agent`）读 `output.structured_response`，调 `response_util.render()` 渲染为自然语言，作为 `done` 事件的 `content` 发前端——`render()` 直接返回 `summary` + 可选 suggestions 块（**模板渲染已废弃**，YAML 模板仅作 SHORTCUT_RESPONSES 的 summary 默认值）。**A 方案短路**：已知确定性 case（如 `NO_SCENE`）由 `ToolValidationMiddleware` 在工具调用前识别，返回 `Command(goto=END)` 短路（update 里塞携带 NO_SCENE 的 ToolMessage 关闭 AI 的 tool_call，跳过子 Agent 后续 LLM 调用）。state 由 LangGraph 自动持久化到 checkpointer（多轮对话上下文完整）。注册表在 `models/response_schema/response_constants.SHORTCUT_RESPONSES`
 
-| Agent | 职责                         | 加载的工具组 |
-|-------|----------------------------|-------------|
-| Orchestrator | 意图识别、任务规划、子 Agent 调度、结构化输出 | ToolStrategy(AgentResponse) + memory（AGENTS.md） + PrimaryAgentMiddleware（含内联 LLM/工具调用日志，已替代独立 LoggingMiddleware） + ResponseStabilizationMiddleware（已退役占位） + agents_dynamic_prompt |
-| Scene Agent | 场景创建/重命名/删除/查询             | scene_management (6 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware（已退役占位） + agents_dynamic_prompt |
-| Entity Agent | 实体创建/SGP4轨道/样式更新           | entity_management + orbit_management (4 个工具) + ToolValidationMiddleware + ResponseStabilizationMiddleware（已退役占位） + agents_dynamic_prompt |
-| Analysis Agent | 数据分析（未来扩展）                 | （未来扩展） |
+### 远程工具桥接（核心机制）
 
-> 子 Agent 通过 `config/subagents.yaml` 声明式配置，新增 Agent 只需加 YAML 条目 + `prompts/` 加提示词文件 + `tools/registry.py` 注册工具组。
-
-### 动态提示词注入
-
-`agents_dynamic_prompt`（`middleware/dynamic_prompt.py`，用 `@dynamic_prompt` 装饰器声明）挂在 orchestrator 和所有子 Agent 上，每次 LLM 调用前把 `request.state["current_scene_name"]` 当前值追加到 system message 末尾（如「当前场景: 测试场景, 如果不为 None或者空字符串，说明当前场景已打开」），让 LLM 感知前端场景状态。`current_scene_name` 由前端在 `user_input` 携带，websocket handler 通过 `astream_events` input 注入到 `SpaceAgentState`（`agents/state.py`），scene 工具成功后通过 `Command(update={"current_scene_name": ...})` 写入，本中间件只读不写。**关键**：deepagents `task` 工具自动双向同步 state（父↔子），所以 scene-agent 创建场景后写入的 `current_scene_name` 会自动传给后续 task 调用的 entity-agent——避免 ContextVar 跨 task 边界丢失。
-
-### 远程工具桥接
-
-工具在后端定义但实际在前端 Cesium 执行。通过 `asyncio.Future` + `ContextVar` 桥接：
+工具在后端定义但实际在前端 Cesium 执行。通过 `StreamBridge`（`bridge/stream_bridge.py`）持 `asyncio.Queue` 事件出口 + `asyncio.Future` 桥接：
 
 ```
-Agent 调用工具 → bridge.send_tool_call() → WebSocket 发送指令到前端
-                                                      ↓
-Agent 得到结果 ← await Future ← bridge.resolve() ← WebSocket 收到前端结果
+Agent 调用工具 → StreamBridge.send_tool_call()
+                  ├─ emit tool_start/tool_args 到 SSE queue → POST /chat 响应流出前端
+                  └─ await Future
+Agent 得到结果 ← await Future ← StreamBridge.resolve_tool_result() ← POST /tool-result handler
+                  └─ emit tool_result/tool_end 到 SSE queue → 流出前端
 ```
 
-- `bridge_var` (ContextVar)：WebSocket handler 在创建 Agent 前注入，工具函数通过 `get()` 获取
-- 每次 `send_tool_call()` 创建 Future 绑定到唯一 `tool_call_id`
-- WebSocket 收到 `tool_result` 时根据 ID resolve 对应 Future
+每次工具调用创建 Future 绑定到唯一 `tool_call_id`，`POST /tool-result` handler（通过 `SessionManager.get_bridge(thread_id)` 定位 bridge）收到前端结果时根据 ID resolve。Future / resolve / cleanup / 超时（默认 60s）语义从旧 `WSBridge` 原样迁移。
 
-### WebSocket 消息协议
+**Bridge 注入方式**: `bridge.bridge_var` (ContextVar)，由 SSE `event_generator`（`api/sse.py`）在当前请求 context 内 `bridge_var.set(bridge)` 注入（Starlette 把 StreamingResponse body 迭代放在 copy 出来的 context 里，故 set/reset 都在 `event_generator` 内），`asyncio.create_task(run_agent)` 拷贝该 context → agent 任务及工具函数通过 `bridge_var.get()` 可见。
 
-#### 前端 → 后端
+### Agent 组成
 
-**用户输入 (`user_input`)**
+| Agent | 职责 | 工具 / Skill |
+| --- | --- | --- |
+| Orchestrator | 意图识别、任务委派、结果汇总 | `task`、memory、`AgentResponse` |
+| Scene Agent | 创建、查询、打开、重命名、删除场景 | `scene_management`、scene Skills |
+| Entity Agent | 添加/查询/清空实体，创建和更新 SGP4 轨道 | `entity_management`、`orbit_management`、entity Skills |
+
+子 Agent 由 [`config/subagents.yaml`](config/subagents.yaml) 声明。Orchestrator 使用
+`CompositeBackend`：默认根目录提供 `config/knowledge/AGENTS.md` memory，`/skills/`
+虚拟路径路由到 `src/space_aiagent/skills/`。
+
+### 状态与结构化输出
+
+`SpaceAgentState` 保存 `current_scene_name`、场景查询结果等字段。`/chat` 注入前端当前场景，
+场景工具成功后通过 `Command(update=...)` 更新，DeepAgents 在父子 task 边界同步状态。
+
+最终响应由 `ToolStrategy(AgentResponse)` 生成。SSE 流正常结束后，后端从 checkpoint 终态读取
+`structured_response`，通过 `response_util.render()` 生成 `done.content`。场景查询结果会被渲染为
+可点击的 Markdown 表格，而不是直接暴露工具 JSON。
+
+### Human-in-the-loop
+
+`config/subagents.yaml` 当前启用三类声明式审批：
+
+- 删除场景：approve / reject
+- 重命名场景：approve / reject
+- 清空实体：approve / reject
+
+发生中断时，当前 SSE 流依次发送：
+
+```text
+interrupt
+done {"interrupted": true, "content": ""}
+```
+
+前端收集决策后调用 `POST /api/v1/space/chat/{thread_id}/resume`，该响应是一条新的 SSE 流。
+代码仍兼容 `hitl_select` / `hitl_yn` 自定义中断格式，但 `SceneAgentHitlMiddleware` 当前未挂载，
+因此不能依赖这两类中断自动出现。
+
+### 场景前置条件
+
+创建实体等操作在业务上要求已有场景。`current_scene_name` 仍在后端状态中维护，但当前版本把
+是否存在场景的最终校验交给前端工具接口；`SubagentToolValidationMiddleware` 中的后端
+fail-fast 分支暂时禁用。前端应通过工具结果返回 `NO_SCENE` 等明确 code，Skill/Agent 再据此回复。
+
+## SSE + POST 接口
+
+API 前缀：`/api/v1/space`。完整前端契约见
+[`docs/前端SSE对接指南.md`](docs/前端SSE对接指南.md)。
+
+### `POST /chat`
+
+请求：
+
 ```json
 {
-  "type": "user_input",
-  "thread_id": "abc-123",
-  "content": "帮我创建一个场景",
-  "message_id": "msg-001",
-  "current_scene_name": "测试场景"
+  "content": "查询测试场景",
+  "thread_id": "thread-001",
+  "message_id": "message-001",
+  "current_scene_name": null
 }
 ```
 
-`current_scene_name` 由前端从 `yyastk.CurrentScenario?.dataSource?.name` 携带，无场景时为 `null`。后端 `ToolValidationMiddleware` 据此做 fail-fast 校验：除场景创建工具外，无场景上下文（`request.state.get("current_scene_name")` 为空）时返回 `Command(goto=END)`（携带 NO_SCENE 的 ToolMessage），终止子 Agent 图——ToolMessage 关闭 tool_call（LLM API 协议要求），Command(goto=END) 跳过子 Agent 后续 LLM 调用，状态由 LangGraph 持久化到 checkpointer。
+响应为 `text/event-stream`。事件类型：
 
-**工具执行结果 (`tool_result`)** — 前端执行完 Cesium 操作后返回
+| Event | 主要 data 字段 | 含义 |
+| --- | --- | --- |
+| `token` | `content`, `source`, `thread_id` | 可读的 LLM 文本 token |
+| `tool_start` | `tool_func`, `namespace`, `tool_call_id`, `thread_id` | 工具开始 |
+| `tool_args` | `tool_func`, `tool_call_id`, `args`, `thread_id` | 工具参数 |
+| `tool_result` | `tool_func`, `tool_call_id`, `result`, `thread_id` | 工具结果回显 |
+| `tool_end` | `tool_func`, `tool_call_id`, `thread_id` | 工具结束 |
+| `interrupt` | `interrupt_type` 等、`thread_id` | 图暂停，等待人工决策 |
+| `done` | `content`, `thread_id`, 可选 `interrupted` | 正常终态或暂停流终态 |
+| `error` | `message`, `thread_id` | 异常终态 |
+
+SSE 帧格式：
+
+```text
+event: tool_start
+data: {"tool_func":"queryScenario","tool_call_id":"...","thread_id":"thread-001"}
+
+```
+
+`done` 和 `error` 会关闭流。浏览器原生 `EventSource` 只支持 GET，因此前端需用
+`fetch()` + `ReadableStream` 消费 POST 响应。
+
+### `POST /tool-result`
+
+前端执行 Cesium 方法后回告：
+
 ```json
 {
-  "type": "tool_result",
-  "thread_id": "abc-123",
-  "tool_func": "createScenario",
-  "tool_call_id": "uuid-xxx",
-  "args": {},
+  "tool_func": "queryScenario",
+  "tool_call_id": "<tool_start 中的 id>",
+  "thread_id": "thread-001",
+  "args": {"sceneName": "测试"},
   "success": true,
-  "message": "场景创建成功",
-  "data": {"scenarioName": "测试场景"}
+  "message": "查询成功",
+  "data": [],
+  "code": "SCENE_QUERY_SUCCESS"
 }
 ```
 
-#### 后端 → 前端
+成功返回 `{"ok": true}`；没有对应活跃流时返回 `404`。
 
-**AI 文本回复 (`ai_message`)**
-```json
-{"type": "ai_message", "thread_id": "abc-123", "content": "好的，正在为您创建场景"}
-```
+### `POST /chat/{thread_id}/resume`
 
-**工具调用指令 (`tool_call`)** — 让前端执行 Cesium 操作
+声明式审批示例：
+
 ```json
 {
-  "type": "tool_call",
-  "thread_id": "abc-123",
-  "tool_func": "createScenario",
-  "tool_func_args": {"sceneName": "测试场景", "centralBody": "Earth"},
-  "tool_call_id": "uuid-xxx",
-  "message_id": ""
+  "resume": {
+    "decisions": [{"type": "approve"}]
+  }
 }
 ```
 
-**对话结束 (`end`)**
-```json
-{"type": "end", "thread_id": "abc-123"}
-```
+拒绝时使用 `{"type": "reject"}`。必须复用触发中断的 `thread_id`。
 
-**错误 (`error`)**
-```json
-{"type": "error", "thread_id": "abc-123", "message": "工具调用超时: createScenario"}
-```
+## 工具清单
 
-#### 交互时序
+工具在 Python 中使用 snake_case，发给前端的 `tool_func` 使用 camelCase。
 
-```
-前端                          后端
-  │  user_input ──────────→  │
-  │  ←──── ai_message       │  流式状态："正在执行 queryEntities..."
-  │  ←──── tool_call        │  Agent 调用工具
-  │  tool_result ─────────→  │  前端执行 Cesium 操作
-  │  ←──── ai_message       │  Agent 结构化回复（response_util.render 渲染）
-  │  ←──── end              │  轮次结束
-```
+| Python 工具 | 前端 `tool_func` | namespace | 说明 |
+| --- | --- | --- | --- |
+| `create_scenario` | `createScenario` | `scene_tools` | 创建场景 |
+| `query_scenario` | `queryScenario` | `scene_tools` | 查询场景 |
+| `open_scenario` | `openScenario` | `scene_tools` | 打开已有场景 |
+| `rename_scenario` | `renameScenario` | `scene_tools` | 重命名当前场景，需审批 |
+| `delete_scene` | `deleteScene` | `scene_tools` | 删除当前场景，需审批 |
+| `add_point_entity` | `addPointEntity` | `entity_tools` | 添加非卫星点实体 |
+| `query_entities` | `queryEntities` | `entity_tools` | 查询实体 |
+| `clear_entities` | `clearEntities` | `entity_tools` | 清空实体，需审批 |
+| `create_sgp4_orbit` | `createSgp4Orbit` | `entity_tools` | 根据两行 TLE 创建卫星 |
+| `update_sgp4_orbit` | `updateSgp4Orbit` | `entity_tools` | 更新 SGP4 轨道样式 |
 
-> 流式执行：后端使用 `astream_events` 驱动 Agent，在工具调用前发送 `ai_message` 状态提示，前端可实时感知进度。最终回复由 `ToolStrategy(AgentResponse)` 结构化输出 → websocket `on_chain_end` 读 `output.structured_response`，调 `response_util.render()` 直接渲染 `summary` + 可选 suggestions 块发给前端。详见 `readme/python教程.md` 9.5 节。
-
-### 工具清单
-
-前端需要实现以下 `tool_func` 对应的方法：
-
-| 工具函数名 (`tool_func`) | 所属工具组 | 参数 (`tool_func_args`) | 说明         |
-|--------------------------|-----------|------------------------|------------|
-| `createScenario` | scene_management | `{sceneName, centralBody, startTime?, endTime?, description?}` | 创建场景       |
-| `renameScenario` | scene_management | `{sceneName}` | 重命名场景      |
-| `deleteScene` | scene_management | `{}` | 删除场景       |
-| `clearEntities` | scene_management | `{}` | 清除所有实体     |
-| `queryScenario` | scene_management | `{sceneName?}` | 查询场景信息     |
-| `queryEntities` | scene_management | `{}` | 查询实体列表     |
-| `addPointEntity` | entity_management | `{entityType, name, position: {longitude, latitude, height}, properties?}` | 添加实体      |
-| `createSGP4Orbit` | orbit_management | `{name, tles, start?, end?}` | 创建 SGP4 轨道 |
-| `updateSGP4Orbit` | orbit_management | `{name, color?, glowPower?, taperPower?}` | 更新轨道样式     |
-
-参数中 `?` 表示可选字段。`entityType` 支持的值: `place`, `target`, `facility`, `aircraft`, `missile`, `satellite`, `sensor`, `groundVehicle`, `ship`, `launchVehicle`, `lineTarget`, `areaTarget`。
+具体参数以 `src/space_aiagent/models/schemas.py`、工具的 args schema 及 Skill 为准。
 
 ## 项目结构
 
@@ -264,146 +310,91 @@ src/space_aiagent/
         └── collection_util.py # trim_list 等
 ```
 
-## 环境配置
+## 技术栈
 
-### 多环境支持
+- Python 3.13
+- FastAPI + Uvicorn
+- DeepAgents + LangGraph
+- langchain-openai（OpenAI 兼容接口，可接 DeepSeek / Qwen）
+- SQLite + `AsyncSqliteSaver`
+- OpenTelemetry + Langfuse v3
+- structlog、tenacity、Pydantic
+- pytest、Ruff、pre-commit
 
-通过 `APP_ENV` 环境变量切换，YAML 中 `${VAR:default}` 语法引用环境变量。
+## 快速开始
 
-| 环境 | 配置文件 | 日志级别 | 格式 | 文件输出 |
-|------|---------|---------|------|---------|
-| dev | `config/dev.yaml` | INFO (项目包 DEBUG) | Spring 风格控制台 | 不写文件 |
-| staging | `config/staging.yaml` | INFO | JSON | 写文件 |
-| prod | `config/prod.yaml` | WARNING | JSON | 写文件，30 个备份 |
+```bash
+cp .env.example .env
+
+conda create -n space-aiagent-v1 python=3.13
+conda activate space-aiagent-v1
+
+pip install -e ".[dev]"
+pre-commit install
+
+python -m space_aiagent.main
+```
+
+默认监听 `0.0.0.0:8028`。健康检查和 API 文档可通过 FastAPI 路由查看。
 
 ### LLM 配置
 
-使用统一的 OpenAI 兼容接口，切换提供商只需修改 `LLM_BASE_URL` 和 `LLM_MODEL`：
+`.env` 至少配置主模型；Flash 模型用于轻量路由等辅助调用：
 
-```bash
-# .env 示例
-
-# 主 LLM（Orchestrator + 子 Agent 的 LLM 调用都走这里）
+```dotenv
 LLM_API_KEY=sk-xxx
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-chat
 
-# Flash LLM（仅 PrimaryAgentMiddleware 自动续接的路由分类用，可与主 LLM 同实例或独立更便宜的实例）
 LLM_FLASH_API_KEY=sk-xxx
 LLM_FLASH_BASE_URL=https://api.deepseek.com
 LLM_FLASH_MODEL=deepseek-chat
 ```
 
-主 LLM 运行参数读 `config/application.yaml` 的 `agent` 节（`temperature` / `streaming` / `enable_thinking`），Flash LLM 读 `flash_model` 节。`enable_thinking` 配置位置已从 `agent.enable_thinking` 迁移到 `agent` 节内由 `LLMConfig` 读取（旧引用 `settings.agent.enable_thinking` 已失效）。
+主模型参数在 `config/application.yaml` 的 `agent` 段，Flash 模型参数在 `flash_model` 段。
 
-### 可观测性配置（Phase 1A-1）
+### 可观测性
 
-`config/application.yaml` 的 `observability:` 段控制 OTel + Langfuse v3 集成：
-
-```yaml
-observability:
-  enabled: false              # 总开关：false 时全链路 NoOp，业务零开销、零依赖
-  service_name: space-aiagent
-  langfuse_endpoint: http://localhost:3000/api/public/otel
-  sampler_ratio: 1.0          # 0.0-1.0，生产可降到 0.1
-```
-
-凭证从 `.env` 注入（与 `LLM_API_KEY` 同套机制）：
+默认 `observability.enabled: false`，全链路走 NoOp。启用时需要 Langfuse v3：
 
 ```bash
-# .env 示例
-LANGFUSE_PUBLIC_KEY=pk-lf-xxx
-LANGFUSE_SECRET_KEY=sk-lf-xxx
-
-# docker-compose 自部署所需（首次启动自动初始化项目）
-LANGFUSE_NEXTAUTH_SECRET=openssl rand -base64 32
-LANGFUSE_SALT=openssl rand -base64 32
-LANGFUSE_ENCRYPTION_KEY=openssl rand -hex 32  # 必须 hex 64 字符（base64 会被 Langfuse 拒绝）
-LANGFUSE_INIT_PROJECT_PUBLIC_KEY=pk-lf-space-aiagent-dev
-LANGFUSE_INIT_PROJECT_SECRET_KEY=sk-lf-space-aiagent-dev
-```
-
-**自部署 Langfuse v3**：
-
-```bash
-# --env-file 必须显式指定根目录 .env：否则 Compose 会去 docker/observability/ 下找 .env
-# （即 compose 文件所在目录），找不到会导致 SALT / ENCRYPTION_KEY / NEXTAUTH_SECRET 为空，Langfuse 启动失败
 docker compose --env-file .env -f docker/observability/docker-compose.yml up -d
-# 访问 http://localhost:3000，首次启动通过 LANGFUSE_INIT_* 自动创建项目
-
-# 停止并清理容器（named volume 保留、数据不丢；同样带 --env-file 避免 compose 解析时的空变量 warning）
-docker compose --env-file .env -f docker/observability/docker-compose.yml down
 ```
 
-**Span 层级**（业务埋点位置）：
+必须显式传 `--env-file .env`，否则 Compose 会从 `docker/observability/` 查找 `.env`，
+可能导致 Langfuse 初始化密钥为空。业务 trace 以 `agent.session` 为根，LLM 和工具调用为子 span。
 
-| Span 名 | 位置 | 关键 attributes |
-|---------|------|----------------|
-| `ws.session` | `api/websocket.py:run_agent` | `agent.thread_id`, `agent.scene_name` |
-| `orchestrator.llm` | `PrimaryAgentMiddleware.awrap_model_call` | `llm.latency_ms`, `response.code` |
-| `orchestrator.task` / `orchestrator.tool.<name>` | `PrimaryAgentMiddleware.awrap_tool_call` | `tool.name`, `tool.success`, `tool.latency_ms`, `subagent.name` |
-| `subagent.llm` | `SubagentToolValidationMiddleware.awrap_model_call` | `subagent.name`, `llm.latency_ms` |
-| `tool.<name>` | `SubagentToolValidationMiddleware.awrap_tool_call` | `tool.name`, `tool.success`, `tool.latency_ms` |
-
-> **业务 span IO**：所有业务 span 通过 `set_span_io()`（`tracing.py`）额外设置 `input.value` / `output.value`（OpenInference 标准，Langfuse 识别为 observation IO）——`ws.session` 设用户输入/最终回复，`orchestrator.llm` / `subagent.llm` 设 messages / ModelResponse 序列化（`message_util.serialize_messages` / `serialize_model_response`），`orchestrator.task` / 各 tool 设 tool_args / result。
-
-> **trace root 选择**：`main.py` 用 `FastAPIInstrumentor.instrument_app(app, excluded_urls="/health,/ws/space")` 显式排除 WebSocket 路径——否则 FastAPI 给 WebSocket 长连接创建的 server span 会成为 trace root（无业务 IO、name 还经常为空，导致 Langfuse Traces 列表 name/input/output 全空）。排除后业务层的 `ws.session` span 直接成为 trace root，其 input/output 按 Langfuse root observation 规则自动成为 trace 级 IO，Traces 列表直接显示用户输入与回复。
-
-> ContextVar 跨 task 边界：OTel span context 默认通过 asyncio `copy_context()` 自动跨 task 传播，与现有 `bridge_var` / `orchestrator_task_streak_var` 同机制；不需要手动处理。详见 [`readme/python教程.md`](readme/python教程.md) 第 26 章。
-
-## 快速开始
+## 开发命令
 
 ```bash
-# 1. 复制环境变量配置
-cp .env.example .env
-# 编辑 .env 填写实际的 API Key
+python -m space_aiagent.cli --help
+python -m space_aiagent.cli tools list
+python -m space_aiagent.cli tools show scene_management
 
-# 2. 创建 conda 环境
-conda create -n space-aiagent-v1 python=3.13 -y
-conda activate space-aiagent-v1
-
-# 3. 安装依赖
-pip install -e ".[dev]"
-
-# 4. 生成 requirements.txt（可选，供 CI/CD 使用）
-python scripts/gen_requirements.py
-
-# 5. 安装 pre-commit hooks
-pre-commit install
-
-# 6. 启动开发服务器
-python -m space_aiagent.main
-```
-
-## 常用命令
-
-```bash
-# 激活 conda 环境
-conda activate space-aiagent-v1
-
-# 启动服务器（开发模式，支持热重载）
-python -m space_aiagent.main
-
-# CLI 方式启动
-space-aiagent run --host 0.0.0.0 --port 8028 --reload
-
-# 查看工具组列表
-space-aiagent tools list
-
-# 查看工具组详情
-space-aiagent tools show scene_management
-
-# 运行测试
 pytest
+pytest tests/test_api tests/test_bridge
+pytest tests/test_skills tests/test_tools
 
-# 代码检查
 ruff check src/ tests/
-
-# 代码格式化
-ruff format src/ tests/
+ruff format --check src/ tests/
+python scripts/gen_requirements.py
 ```
 
-## 参考
+## 设计与对接文档
 
-- 原有航天分析助手智能体仓库：https://gitee.com/910922164/space-aiagent
-- 航天分析平台智能体助手前端交互：`https://gitee.com/910922164/space2024/tree/master/plugins/sceneAgent`
+- [`AGENTS.md`](AGENTS.md)：Codex 仓库级工作约定
+- [`docs/前端SSE对接指南.md`](docs/前端SSE对接指南.md)：详细 SSE、HITL、前端联调契约；若其中的阶段性说明与当前实现冲突，以本 README 和代码为准
+- [`docs/superpowers/specs/2026-07-21-sse-migration-design.md`](docs/superpowers/specs/2026-07-21-sse-migration-design.md)：SSE 迁移设计
+- [`docs/superpowers/specs/2026-07-29-hitl-transport-design.md`](docs/superpowers/specs/2026-07-29-hitl-transport-design.md)：HITL 传输设计
+- [`docs/superpowers/specs/2026-07-29-skill-system-design.md`](docs/superpowers/specs/2026-07-29-skill-system-design.md)：Skill 三层架构设计
+- [`readme/Agent内核架构白皮书.md`](readme/Agent内核架构白皮书.md)：产品架构与演进路线
+- [`readme/DEV.md`](readme/DEV.md)：开发补充说明
+
+## 当前阶段
+
+架构进度不在 README 维护副本，统一以
+[`Agent内核架构白皮书 §6.1 执行进度看板`](readme/Agent内核架构白皮书.md#61-执行进度看板单一事实源)
+为准。
+
+当前已完成 Skill Package 层和 3 个内置 Skill；下一任务是 **Phase 2B：Skill 基础审计与
+质量门槛**。完成任务后应更新白皮书看板，而不是只修改本段摘要。
