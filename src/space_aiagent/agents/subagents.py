@@ -7,23 +7,29 @@
 
 from pathlib import Path
 
+from deepagents.backends.protocol import BackendProtocol
+
 from space_aiagent.agents import subagents_util
+from space_aiagent.infrastructure.backend import build_agent_backend
 from space_aiagent.infrastructure.config import get_settings
-from space_aiagent.infrastructure.llm import build_model
+from space_aiagent.infrastructure.llm import build_flash_model, build_model
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.middleware import (
     RetryMiddleware,
-    SceneAgentHitlMiddleware,
+    SkillRoutingMiddleware,
     SubagentToolValidationMiddleware,
 )
+from space_aiagent.infrastructure.skill.catalog import SkillCatalog
 from space_aiagent.tools.registry import get_tools
 
 logger = get_logger(__name__)
 
 # 提示词路径（打包在包内：src/space_aiagent/prompts/）
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+_SKILL_USAGE_PROMPT = (_PROMPTS_DIR / "skill_usage.md").read_text(encoding="utf-8")
 
-def load_subagents() -> list[dict]:
+
+def load_subagents(backend: BackendProtocol | None = None) -> list[dict]:
     """
     从 YAML 配置加载所有子 Agent
 
@@ -32,27 +38,58 @@ def load_subagents() -> list[dict]:
     """
     config = subagents_util.load_subagents_yaml_config()
 
+    backend = backend or build_agent_backend()
     model = build_model()
+    flash_model = build_flash_model()
+    retry_config = get_settings().retry
     subagents: list[dict] = []
 
     for agent_cfg in config["agents"]:
         tools = get_tools(agent_cfg["tools"])
         prompt = (_PROMPTS_DIR / agent_cfg["prompt_file"]).read_text(encoding="utf-8")
+        skills_paths = list(agent_cfg.get("skills", []))
+        if skills_paths:
+            prompt = f"{prompt.rstrip()}\n\n{_SKILL_USAGE_PROMPT}"
+        business_tool_names = {tool.name for tool in tools}
+        try:
+            catalog = SkillCatalog.from_backend(backend, skills_paths, business_tool_names)
+        except Exception as exc:
+            logger.exception(
+                "skill.load_failed",
+                agent=agent_cfg["name"],
+                error=type(exc).__name__,
+            )
+            raise
 
-        subagent:dict = {
-                "name": agent_cfg["name"],
-                "description": agent_cfg["description"],
-                "model": model,
-                "tools": tools,
-                "system_prompt": prompt,
-                "middleware": [
-                    SubagentToolValidationMiddleware(
-                        tool_groups=agent_cfg["tools"],
-                        agent_name=agent_cfg["name"],
-                    ),
-                    RetryMiddleware(get_settings().retry),
-                ],
-            }
+        middleware = []
+        if skills_paths:
+            middleware.append(
+                SkillRoutingMiddleware(
+                    agent_name=agent_cfg["name"],
+                    catalog=catalog,
+                    business_tool_names=business_tool_names,
+                    router_model=flash_model,
+                    retry_config=retry_config,
+                )
+            )
+        middleware.extend(
+            [
+                SubagentToolValidationMiddleware(
+                    tool_groups=agent_cfg["tools"],
+                    agent_name=agent_cfg["name"],
+                ),
+                RetryMiddleware(retry_config),
+            ]
+        )
+
+        subagent: dict = {
+            "name": agent_cfg["name"],
+            "description": agent_cfg["description"],
+            "model": model,
+            "tools": tools,
+            "system_prompt": prompt,
+            "middleware": middleware,
+        }
 
         # scene-agent 专属：open_scenario 的两个条件性 HITL 中断点（中间件驱动）
         # 排在 SubagentToolValidationMiddleware 之后（内层）：后者在无场景时返回
@@ -68,11 +105,9 @@ def load_subagents() -> list[dict]:
         # skills 是 backend 虚拟路径（如 /skills/scene/），由 orchestrator 的 CompositeBackend
         # 路由解析到 src/space_aiagent/skills/<scope>/。原样透传给 deepagents（list[str]），
         # 不做文件系统拼接——SkillsMiddleware 经 backend.ls/download_files 读取。
-        if skills_paths := agent_cfg.get("skills"):
-            subagent["skills"] = list(skills_paths)
+        if skills_paths:
+            subagent["skills"] = skills_paths
 
         subagents.append(subagent)
-
-
 
     return subagents

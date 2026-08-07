@@ -11,13 +11,13 @@
 from pathlib import Path
 
 from deepagents import create_deep_agent
-from deepagents.backends import FilesystemBackend
+from deepagents.backends.protocol import BackendProtocol
 from langchain.agents.structured_output import ToolStrategy
-from deepagents.backends.composite import CompositeBackend
 from langgraph.types import Checkpointer
 
+from space_aiagent.infrastructure.backend import build_agent_backend
 from space_aiagent.agents.state import SpaceAgentState
-from space_aiagent.infrastructure.config import PROJECT_ROOT, get_settings
+from space_aiagent.infrastructure.config import get_settings
 from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.middleware import (
     PrimaryAgentMiddleware,
@@ -27,10 +27,6 @@ from space_aiagent.models.response_schema.agent_struct_response import AgentResp
 
 # 提示词路径（打包在包内）
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
-# 知识文件路径（外部化到 config/，生产环境可动态修改）
-_KNOWLEDGE_DIR = PROJECT_ROOT / "config" / "knowledge"
-# Skill 包路径（src 内，按 scope 组织：main/scene/entity）
-_SKILLS_DIR = PROJECT_ROOT / "src" / "space_aiagent" / "skills"
 
 
 def _build_subagent_summaries(subagents: list[dict]) -> str:
@@ -52,6 +48,7 @@ def create_orchestrator(
     subagents: list[dict],
     checkpointer: Checkpointer,
     thread_id: str = "",
+    backend: BackendProtocol | None = None,
 ) -> "CompiledStateGraph":  # noqa: F821
     """
     创建主控 Agent
@@ -65,11 +62,7 @@ def create_orchestrator(
     settings = get_settings()
     model = build_model()
 
-    # 复合后端：按路径前缀路由到不同根目录。
-    backend = CompositeBackend(
-        default=FilesystemBackend(root_dir=str(_KNOWLEDGE_DIR), virtual_mode=True),
-        routes={"/skills/": FilesystemBackend(root_dir=str(_SKILLS_DIR), virtual_mode=True)},
-    )
+    backend = backend or build_agent_backend()
 
     agent = create_deep_agent(
         model=model,

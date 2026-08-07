@@ -25,15 +25,16 @@ ContextVar 注入策略（与 WS 时代的关键差异）:
 
 import asyncio
 import contextlib
+import json
 from collections.abc import AsyncIterator
 from typing import Any
-import json
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
+from space_aiagent.infrastructure.backend import build_agent_backend
 from space_aiagent.agents.orchestrator import create_orchestrator
 from space_aiagent.agents.subagents import load_subagents
 from space_aiagent.bridge import SessionManager, StreamBridge, bridge_var
@@ -43,8 +44,13 @@ from space_aiagent.infrastructure.observability import optional_span, set_span_i
 from space_aiagent.middleware.primary_agent_middleware import orchestrator_task_streak_var
 from space_aiagent.models.messages import ToolResultMessage
 from space_aiagent.models.response_schema import response_util
-from space_aiagent.models.sse_schemas import ChatRequest, ToolResultRequest, ResumeRequest,TERMINAL_EVENTS, SSEEventType
-
+from space_aiagent.models.sse_schemas import (
+    TERMINAL_EVENTS,
+    ChatRequest,
+    ResumeRequest,
+    SSEEventType,
+    ToolResultRequest,
+)
 
 logger = get_logger(__name__)
 
@@ -53,12 +59,12 @@ router = APIRouter(prefix="/api/v1/space", tags=["space"])
 session_manager = SessionManager()
 
 
-
 # ── Agent 实例缓存 + checkpointer（迁移自 websocket.py）───────────────────
 _agent_cache: dict[str, object] = {}
 
 # 数据库 checkpointer（全局共享，SQLite 持久化）
 _checkpointer: Any = None
+
 
 def _format_sse_frame(event: str, data: dict) -> str:
     """生成标准 SSE 帧
@@ -83,6 +89,7 @@ def _format_sse_frame(event: str, data: dict) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
 
+
 async def _get_checkpointer() -> Any:
     """获取或初始化全局 AsyncSqliteSaver checkpointer（延迟初始化）"""
     global _checkpointer
@@ -101,9 +108,10 @@ async def _get_or_create_agent(thread_id: str) -> Any:
     if thread_id in _agent_cache:
         return _agent_cache[thread_id]
 
-    subagents = load_subagents()
+    backend = build_agent_backend()
+    subagents = load_subagents(backend)
     checkpointer = await _get_checkpointer()
-    agent = create_orchestrator(subagents, checkpointer, thread_id=thread_id)
+    agent = create_orchestrator(subagents, checkpointer, thread_id=thread_id, backend=backend)
     _agent_cache[thread_id] = agent
     logger.info("Agent 实例已创建", thread_id=thread_id)
     return agent
@@ -161,7 +169,7 @@ async def _handle_interrupts(bridge: StreamBridge, interrupts: list) -> None:
     """
     for intr in interrupts:
         value = getattr(intr, "value", intr)
-        if isinstance(value, dict) and value.get("is_custom",False):
+        if isinstance(value, dict) and value.get("is_custom", False):
             # 自定义/编程式 interrupt：四件套透传，前端按 interrupt_type 分发
             await bridge._emit(
                 SSEEventType.INTERRUPT,
@@ -222,15 +230,17 @@ async def run_agent(bridge: StreamBridge, input_data: ChatRequest | Command) -> 
             # 查询结果只属于当前轮次，避免历史数据影响后续响应渲染
             "scenario_query_results": None,
         }
-        span_event = {"id": "agent.session", "attributes": {"agent.thread_id": thread_id,
-                                                            "agent.scene_name": input_data.current_scene_name or ""}}
+        span_event = {
+            "id": "agent.session",
+            "attributes": {"agent.thread_id": thread_id, "agent.scene_name": input_data.current_scene_name or ""},
+        }
         span_input_repr = input_data.content
 
     # agent.session 是 trace root（main.py 用 excluded_urls 排除 /api/v1/space/chat
     # 的 FastAPI 自动 server span，让本手动 span 当 root，input/output 自动成 trace IO）
     with optional_span(
-            span_event.get("id", "agent.session"),
-            **span_event.get("attributes", {"agent.thread_id": thread_id}),
+        span_event.get("id", "agent.session"),
+        **span_event.get("attributes", {"agent.thread_id": thread_id}),
     ) as span:
         try:
             agent = await _get_or_create_agent(thread_id)
@@ -243,11 +253,11 @@ async def run_agent(bridge: StreamBridge, input_data: ChatRequest | Command) -> 
             # subgraphs=True 让子 Agent 的 interrupt 上浮到顶层流；version="v2" 统一
             # chunk 形状（dict：type/data/ns，values 事件额外带 interrupts）。
             async for chunk in agent.astream(
-                    graph_input,
-                    config=config,
-                    stream_mode=["messages", "values"],
-                    subgraphs=True,
-                    version="v2",
+                graph_input,
+                config=config,
+                stream_mode=["messages", "values"],
+                subgraphs=True,
+                version="v2",
             ):
                 chunk_type = chunk.get("type")
                 try:
@@ -311,8 +321,8 @@ async def run_agent(bridge: StreamBridge, input_data: ChatRequest | Command) -> 
 
 
 async def stream_chat_response(
-        bridge: StreamBridge,
-        input_data: ChatRequest | Command,
+    bridge: StreamBridge,
+    input_data: ChatRequest | Command,
 ) -> AsyncIterator[str]:
     """SSE 事件生成器：注入 ContextVar + 启动 agent_task + 消费 bridge._queue
 
@@ -358,11 +368,11 @@ async def stream_chat_response(
             yield _format_sse_frame(event_name, item["data"])
             if event_name in TERMINAL_EVENTS:
                 # if token_parts:
-                    # logger.info(
-                    #     "SSE token 输出完成",
-                    #     thread_id=thread_id,
-                    #     content="".join(token_parts),
-                    # )
+                # logger.info(
+                #     "SSE token 输出完成",
+                #     thread_id=thread_id,
+                #     content="".join(token_parts),
+                # )
                 break
     finally:
         # cancel 防御性：agent_task 可能已完成（done 后 return），cancel 对已完成的 task 是 no-op

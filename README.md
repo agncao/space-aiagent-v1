@@ -10,7 +10,7 @@
 - `StreamBridge` 用 `asyncio.Future` 将后端工具调用与前端 Cesium 执行结果关联。
 - SQLite checkpointer 按 `thread_id` 保存多轮状态，并支持 LangGraph interrupt/resume。
 - `ToolStrategy(AgentResponse)` 约束最终输出，统一渲染 summary、suggestions 和场景查询表格。
-- 内置 Skills 通过 progressive disclosure 提供可扩展业务 SOP。
+- 内置 Skills 通过 Flash 预路由自动加载；required Skill 的工具门禁阻止模型绕过业务 SOP。
 - RetryMiddleware 提供 LLM/工具重试与降级。
 - OpenTelemetry + Langfuse v3 提供可选的 trace、token 归因和日志关联。
 
@@ -22,7 +22,8 @@
 | scene | `query-scenario` | 查询、筛选或列出现有场景 |
 | entity | `add-entity` | 校验参数后添加点实体或 SGP4 卫星 |
 
-> Skill Package 层已经落地；脚本沙箱、命令白名单、完整审计等 Backend/Policy 能力仍在后续阶段。
+> Skill Package、基础审计、构建期质量校验和 required Skill 路由门禁已经落地；脚本沙箱、
+> 命令白名单和持久化完整审计等 Backend/Policy 能力仍在后续阶段。
 
 ## 架构设计
 
@@ -396,5 +397,6 @@ python scripts/gen_requirements.py
 [`Agent内核架构白皮书 §6.1 执行进度看板`](readme/Agent内核架构白皮书.md#61-执行进度看板单一事实源)
 为准。
 
-当前已完成 Skill Package 层和 3 个内置 Skill；下一任务是 **Phase 2B：Skill 基础审计与
-质量门槛**。完成任务后应更新白皮书看板，而不是只修改本段摘要。
+当前已完成 Skill Package、基础审计与质量门槛，并为 3 个内置 Skill 启用 Flash 预路由和
+通用工具门禁；下一任务是 **Phase 2C：多模型动态路由**。完成任务后应更新白皮书看板，
+而不是只修改本段摘要。

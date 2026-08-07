@@ -63,6 +63,7 @@ class ResponseCode(StrEnum):
 
     # 系统失败（LLM 调用重试耗尽 / 不可重试失败，由 RetryMiddleware 注入）
     LLM_UNAVAILABLE = auto(), "LLM 调用重试耗尽或发生不可重试错误，AI 服务暂时不可用"
+    SKILL_ROUTING_FAILED = auto(), "Skill 路由不明确、调用失败或 Skill 内容无法加载"
 
     @classmethod
     def schema_description(cls) -> str:

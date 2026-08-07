@@ -16,7 +16,8 @@ from space_aiagent.bridge import bridge_var
 from space_aiagent.models.enums import EntityType
 from space_aiagent.models.schemas import EntityConfig, EntityPosition
 
-_NAMESPACE:str = "entity_tools"
+_NAMESPACE: str = "entity_tools"
+
 
 @tool(args_schema=EntityConfig)
 async def add_point_entity(
@@ -26,7 +27,7 @@ async def add_point_entity(
     properties: dict | None = None,
 ) -> dict:
     """
-    在场景中添加实体。支持的实体类型: 
+    在场景中添加实体。支持的实体类型:
         地点(place)、目标点(target)、地面站(facility)、飞机(aircraft)、
         导弹(missile)、卫星(satellite)、传感器(sensor)、地面车/地面车辆(groundVehicle)、
         船(ship)、火箭(launchVehicle)、线目标(lineTarget)、区域目标(areaTarget)、链路(chain)。
@@ -67,6 +68,7 @@ async def query_entities() -> dict:
         tool_func="queryEntities",
         args={},
     )
+
 
 @tool
 async def clear_entities() -> dict:

@@ -288,7 +288,7 @@
 **已具备的 L3 能力（雏形）**：
 - ✅ Skill Package 层（内置 SkillsMiddleware + CompositeBackend `/skills/` 路由 + progressive disclosure）
 - ✅ 3 个内置 Skill：`open-scenario`、`query-scenario`、`add-entity`
-- ❌ Skill 基础审计与稳定的校验/回归测试（当前下一任务）
+- ✅ Skill 基础审计、构建期质量校验、Flash 预路由与 required Skill 通用工具门禁
 - ❌ Skill Backend/Policy 层（CommandGuard、脚本沙箱、完整审计；待首个带 `scripts/` 的 Skill 驱动）
 
 **已提前具备或仍缺失的 L4 能力**：
@@ -470,8 +470,8 @@ OpenTelemetry 标准（协议层，可换后端）
 | 3 | 传输层迁移 | WebSocket → SSE + POST；8 类事件、StreamBridge、并发清理 | ✅ 已完成（2026-07-21） |
 | 4 | HITL 传输与声明式审批 | graph interrupt、`/resume`、删除/重命名/清空实体审批 | ✅ 已完成（2026-08-04） |
 | 5 | Phase 2A：Skill Package 层 | SkillsMiddleware、CompositeBackend `/skills/` 路由；3 个内置 Skill | ✅ 已完成（2026-08-06） |
-| 6 | Phase 2B：Skill 基础审计与质量门槛 | 记录 Skill 加载/命中/失败；建立格式校验和稳定回归测试，修复当前陈旧测试 | ▶ **下一任务** |
-| 7 | Phase 2C：多模型动态路由 | 明确主/Flash 模型职责，路由可配置、可观测、可降级 | ⬜ 待开始 |
+| 6 | Phase 2B：Skill 基础审计与质量门槛 | SkillCatalog + required 工具门禁；加载/命中/失败审计；62 passed、2 个外网教学示例 skipped | ✅ 已完成（2026-08-06） |
+| 7 | Phase 2C：多模型动态路由 | 明确主/Flash 模型职责，路由可配置、可观测、可降级；复用已落地的 Flash Skill 预路由 | ▶ **下一任务** |
 | 8 | Phase 2D：Backend/Policy | CommandGuard、OS 自适应 Backend、脚本沙箱、执行审计 | ⏸ 首个带 `scripts/` 的生产 Skill 出现后启动 |
 | 9 | Phase 1C：工具能力补全 | 按真实 Skill 需求补数据查询、报告生成等原子工具 | ⬜ 待开始 |
 | 10 | Phase 1A-2：系统指标 | Prometheus 采集 QPS、延迟、错误率与资源指标 | ⏳ Phase 1C 后 |
@@ -750,7 +750,7 @@ python -m space_aiagent.cli skill history --thread-id xxx
 
 ### 8.1 关于 Skill 的认知
 
-1. **Skill ≠ 强制流程**：Skill 本质是 prompt 文档，不消除 LLM 不可靠性。要强制流程必须用代码（复合工具）
+1. **Skill 文档本身 ≠ 强制流程**：required 工具门禁可以强制先加载匹配 Skill，但若要保证 SOP 内部每一步都不可跳过，仍必须使用代码（复合工具或工作流）
 2. **Skill 是"教 LLM 怎么做"**：不是"让 LLM 能做什么"。后者是 Tool 的职责
 3. **Skill 越简单越好**：Agent 内核越强大，Skill 越简单（只需补充专业判断，不用负责流程控制）
 4. **Skill 不是代码执行**：Skill 是 markdown 文档，不执行任意代码（这是它和 Tool 插件的本质区别）
@@ -787,6 +787,7 @@ python -m space_aiagent.cli skill history --thread-id xxx
 | v1.0 | 2026-07-01 | 初版：基于 2026-07-01 架构讨论定稿 | caojm |
 | v1.1 | 2026-08-04 | 同步进度：传输层迁移（SSE+POST）、HITL（interrupt+/resume，含自定义中断）、Phase 1B 失败恢复、Skill Package 层（SkillsMiddleware + CompositeBackend 路由 `/skills/`，首个内置 skill `open_scenario` 联调通过）；更新 §4.2 当前位置与 §6.1 路线 | caojm |
 | v1.2 | 2026-08-06 | 将 §6.1 升级为进度看板单一事实源；同步 3 个内置 Skill、当前实现边界，并明确下一任务为 Phase 2B（Skill 基础审计与质量门槛） | Codex |
+| v1.3 | 2026-08-06 | 完成 Phase 2B：新增 SkillCatalog、Flash 预路由、required Skill 工具门禁、结构化审计与稳定回归测试；下一任务移至 Phase 2C | Codex |
 
 ---
 

@@ -7,6 +7,9 @@ description: >
   其他含「场景」的名称表达先查询完整名称，仅空结果时再查询基础名称。
   此技能只返回查询结果，不打开场景。用户要求打开、切换、进入场景，或查询后打开
   场景时，应使用 open-scenario。不用于创建、重命名或删除场景。
+allowed-tools: query_scenario
+metadata:
+  enforcement: required
 ---
 
 # 查询场景

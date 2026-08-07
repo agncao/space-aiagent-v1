@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 
 import aiohttp
+import pytest
 import requests
 
 urllist = [
@@ -28,24 +29,30 @@ urllist = [
     "https://hotax-public.oss-cn-zhangjiakou.aliyuncs.com/RULE_CENTER_PUB_1086e9ba2669339fdb8781005b81cbf9_39909912-2ba4-4df4-b3f2-18295936ac9a.jpg",
 ]
 
+
 # 虽然方法已经是异步的，但requests.get() 是同步阻塞的 ，
 # 所以 即使包在 asyncio.create_task() 里，下载本身也不会真正并发；
 # 如果你想看到协程并发下载效果，需要换成 aiohttp / httpx.AsyncClient 这类异步 HTTP 客户端。
-async def _download(task_name:str, url: str):
+async def _download(task_name: str, url: str):
     print(f"{task_name} started...")
     resp = requests.get(url)
-    file_name = url.split('/')[-1]
-    with open(file_name, 'wb') as f:
+    file_name = url.split("/")[-1]
+    with open(file_name, "wb") as f:
         f.write(resp.content)
     print(f"{task_name} successfully.")
 
+
+@pytest.mark.skip(reason="仅供手工学习的外网下载示例，不属于离线测试套件")
 async def test_download():
     start = time.perf_counter()
-    tasks =[asyncio.create_task(_download(f'task{i}',urllist[i]) ) for i in range(len(urllist)) ]
+    tasks = [asyncio.create_task(_download(f"task{i}", urllist[i])) for i in range(len(urllist))]
     await asyncio.wait(tasks)
     elapsed = time.perf_counter() - start
     print(f"All tasks completed in {elapsed:.2f}s")
+
+
 # ======================================
+
 
 async def _download_task(task_name: str, session: aiohttp.ClientSession, url: str) -> None:
     print(f"{task_name} started...")
@@ -62,13 +69,11 @@ async def _download_task(task_name: str, session: aiohttp.ClientSession, url: st
     print(f"{task_name} successfully.")
 
 
+@pytest.mark.skip(reason="仅供手工学习的外网下载示例，不属于离线测试套件")
 async def test_download_task():
     start = time.perf_counter()
     async with aiohttp.ClientSession() as session:
-        tasks = [
-            asyncio.create_task(_download_task(f"task{i}", session, url))
-            for i, url in enumerate(urllist)
-        ]
+        tasks = [asyncio.create_task(_download_task(f"task{i}", session, url)) for i, url in enumerate(urllist)]
         await asyncio.gather(*tasks)
 
     elapsed = time.perf_counter() - start

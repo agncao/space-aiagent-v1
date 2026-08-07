@@ -30,4 +30,10 @@ SHORTCUT_RESPONSES: dict[str, AgentResponse] = {
         summary=DEFAULT_TEMPLATES[ResponseCode.LLM_UNAVAILABLE],
         suggestions=[],
     ),
+    ResponseCode.SKILL_ROUTING_FAILED: AgentResponse(
+        status="error",
+        code=ResponseCode.SKILL_ROUTING_FAILED,
+        summary=DEFAULT_TEMPLATES[ResponseCode.SKILL_ROUTING_FAILED],
+        suggestions=[],
+    ),
 }

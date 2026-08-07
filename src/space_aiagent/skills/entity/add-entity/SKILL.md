@@ -4,6 +4,9 @@ description: >
   Use when 用户要求添加、新增、创建、加入、放置实体，或提到卫星、地面站、传感器、地点、
   目标点、飞机、导弹、地面车、船、火箭、线目标、区域目标、链路等实体类型，或提供 TLE
   两行根数要求创建卫星轨道时。
+allowed-tools: add_point_entity create_sgp4_orbit
+metadata:
+  enforcement: required
 ---
 
 # 添加实体

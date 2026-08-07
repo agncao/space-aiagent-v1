@@ -14,7 +14,9 @@ from langchain_core.tools import tool
 
 from space_aiagent.bridge import bridge_var
 from space_aiagent.models.schemas import OrbitUpdateParam, SGP4Param
+
 _NAMESPACE = "entity_tools"
+
 
 @tool(args_schema=SGP4Param)
 async def create_sgp4_orbit(
@@ -37,7 +39,7 @@ async def create_sgp4_orbit(
         args["start"] = start
     if end:
         args["end"] = end
-    if  name:
+    if name:
         args["name"] = name
     if satellite_number:
         args["satelliteNumber"] = satellite_number

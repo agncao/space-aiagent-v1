@@ -15,8 +15,10 @@
 
 终态事件（done / error）发送后 SSE 流关闭、session 注销。
 """
-from pydantic import BaseModel, Field
+
 from enum import StrEnum
+
+from pydantic import BaseModel, Field
 
 
 class SSEEventType(StrEnum):
@@ -37,9 +39,8 @@ class SSEEventType(StrEnum):
 
 
 # 终态事件集合：发送后 SSE 流关闭、session 注销
-TERMINAL_EVENTS: frozenset[str] = frozenset(
-    {SSEEventType.DONE.value, SSEEventType.ERROR.value}
-)
+TERMINAL_EVENTS: frozenset[str] = frozenset({SSEEventType.DONE.value, SSEEventType.ERROR.value})
+
 
 class ChatRequest(BaseModel):
     """POST /chat 请求体
@@ -87,4 +88,3 @@ class ResumeRequest(BaseModel):
     """
 
     resume: dict = Field(default_factory=dict, description="恢复数据（格式取决于中断类型）")
-

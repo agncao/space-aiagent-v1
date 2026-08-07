@@ -113,11 +113,51 @@ v1 spec 只解决"让 skill 能加载"（内置 SkillsMiddleware + FilesystemBac
 
 frontmatter（`skills.py:249-351` 解析）：`name`（=目录名，≤64，小写连字符）、`description`（≤1024）、可选 `license`/`compatibility`/`metadata`/`allowed-tools`（空格分隔）。
 
+#### 4.2.1 工作流 Skill 的强制路由契约
+
+生产工作流 Skill 必须声明以下字段：
+
+```yaml
+allowed-tools: query_scenario open_scenario
+metadata:
+  enforcement: required
+```
+
+- `description` 是 Skill 路由器判断用户意图的唯一业务语义来源，内核不得硬编码领域关键词。
+- `allowed-tools` 是该 Skill 获准使用的业务工具集合；所有 `required` Skill 的工具并集构成
+  当前 Agent 的受管工具集合。
+- `metadata.enforcement: required` 表示受管工具只有在本任务已激活对应 Skill 时才能暴露和执行。
+- 未声明 `required` 的纯知识型 Skill 仍可被路由和加载，但不占有业务工具。
+- 多个 Skill 可以共享工具。路由器必须按任务意图选择 Skill，不能仅按工具名反推 Skill。
+
+Agent 构建期必须校验 Skill 名称与目录一致、必填字段完整、`required` Skill 的
+`allowed-tools` 非空且全部属于该 Agent 的真实工具集。校验失败属于部署配置错误，应 fail-fast，
+不得静默降级为直接调用工具。
+
 ### 4.3 SkillsMiddleware 接入
 
 - orchestrator：`create_deep_agent(..., skills=["/skills/main/"], backend=backend, ...)`（`graph.py:705,754` 自动挂）。
 - 子 Agent：`config/subagents.yaml` 加 `skills: ["/skills/scene/"]`，`agents/subagents.py` 透传 `skills` 字段（`graph.py:628-630` 自动挂）。
 - progressive disclosure：metadata 注入各 Agent system prompt；LLM 用内置 `read_file`（backend 存在时自动注入，`graph.py:260-263`）读 SKILL.md 全文。
+
+### 4.4 Skill 预路由与工具门禁
+
+内置 `SkillsMiddleware` 只负责发现和渐进披露，不保证模型一定读取 Skill。产品层增加通用
+`SkillRoutingMiddleware`：每个新任务先用 Flash LLM 对任务文本和 Skill descriptions 做结构化
+匹配，后端自动加载命中的 SKILL.md 并注入业务 Agent。业务模型不再承担“是否读取主 Skill”
+的决策。
+
+工具门禁规则：
+
+1. `matched`：暴露命中 Skill 的 `allowed-tools`、未被任何 required Skill 管理的普通工具和系统工具。
+2. `no_match`：隐藏全部受管工具，未受管工具保持可用。
+3. `ambiguous`、路由失败或加载失败：隐藏全部业务工具并返回确定性的
+   `SKILL_ROUTING_FAILED`，不得产生前端工具事件。
+4. 工具执行前再次校验授权，防止模型、恢复流程或框架绕过模型侧工具过滤。
+
+路由选择和激活状态按本次子 Agent 任务隔离，不得沿用上一轮或其他子 Agent 的结果。Skill
+路由、加载、失败和门禁拒绝分别记录 `skill.matched`、`skill.loaded`、`skill.load_failed`、
+`skill.bypassed` 日志及可选 OTel span。
 
 ## 5. Backend 层
 

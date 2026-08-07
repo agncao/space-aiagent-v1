@@ -16,7 +16,7 @@
 import json
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, ClassVar
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -73,7 +73,7 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
     # - query_scenario: 查询场景信息，可确认当前是否已经打开场景，可建立场景上下文
     # - AgentResponse: 结构化输出伪工具，非真实工具调用
     # - task: 子 Agent 调度工具，本身不操作场景
-    _SCENE_EXEMPT_TOOLS = {
+    _SCENE_EXEMPT_TOOLS: ClassVar[set[str]] = {
         AgentResponse.__name__,
         "task",
         "read_file",
@@ -151,9 +151,7 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
         raw_args = request.tool_call.get("args", {})
         normalized_args = _normalize_null_args(raw_args)
         if normalized_args != raw_args:
-            request = request.override(
-                tool_call={**request.tool_call, "args": normalized_args}
-            )
+            request = request.override(tool_call={**request.tool_call, "args": normalized_args})
 
         logger.info(
             "tool call before",
@@ -185,7 +183,7 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
         )
         # 增加 1==0，表示让是否打开场景的校验实效，统一交给前端接口校验，
         # 如果需要则个校验，把1==0 给删除掉就行
-        if 1==0 and tool_name not in self._SCENE_EXEMPT_TOOLS and not state_scene:
+        if 1 == 0 and tool_name not in self._SCENE_EXEMPT_TOOLS and not state_scene:
             logger.warning("校验失败 无场景上下文", tool_name=tool_name)
             shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.NO_SCENE]
             return Command(

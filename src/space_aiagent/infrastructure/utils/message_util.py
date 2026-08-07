@@ -29,7 +29,7 @@ def extract_last_task(
 
 
 def extract_last_human_intent(
-    messages: list[BaseMessage], ignore_messages: list[str] = []
+    messages: list[BaseMessage], ignore_messages: list[str] | None = None
 ) -> tuple[str | None, HumanMessage | None]:
     """
     从 messages 中提取用户原始意图：返回最新的非空、非确认短句的 HumanMessage content
@@ -38,12 +38,13 @@ def extract_last_human_intent(
     Returns:
         (intent, human_message) — 两者都可能为 None
     """
+    ignored = ignore_messages or []
     for msg in reversed(messages):
         if isinstance(msg, HumanMessage):
             intent = str(msg.content).strip()
             if not intent:
                 continue
-            if intent.lower() in ignore_messages:
+            if intent.lower() in ignored:
                 continue
             return (intent, msg)
     return (None, None)
@@ -110,6 +111,7 @@ def build_primary_agent_response(content: str, resp: AgentResponse, id: str) -> 
         ],
         structured_response=resp,
     )
+
 
 def serialize_messages(
     messages: list[BaseMessage],

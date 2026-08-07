@@ -165,7 +165,7 @@ def test_scene_query_empty_result_has_deterministic_message() -> None:
     assert response_util.render(response, scenario_infos=[]) == "未查询到符合条件的场景。"
 
 
-def test_scene_query_can_render_scenarios_from_agent_response_args() -> None:
+def test_scene_query_ignores_model_copied_args_and_uses_state_results() -> None:
     response = AgentResponse(
         status="info",
         code=ResponseCode.SCENE_QUERIED,
@@ -182,7 +182,18 @@ def test_scene_query_can_render_scenarios_from_agent_response_args() -> None:
         },
     )
 
-    rendered = response_util.render(response)
+    rendered = response_util.render(
+        response,
+        scenario_infos=[
+            {
+                "scene_name": "场景1002",
+                "update_time": "2026-07-16 10:00:00",
+                "file_url": "admin/场景1002/场景1002.czml",
+                "uploader_name": "系统管理员",
+            }
+        ],
+    )
 
     assert "共找到 1 个场景" in rendered
-    assert "场景1001" in rendered
+    assert "场景1002" in rendered
+    assert "场景1001" not in rendered

@@ -6,6 +6,9 @@ description: >
   使用此技能。未指定名称时查询全部；引号或「叫/名为」明确指定名称时只查询该名称一次；
   其他含「场景」的名称表达先查询完整名称，空结果时再查询基础名称。唯一结果直接打开，
   多条结果返回候选。不用于创建、重命名或删除场景。
+allowed-tools: query_scenario open_scenario
+metadata:
+  enforcement: required
 ---
 
 # 打开场景

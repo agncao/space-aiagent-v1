@@ -13,7 +13,7 @@
 """
 
 from space_aiagent.api.sse import _handle_interrupts
-from space_aiagent.models.sse_events import SSEEventType
+from space_aiagent.models.sse_schemas import SSEEventType
 
 
 class _FakeBridge:
@@ -38,10 +38,7 @@ def _interrupt_frames(bridge: _FakeBridge) -> list[dict]:
 
 def _has_terminal_done(bridge: _FakeBridge) -> bool:
     """末帧应为终态 DONE(interrupted=True)。"""
-    return any(
-        et == SSEEventType.DONE and p.get("interrupted") is True
-        for et, p in bridge.calls
-    )
+    return any(et == SSEEventType.DONE and p.get("interrupted") is True for et, p in bridge.calls)
 
 
 # ── is_custom 自定义中断：四件套透传 ────────────────────────────────────

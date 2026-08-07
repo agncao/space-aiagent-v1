@@ -15,7 +15,7 @@ from typing import Any
 
 import openai
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_core.messages import ToolMessage, AIMessage
+from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from opentelemetry.trace.span import Span
 from pydantic import ValidationError
