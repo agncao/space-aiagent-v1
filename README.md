@@ -136,6 +136,11 @@ Agent 得到结果 ← await Future ← StreamBridge.resolve_tool_result() ← P
 `structured_response`，通过 `response_util.render()` 生成 `done.content`。场景查询结果会被渲染为
 可点击的 Markdown 表格，而不是直接暴露工具 JSON。
 
+`AgentResponse` 的字段为 `status`、`code`、`summary`、`data` 和 `suggestions`。其中 `data`
+在工具 schema 中是原生 JSON 数组（每项为对象）或 `null`，禁止模型把整个数组再次编码成 JSON
+字符串。为兼容部分模型的 tool calling 偶发二次序列化，模型边界会将内容合法且顶层为数组的 JSON
+字符串规范化为数组；其他错误类型仍按结构化输出校验失败处理。
+
 ### Human-in-the-loop
 
 `config/subagents.yaml` 当前启用三类声明式审批：

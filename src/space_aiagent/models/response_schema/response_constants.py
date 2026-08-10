@@ -16,24 +16,20 @@ SHORTCUT_RESPONSES: dict[str, AgentResponse] = {
         status="info",
         code=ResponseCode.NO_SCENE,
         summary=DEFAULT_TEMPLATES[ResponseCode.NO_SCENE],
-        suggestions=[],
     ),
     ResponseCode.TASK_LOOP_GUARD: AgentResponse(
         status="confirm",
         code=ResponseCode.TASK_LOOP_GUARD,
         summary=DEFAULT_TEMPLATES[ResponseCode.TASK_LOOP_GUARD],
-        suggestions=[],
     ),
     ResponseCode.LLM_UNAVAILABLE: AgentResponse(
         status="error",
         code=ResponseCode.LLM_UNAVAILABLE,
         summary=DEFAULT_TEMPLATES[ResponseCode.LLM_UNAVAILABLE],
-        suggestions=[],
     ),
     ResponseCode.SKILL_ROUTING_FAILED: AgentResponse(
         status="error",
         code=ResponseCode.SKILL_ROUTING_FAILED,
         summary=DEFAULT_TEMPLATES[ResponseCode.SKILL_ROUTING_FAILED],
-        suggestions=[],
     ),
 }

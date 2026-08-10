@@ -304,10 +304,7 @@ async def run_agent(bridge: StreamBridge, input_data: ChatRequest | Command) -> 
             values: dict = getattr(state, "values", None) or {}
             agent_response = values.get("structured_response")
             if agent_response is not None:
-                rendered = response_util.render(
-                    agent_response,
-                    scenario_infos=values.get("scenario_query_results"),
-                )
+                rendered = response_util.render(agent_response)
             else:
                 logger.warning("流结束但 state 无 structured_response", thread_id=thread_id)
                 rendered = "处理完成。"

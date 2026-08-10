@@ -6,7 +6,7 @@ Agent 结构化响应数据模型
 
 import json
 from enum import StrEnum, auto
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -81,54 +81,55 @@ class AgentResponse(BaseModel):
         description="响应状态: success=操作成功, error=操作失败, info=信息查询, confirm=需要确认"
     )
     code: ResponseCode = Field(description=ResponseCode.schema_description())
-    summary: str = Field(description="响应信息")
-    args: dict | None = Field(
+    summary: str = Field(description="核心摘要")
+    data: list[dict[str, Any]] | None = Field(
         default=None,
-        description="JSON格式的数据对象，用于填充模板变量（如 {'count': 5, 'entities': [...]}），"
-        "当命中模板时，请与模板变量的命名保持一致",
+        description=(
+            "本轮操作产生的结构化结果列表。仅包含工具实际返回的数据，不得推测或补充；"
+            "无结构化结果时返回 null，即使只有一条记录也必须使用列表。"
+            "必须直接输出 JSON 数组，不得把数组序列化成带引号的 JSON 字符串"
+        ),
     )
-    suggestions: list[str] = Field(
-        default_factory=list,
-        description="给用户的下一步建议列表",
-    )
+    # suggestions: list[str] = Field(
+    #     default_factory=list,
+    #     description="给用户的下一步建议列表，最多两条",
+    # )
 
-    @field_validator("args", mode="before")
+    @field_validator("data", mode="before")
     @classmethod
-    def _parse_details(cls, v: dict | str | None) -> dict | None:
-        """容错解析 details 字段，LLM 可能输出 JSON 字符串而非对象"""
-        if v is None:
-            return None
-        if isinstance(v, dict):
-            return v
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except json.JSONDecodeError:
-                return None
-        return None
+    def _normalize_json_encoded_data(cls, data: Any) -> Any:
+        """兼容 tool calling 将 data 数组二次序列化为 JSON 字符串的情况。"""
+        if not isinstance(data, str):
+            return data
+        try:
+            parsed = json.loads(data)
+        except json.JSONDecodeError:
+            # 保留原值，让 Pydantic 给出标准的 list_type 校验错误，避免吞掉坏数据。
+            return data
+        return parsed if isinstance(parsed, list) else data
 
-    @field_validator("suggestions", mode="after")
-    @classmethod
-    def _filter_out_of_scope_suggestions(cls, suggestions: list[str]) -> list[str]:
-        """过滤掉能力范围外的 suggestions，避免误导用户
-
-        LLM 偶尔会破 prompt 规则生成越界建议（如「添加月球探测器轨道」，
-        但项目根本没开发此工具）。此处作为兜底：按当前 agent 工具组生成的
-        候选集（从工具 description 首句提取）做子串双向匹配过滤。
-
-        候选集由 ToolValidationMiddleware.awrap_model_call 在每个 LLM 调用前
-        注入 ContextVar。未设置上下文（启动期/单元测试）时跳过过滤。
-        """
-        if not suggestions:
-            return suggestions
-        candidates = current_suggestion_candidates_var.get()
-        if not candidates:
-            return suggestions
-        # 子串双向匹配：建议包含候选 OR 候选包含建议
-        logger.debug("原始 suggestions", suggestions=suggestions, candidates=candidates)
-        kept = [s for s in suggestions if any(c in s or s in c for c in candidates)]
-        logger.debug("suggestions 匹配候选", kept=kept)
-        filtered_out = set(suggestions) - set(kept)
-        if filtered_out:
-            logger.warning("过滤越界 suggestions", filtered_out=filtered_out)
-        return kept
+    # @field_validator("suggestions", mode="after")
+    # @classmethod
+    # def _filter_out_of_scope_suggestions(cls, suggestions: list[str]) -> list[str]:
+    #     """过滤掉能力范围外的 suggestions，避免误导用户
+    #
+    #     LLM 偶尔会破 prompt 规则生成越界建议（如「添加月球探测器轨道」，
+    #     但项目根本没开发此工具）。此处作为兜底：按当前 agent 工具组生成的
+    #     候选集（从工具 description 首句提取）做子串双向匹配过滤。
+    #
+    #     候选集由 ToolValidationMiddleware.awrap_model_call 在每个 LLM 调用前
+    #     注入 ContextVar。未设置上下文（启动期/单元测试）时跳过过滤。
+    #     """
+    #     if not suggestions:
+    #         return suggestions
+    #     candidates = current_suggestion_candidates_var.get()
+    #     if not candidates:
+    #         return suggestions
+    #     # 子串双向匹配：建议包含候选 OR 候选包含建议
+    #     logger.debug("原始 suggestions", suggestions=suggestions, candidates=candidates)
+    #     kept = [s for s in suggestions if any(c in s or s in c for c in candidates)]
+    #     logger.debug("suggestions 匹配候选", kept=kept)
+    #     filtered_out = set(suggestions) - set(kept)
+    #     if filtered_out:
+    #         logger.warning("过滤越界 suggestions", filtered_out=filtered_out)
+    #     return kept

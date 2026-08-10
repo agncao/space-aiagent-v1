@@ -114,86 +114,53 @@ async def test_query_tool_writes_sanitized_results_to_state_and_tool_message() -
     assert "场景1000" in tool_message.content
 
 
-def test_scene_query_renders_complete_table_even_when_model_uses_wrong_code() -> None:
+def test_scene_query_renders_response_data_as_complete_table() -> None:
     response = AgentResponse(
         status="info",
-        code=ResponseCode.ENTITIES_LIST,
-        summary='只找到了3个名为"场景"的场景',
+        code=ResponseCode.SCENE_QUERIED,
+        summary="找到了以下名称包含“场景”的场景",
+        data=[
+            {
+                "scene_name": "场景1001",
+                "update_time": "2026-07-15 15:56:29",
+                "file_url": "admin/场景1001/场景1001.czml",
+                "uploader_name": "系统管理员",
+            },
+            {
+                "scene_name": "场景0942_ 1个火箭",
+                "update_time": "2024-11-22 16:38:31",
+                "file_url": "admin/场景0942_ 1个火箭/场景0942.czml",
+                "uploader_name": "系统管理员",
+            },
+            {
+                "scene_name": "场景2",
+                "update_time": "2023-05-03 17:56:33",
+                "file_url": "zhangpc/场景2/场景2.czml",
+                "uploader_name": "张鹏程",
+            },
+            {
+                "scene_name": "场景1",
+                "update_time": "2023-05-03 17:56:19",
+                "file_url": "zhangpc/场景1/场景1.czml",
+                "uploader_name": "张鹏程",
+            },
+        ],
     )
-    scenarios = [
-        {
-            "scene_name": "场景1001",
-            "update_time": "2026-07-15 15:56:29",
-            "file_url": "admin/场景1001/场景1001.czml",
-            "uploader_name": "系统管理员",
-        },
-        {
-            "scene_name": "场景0942_ 1个火箭",
-            "update_time": "2024-11-22 16:38:31",
-            "file_url": "admin/场景0942_ 1个火箭/场景0942.czml",
-            "uploader_name": "系统管理员",
-        },
-        {
-            "scene_name": "场景2",
-            "update_time": "2023-05-03 17:56:33",
-            "file_url": "zhangpc/场景2/场景2.czml",
-            "uploader_name": "张鹏程",
-        },
-        {
-            "scene_name": "场景1",
-            "update_time": "2023-05-03 17:56:19",
-            "file_url": "zhangpc/场景1/场景1.czml",
-            "uploader_name": "张鹏程",
-        },
-    ]
 
-    rendered = response_util.render(response, scenario_infos=scenarios)
+    rendered = response_util.render(response)
 
-    assert "共找到 4 个场景" in rendered
+    assert "找到了以下名称包含“场景”的场景" in rendered
     assert "| 场景名 | 更新时间 | 上传人 |" in rendered
     assert "场景1001" in rendered
     assert "场景0942_ 1个火箭" in rendered
     assert "场景2" in rendered
     assert "场景1" in rendered
     assert "%E5%9C%BA%E6%99%AF1001" in rendered
-    assert "只找到了3个" not in rendered
+    assert "接下来您可以" in rendered
+    assert "打开其中一个场景" in rendered
 
 
 def test_scene_query_empty_result_has_deterministic_message() -> None:
     response = AgentResponse(status="info", code=ResponseCode.SCENE_QUERIED, summary="查询完成")
 
-    assert response_util.render(response, scenario_infos=[]) == "未查询到符合条件的场景。"
-
-
-def test_scene_query_ignores_model_copied_args_and_uses_state_results() -> None:
-    response = AgentResponse(
-        status="info",
-        code=ResponseCode.SCENE_QUERIED,
-        summary="查询完成",
-        args={
-            "scenarios": [
-                {
-                    "scene_name": "场景1001",
-                    "update_time": "2026-07-15 15:56:29",
-                    "file_url": "admin/场景1001/场景1001.czml",
-                    "uploader_name": "系统管理员",
-                }
-            ]
-        },
-    )
-
-    rendered = response_util.render(
-        response,
-        scenario_infos=[
-            {
-                "scene_name": "场景1002",
-                "update_time": "2026-07-16 10:00:00",
-                "file_url": "admin/场景1002/场景1002.czml",
-                "uploader_name": "系统管理员",
-            }
-        ],
-    )
-
-    assert "共找到 1 个场景" in rendered
-    assert "场景1002" in rendered
-    assert "场景1001" not in rendered
+    assert response_util.render(response) == "未查询到符合条件的场景。"

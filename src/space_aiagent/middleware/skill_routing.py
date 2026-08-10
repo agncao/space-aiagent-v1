@@ -54,7 +54,8 @@ class SkillRoutingState(AgentState):
     active_skill_names: NotRequired[Annotated[list[str], PrivateStateAttr]]
     skill_route_error: NotRequired[Annotated[str | None, PrivateStateAttr]]
 
-
+# 提取最后一次human message
+# 子智能体的human message 就是主智能体给它的任务描述
 def _extract_last_human_content(messages: list[Any]) -> str | None:
     for message in reversed(messages):
         if not isinstance(message, HumanMessage):

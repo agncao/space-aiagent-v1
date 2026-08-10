@@ -1,3 +1,4 @@
+import json
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -47,7 +48,10 @@ def _scenario_link(scenario: ScenarioInfo) -> str:
     return f"[{label}]({safe_url})"
 
 
-def _render_scenario_table(scenario_infos: list[dict[str, Any] | ScenarioInfo]) -> str:
+def _render_scenario_table(
+    response: AgentResponse,
+    scenario_infos: list[dict[str, Any] | ScenarioInfo],
+) -> str:
     scenarios: list[ScenarioInfo] = []
     for item in scenario_infos:
         try:
@@ -65,7 +69,7 @@ def _render_scenario_table(scenario_infos: list[dict[str, Any] | ScenarioInfo]) 
     ]
     return "\n".join(
         [
-            f"查询成功，共找到 {len(scenarios)} 个场景：",
+            response.summary,
             "",
             "| 场景名 | 更新时间 | 上传人 |",
             "| --- | --- | --- |",
@@ -74,27 +78,17 @@ def _render_scenario_table(scenario_infos: list[dict[str, Any] | ScenarioInfo]) 
     )
 
 
-def render(
-    response: AgentResponse,
-    scenario_infos: list[dict[str, Any] | ScenarioInfo] | None = None,
-) -> str:
+def render(response: AgentResponse) -> str:
     """将结构化响应渲染为自然语言"""
-
-    if scenario_infos is None and response.code == ResponseCode.SCENE_QUERIED:
-        scenario_infos = []
-
-    # 查询数据来自工具写入的 state，不让 LLM 负责复制列表。即使模型误判 code，
-    # 只要本轮确实执行了场景查询，也优先输出完整、确定性的表格。
-    if scenario_infos is not None:
-        if response.code != ResponseCode.SCENE_QUERIED:
-            logger.warning("场景查询响应码不一致，按查询结果渲染", response_code=response.code)
-        return _render_scenario_table(scenario_infos)
-
-    def _fallback_text() -> str:
-        parts = [response.summary]
-        if response.suggestions:
-            parts.append(" **接下来您可以：**\n")
-            parts.append("\n".join(f"- {s}" for s in response.suggestions))
-        return "\n\n".join(parts)
-
-    return _fallback_text()
+    if response.code == ResponseCode.SCENE_QUERIED:
+        return _render_scenario_table(response, response.data or [])
+    return  response.summary
+    # parts = [response.summary]
+    # if response.data:
+    #     parts.append(f"```json\n{json.dumps(response.data, ensure_ascii=False, indent=2)}\n```")
+    # content = "\n\n".join(parts)
+    #
+    # if response.suggestions:
+    #     content += "\n\n**接下来您可以：**\n\n"
+    #     content += "\n".join(f"- {suggestion}" for suggestion in response.suggestions)
+    # return content
