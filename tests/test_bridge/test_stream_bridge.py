@@ -1,7 +1,7 @@
 """StreamBridge 单测
 
-SSE 迁移后的远程工具桥接：
-- 用 asyncio.Queue 作为事件出口（替代 WebSocket）
+V2 SSE 远程工具桥接：
+- 用 asyncio.Queue 作为事件出口
 - Future / resolve / cleanup / 超时语义
 - send_tool_call 内部依次 emit tool_start → tool_args → tool_result → tool_end
 """
@@ -11,7 +11,6 @@ import asyncio
 import pytest
 
 from space_aiagent.bridge.stream_bridge import StreamBridge
-from space_aiagent.models.messages import ToolResultMessage
 
 
 def _drain_queue(queue: asyncio.Queue) -> list[dict]:
@@ -26,22 +25,20 @@ async def test_send_tool_call_emits_full_lifecycle():
     """正常路径：tool_start → tool_args → tool_result → tool_end 顺序 emit，且 send_tool_call 返回 resolve 结果"""
     bridge = StreamBridge("thread-1")
 
-    # 在另一协程里轮询 pending，注册后通过 resolve_tool_result 走真实 resolve 路径
-    # （生产环境由 POST /tool-result handler 调 resolve_tool_result）
+    # 在另一协程里轮询 pending，模拟 POST /tool-result 持久化后的唤醒路径。
     async def _resolve():
         while not bridge._pending:
             await asyncio.sleep(0.001)
         tool_call_id = next(iter(bridge._pending))
-        bridge.resolve_tool_result(
-            ToolResultMessage(
-                thread_id="thread-1",
-                tool_func="createScenario",
-                tool_call_id=tool_call_id,
-                args={"name": "测试场景"},
-                success=True,
-                message="ok",
-                data={"id": 1},
-            )
+        bridge.resolve_tool_result_dict(
+            tool_call_id,
+            {
+                "args": {"name": "测试场景"},
+                "success": True,
+                "message": "ok",
+                "data": {"id": 1},
+                "code": "",
+            },
         )
 
     task = asyncio.create_task(_resolve())
@@ -54,7 +51,7 @@ async def test_send_tool_call_emits_full_lifecycle():
         timeout=1.0,
     )
 
-    # 返回值即 Future resolve 的结果（resolve_tool_result 排除 type/thread_id/tool_call_id/tool_func）
+    # 返回值即 Future resolve 的规范化结果。
     assert result == {
         "args": {"name": "测试场景"},
         "success": True,
@@ -79,7 +76,7 @@ async def test_send_tool_call_emits_full_lifecycle():
     assert args_data["args"] == {"name": "测试场景"}
     assert args_data["tool_call_id"] == start_data["tool_call_id"]
 
-    # tool_result：含 result（即 Future resolve 的内容，resolve_tool_result 已排除元字段）
+    # tool_result：含 Future resolve 的规范化结果。
     result_data = events[2]["data"]
     assert result_data["result"] == {
         "args": {"name": "测试场景"},
@@ -99,36 +96,24 @@ async def test_send_tool_call_emits_full_lifecycle():
 
 
 async def test_resolve_tool_result():
-    """resolve_tool_result：注册的 Future 被 resolve 且结果正确（按字段排除规则）"""
+    """注册的 Future 被规范化结果唤醒。"""
     bridge = StreamBridge("thread-1")
 
     # 构造一个 pending future
     future = asyncio.get_running_loop().create_future()
     bridge._pending["call-123"] = future
 
-    # 构造前端返回的 ToolResultMessage
-    result_msg = ToolResultMessage(
-        thread_id="thread-1",
-        tool_func="createScenario",
-        tool_call_id="call-123",
-        args={"name": "x"},
-        success=True,
-        message="created",
-        data={"id": 7},
-        code="SCENE_CREATED",
-    )
-
-    bridge.resolve_tool_result(result_msg)
-
-    assert future.done()
-    # 排除 type / thread_id / tool_call_id / tool_func
-    assert future.result() == {
+    result = {
         "args": {"name": "x"},
         "success": True,
         "message": "created",
         "data": {"id": 7},
         "code": "SCENE_CREATED",
     }
+    bridge.resolve_tool_result_dict("call-123", result)
+
+    assert future.done()
+    assert future.result() == result
     # resolve 后 pending 中已 pop
     assert "call-123" not in bridge._pending
 
@@ -137,15 +122,8 @@ async def test_resolve_unknown_id():
     """resolve 未注册的 tool_call_id：不抛异常（仅 warning 日志）"""
     bridge = StreamBridge("thread-1")
 
-    result_msg = ToolResultMessage(
-        thread_id="thread-1",
-        tool_func="createScenario",
-        tool_call_id="unknown-id",
-        success=True,
-    )
-
     # 不应抛异常
-    bridge.resolve_tool_result(result_msg)
+    bridge.resolve_tool_result_dict("unknown-id", {"success": True})
 
     # pending 仍为空
     assert len(bridge._pending) == 0

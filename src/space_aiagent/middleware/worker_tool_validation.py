@@ -6,10 +6,6 @@
 - bridge 注入：所有远程工具都需要 bridge 实例。失败时返回 ToolMessage（系统级错误，
   让 LLM 兜底回复）
 
-附加职责:
-- suggestion 候选集注入：awrap_model_call 在每次 LLM 调用前把当前 agent 工具组
-  对应的候选集写入 ContextVar，供 AgentResponse.suggestions validator 反向校验。
-
 未来可扩展: 参数校验、权限、限流、审计等
 """
 
@@ -35,12 +31,13 @@ from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
 from space_aiagent.infrastructure.utils import message_util
 from space_aiagent.models.response_schema import response_constants
-from space_aiagent.models.response_schema.agent_struct_response import AgentResponse, ResponseCode
-from space_aiagent.tools.registry import (
-    current_suggestion_candidates_var,
-    get_suggestion_candidates,
-)
+from space_aiagent.models.response_schema.worker_response import ResponseCode, WorkerResponse
 from space_aiagent.tools.scene_management import tools
+from space_aiagent.workflow.execution_context import (
+    StepAlreadyCompletedError,
+    StepExecutionLimitError,
+    step_execution_context_var,
+)
 
 logger = get_logger(__name__)
 
@@ -64,18 +61,16 @@ def _normalize_null_args(args: Any) -> Any:
     }
 
 
-class SubagentToolValidationMiddleware(AgentMiddleware):
-    """工具调用前置条件统一校验 + suggestion 候选集注入"""
+class WorkerToolValidationMiddleware(AgentMiddleware):
+    """Worker 工具权限、前置条件与执行循环保护。"""
 
     state_schema = AgentState
     # 不需要场景上下文的工具白名单
     # - create_scenario: 场景入口工具，本身用于建立场景上下文
     # - query_scenario: 查询场景信息，可确认当前是否已经打开场景，可建立场景上下文
-    # - AgentResponse: 结构化输出伪工具，非真实工具调用
-    # - task: 子 Agent 调度工具，本身不操作场景
+    # - WorkerResponse: 结构化输出伪工具，非真实工具调用
     _SCENE_EXEMPT_TOOLS: ClassVar[set[str]] = {
-        AgentResponse.__name__,
-        "task",
+        WorkerResponse.__name__,
         "read_file",
         tools.create_scenario.name,
         tools.query_scenario.name,
@@ -84,40 +79,19 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
 
     def __init__(
         self,
-        tool_groups: list[str] | None = None,
         agent_name: str = "unknown",
     ) -> None:
-        """初始化middleware
-
-        Args:
-            tool_groups: 当前 agent 绑定的工具组名列表（如 ["scene_management"]）。
-                用于预生成 suggestion 候选集。None 或空列表时跳过候选集注入
-                （如 orchestrator 不直接生成 AgentResponse，不需要）。
-            agent_name: 当前 middleware 所属的 agent 名称，用于日志追踪。
-        """
+        """初始化 Worker 中间件。"""
         super().__init__()
-        self._tool_groups = tool_groups or []
         self._agent_name = agent_name
-        # 启动期一次性生成候选集（避免每次 model call 都重新提取 description）
-        self._suggestion_candidates = (
-            frozenset(get_suggestion_candidates(self._tool_groups)) if self._tool_groups else frozenset()
-        )
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """LLM 调用前注入 suggestion 候选集到 ContextVar
-
-        AgentResponse.suggestions validator 会从 ContextVar 读取候选集，
-        过滤掉能力范围外的越界建议。必须在 LLM 产出 AgentResponse 之前 set，
-        awrap_tool_call 太晚（在 LLM 之后）。
-        """
+        """记录单步骤 Worker 模型调用的输入、输出与耗时。"""
         thread_id = get_config().get("configurable", {}).get("thread_id", "")
-
-        if self._suggestion_candidates:
-            current_suggestion_candidates_var.set(self._suggestion_candidates)
 
         logger.info(
             "model call before ",
@@ -126,10 +100,10 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
         )
         start_ts = time.perf_counter()
         with optional_span(
-            "subagent.llm",
+            "worker.llm",
             **{
                 "agent.thread_id": thread_id,
-                "subagent.name": self._agent_name,
+                "worker.name": self._agent_name,
             },
         ) as span:
             set_span_io(span, input=message_util.serialize_messages(request.messages))
@@ -161,6 +135,47 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
             args=request.tool_call.get("args", {}),
         )
 
+        # V2 步骤执行上下文：工具权限由 ActionCatalog 决定，模型不能越权扩展动作；
+        # 同时限制总调用数和相同参数的无进展循环。read_file 是 Skill 渐进加载工具，
+        # 不属于领域动作，允许继续使用。
+        execution_context = step_execution_context_var.get()
+        execution_signature: str | None = None
+        if execution_context is not None and tool_name not in {"read_file", WorkerResponse.__name__}:
+            if tool_name not in execution_context.allowed_tools:
+                logger.warning(
+                    "workflow.tool_not_allowed",
+                    run_id=execution_context.run_id,
+                    step_id=execution_context.step_id,
+                    tool_name=tool_name,
+                )
+                return ToolMessage(
+                    content=json.dumps(
+                        {
+                            "success": False,
+                            "code": "ACTION_TOOL_NOT_ALLOWED",
+                            "message": f"当前步骤不允许调用工具 {tool_name}",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+
+            execution_context.tool_call_count += 1
+            if execution_context.tool_call_count > execution_context.max_tool_calls:
+                raise StepExecutionLimitError(
+                    f"步骤 {execution_context.step_id} 工具调用超过 {execution_context.max_tool_calls} 次"
+                )
+            execution_signature = execution_context.signature(tool_name, request.tool_call.get("args", {}))
+            signature_count = execution_context.signature_counts.get(execution_signature, 0) + 1
+            execution_context.signature_counts[execution_signature] = signature_count
+            if execution_signature in execution_context.signature_results:
+                raise StepAlreadyCompletedError(
+                    tool_name,
+                    execution_context.signature_results[execution_signature],
+                )
+            if signature_count > 2:
+                raise StepExecutionLimitError(f"步骤 {execution_context.step_id} 相同工具和参数连续调用超过 2 次")
+
         # 校验 1: bridge 注入（所有远程工具都需要）
         if bridge_var.get() is None:
             logger.error("校验失败 bridge 未注入", tool_name=tool_name)
@@ -172,18 +187,15 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
                 tool_call_id=tool_call_id,
             )
 
-        # 校验 2: 场景上下文（白名单外）→ 返回 Command(goto=END) 终止子 Agent 图
+        # 校验 2: 场景上下文（白名单外）→ 返回 Command(goto=END) 终止 Worker 图
         # ToolMessage 关闭 AI 的 tool_call（LLM API 协议要求），Command(goto=END)
-        # 跳过子 Agent 后续 LLM 调用，state 含 NO_SCENE ToolMessage 持久化
-        # current_scene_name 通过 state_schema 双向同步
-        state_scene = (
-            request.state.get("current_scene_name")
-            if isinstance(request.state, dict)
-            else getattr(request.state, "current_scene_name", None)
-        )
-        # 增加 1==0，表示让是否打开场景的校验实效，统一交给前端接口校验，
-        # 如果需要则个校验，把1==0 给删除掉就行
-        if 1 == 0 and tool_name not in self._SCENE_EXEMPT_TOOLS and not state_scene:
+        # 跳过 Worker 后续 LLM 调用。场景事实来自 WorkflowRun 的只读步骤投影。
+        # Scheduler 已做前置条件判断；Worker 侧继续 fail-fast，形成纵深保护。
+        if (
+            execution_context is not None
+            and tool_name not in self._SCENE_EXEMPT_TOOLS
+            and not execution_context.scene_opened
+        ):
             logger.warning("校验失败 无场景上下文", tool_name=tool_name)
             shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.NO_SCENE]
             return Command(
@@ -214,12 +226,19 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
             **{
                 "agent.thread_id": thread_id,
                 "tool.name": tool_name,
-                "subagent.name": self._agent_name,
+                "worker.name": self._agent_name,
             },
         ) as span:
             set_span_io(span, input=request.tool_call.get("args", {}))
             try:
                 result = await handler(request)
+                if (
+                    execution_context is not None
+                    and execution_signature is not None
+                    and tool_name in execution_context.completion_tools
+                    and (payload := _extract_success_payload(result)) is not None
+                ):
+                    execution_context.signature_results[execution_signature] = payload
                 span.set_attribute("tool.success", True)
                 set_span_io(span, output=result)
                 return result
@@ -228,3 +247,27 @@ class SubagentToolValidationMiddleware(AgentMiddleware):
                 raise
             finally:
                 span.set_attribute("tool.latency_ms", int((time.perf_counter() - start_ts) * 1000))
+
+
+def _extract_success_payload(result: Any) -> dict[str, Any] | None:
+    """从 dict/ToolMessage/Command 中提取成功工具结果，供 V2 完成调用去重。"""
+    if isinstance(result, dict):
+        return result if result.get("success") is True else None
+    if isinstance(result, ToolMessage):
+        messages = [result]
+    elif isinstance(result, Command):
+        update = result.update if isinstance(result.update, dict) else {}
+        messages = update.get("messages", [])
+    else:
+        return None
+    for message in messages:
+        content = getattr(message, "content", None)
+        if not isinstance(content, str):
+            continue
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("success") is True:
+            return payload
+    return None

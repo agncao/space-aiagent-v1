@@ -5,7 +5,7 @@ Pydantic 数据模型
 """
 
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -89,42 +89,3 @@ class OrbitUpdateParam(BaseModel):
     color: str | None = Field(default=None, description="轨道颜色（十六进制, 如 '#FF0000'）")
     glow_power: float | None = Field(default=None, description="发光强度")
     taper_power: float | None = Field(default=None, description="渐变强度")
-
-
-# ---- API 请求/响应 ----
-
-
-class InvokeRequest(BaseModel):
-    """REST API 调用请求"""
-
-    input: str = Field(description="用户输入")
-    thread_id: str = Field(description="会话ID")
-
-
-class InvokeResponse(BaseModel):
-    """REST API 调用响应"""
-
-    output: dict = Field(description="Agent 输出")
-    thread_id: str = Field(description="会话ID")
-
-
-# ---- 工具执行结果 ----
-
-
-class ToolResult(BaseModel):
-    """工具执行结果（前端返回）"""
-
-    success: bool = Field(description="是否成功")
-    message: str = Field(default="", description="结果消息")
-    data: dict | list | None = Field(default=None, description="结果数据")
-
-
-class SubagentClassification(BaseModel):
-    """LLM 路由分类结构化输出
-
-    PrimaryAgentMiddleware 自动续接 fallback 时用：当未从 task 历史捕获到
-    subagent_type（流程 1：orchestrator 直接 NO_SCENE 不调 task）时，
-    调 LLM 用此 schema 输出最匹配的子 agent name。
-    """
-
-    subagent_type: Literal["entity-agent", "scene-agent"] | None = Field(description="应该委派给的子 agent name")

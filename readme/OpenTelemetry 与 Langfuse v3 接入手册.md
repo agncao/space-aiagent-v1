@@ -188,7 +188,11 @@ Span 结束后由谁处理。两类：
 - 进程内：OTel 用 `context`（Python 里基于 `contextvars`）维护「当前 Span」。`start_as_current_span` 把 Span 压栈，退出时弹栈。
 - 跨进程：发起 HTTP 调用时，OTel 的 instrumentor 自动把当前 SpanContext 注入到请求头（W3C `traceparent` 头）；对端收到后从头部解析，作为自己 Span 的 parent。于是两段独立的 Trace 拼成了一条。
 
-> ⚠️ **本项目的特别注意**：本项目用 LangGraph，每个 graph node 在独立的 `copy_context()` + `asyncio.create_task` 里运行，**ContextVar 跨 node 边界默认会丢失**。这也是为什么项目里 `current_scene_name` 要走 `SpaceAgentState` 而不是 ContextVar。但 OTel 的 trace context 同理——好在 LangGraph 在 node 边界会拷贝 context，trace_id 一般能续上；如果发现子 Agent 的 Span 掉链子，多半就是 context 传播断了，可以用 `contextvars.copy_context()` 手动接力。
+> ⚠️ **本项目的特别注意**：本项目用 LangGraph，每个 graph node 可能在独立的
+> `copy_context()` + `asyncio.create_task` 中运行。领域事实不依赖 ContextVar 或 Worker State：
+> 当前场景持久化在 `WorkflowRun.scene_context`，执行时只读投影到 `StepExecutionContext`。
+> OTel trace context 通常会随 LangGraph 节点传播；若 Worker Span 掉链，应检查任务创建边界的
+> context 传播，而不是把领域状态写回 LangGraph State。
 
 **⑩ Instrumentation（插桩）**
 「让代码自动产生 Span」的机制。两种：

@@ -61,7 +61,7 @@ C:\space-aiagent-v1\
 ├── config\                       # 配置文件
 │   ├── application.yaml
 │   ├── dev.yaml
-│   ├── subagents.yaml
+│   ├── workers.yaml
 │   └── knowledge\
 │       └── AGENTS.md
 ├── .env                          # 环境变量（需手动创建）
@@ -127,7 +127,7 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8028
 ```
 
-浏览器访问 `http://localhost:8028/api/v1/space/health`，应返回：
+浏览器访问 `http://localhost:8028/api/v2/space/health`，应返回：
 
 ```json
 {"status": "ok", "service": "space-aiagent"}
@@ -345,8 +345,9 @@ C:\space-aiagent-v1\                    ← 项目根目录（PROJECT_ROOT）
 ├── src\
 │   └── space_aiagent\                  ← Python 源码
 │       ├── main.py                     ← 入口
-│       ├── api\                        ← API + WebSocket
-│       ├── agents\                     ← Agent 逻辑
+│       ├── api\                        ← V2 SSE + REST API
+│       ├── workflow\                   ← 确定性工作流
+│       ├── agents\                     ← Worker 构建
 │       ├── prompts\                    ← 提示词（打包在包内）
 │       ├── tools\                      ← 工具组管理
 │       ├── bridge\                     ← 远程工具桥接
@@ -356,11 +357,12 @@ C:\space-aiagent-v1\                    ← 项目根目录（PROJECT_ROOT）
 ├── config\                             ← 外部配置（可独立修改）
 │   ├── application.yaml                ← 基础配置
 │   ├── dev.yaml / prod.yaml            ← 环境覆盖
-│   ├── subagents.yaml                  ← 子 Agent 配置
+│   ├── workers.yaml                    ← Worker 配置
 │   └── knowledge\
 │       └── AGENTS.md                   ← 领域知识
 ├── data\                               ← 运行时数据（自动创建）
-│   └── space_aiagent.db                ← SQLite 数据库
+│   ├── workflow.db                     ← WorkflowRun / Step / Ledger
+│   └── space_aiagent.db                ← LangGraph checkpoint
 ├── logs\                               ← 日志（自动创建）
 ├── .env                                ← 敏感配置（API Key）
 ├── pyproject.toml                      ← 项目定义

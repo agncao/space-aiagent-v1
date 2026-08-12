@@ -1,8 +1,8 @@
 """响应模板 YAML 加载
 
 从 config/response_templates.yaml 读取 code → 模板字符串映射。
-当前仅 SHORTCUT_RESPONSES 把对应模板字符串塞进 AgentResponse.summary
-（NO_SCENE / TASK_LOOP_GUARD 两个确定性 shortcut），不再做 {var} 占位符渲染。
+当前仅 SHORTCUT_RESPONSES 把对应模板字符串写入 WorkerResponse.summary，
+用于确定性前置条件与模型错误降级响应。
 """
 
 from pathlib import Path

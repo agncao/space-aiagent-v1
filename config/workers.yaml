@@ -1,21 +1,21 @@
-agents:
+workers:
   - name: scene-agent
-    description: 处理场景相关操作：创建、打开、删除、查询、修改场景。
+    description: 处理场景相关单步骤操作：创建、打开、删除、查询、修改场景。
     tools:
       - scene_management
     skills:
       - /skills/scene/
     interrupt_on:
       delete_scene:
-        allowed_decisions: [ "approve", "reject" ]
+        allowed_decisions: ["approve", "reject"]
         description: "即将删除当前场景，场景内所有实体将一并清除且不可撤销，请确认是否继续。"
       rename_scenario:
-        allowed_decisions: [ "approve", "reject" ]
+        allowed_decisions: ["approve", "reject"]
         description: "即将重命名当前场景，请确认是否继续。"
     prompt_file: scene_agent.md
 
   - name: entity-agent
-    description: 处理实体和轨道相关操作：添加实体，创建和更新SGP4轨道。当用户提到添加实体、创建轨道、TLE时使用此 Agent。
+    description: 处理实体和轨道相关单步骤操作：添加实体，创建和更新 SGP4 轨道。
     tools:
       - entity_management
       - orbit_management
@@ -23,6 +23,6 @@ agents:
       - /skills/entity/
     interrupt_on:
       clear_entities:
-        allowed_decisions: [ "approve", "reject" ]
-        description: "即将清除场景内所有实体将一并清除且不可撤销，请确认是否继续。"
+        allowed_decisions: ["approve", "reject"]
+        description: "即将清除场景内所有实体且不可撤销，请确认是否继续。"
     prompt_file: entity_agent.md

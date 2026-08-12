@@ -1,10 +1,8 @@
 """
 场景管理 — 读工具
 
-仅响应用户查询，无前后置流程。
-
-query_scenario 成功后通过 Command 把当前场景名同步到 state（用户查询某场景时
-前端会切换激活，state 跟着更新）。
+仅响应当前步骤的查询或打开动作。Command 只写 ToolMessage；场景事实由
+WorkflowEngine 根据持久化工具回告更新到 WorkflowRun.scene_context。
 """
 
 import inspect
@@ -18,9 +16,11 @@ from langgraph.types import Command
 
 from space_aiagent.bridge import bridge_var
 from space_aiagent.infrastructure.utils import string_util
-from space_aiagent.models.schemas import ScenarioInfo
+from space_aiagent.models.biz_schemas import ScenarioInfo
 
 _NAMESPACE = "scene_tools"
+
+
 def _normalize_scenario_query_result(
     result: dict[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, str]] | None]:
@@ -72,22 +72,18 @@ async def query_scenario(runtime: ToolRuntime, scene_name: str | None = None) ->
         tool_func=string_util.snake_to_camel(tool_func),
         args=args,
     )
-    normalized_result, scenario_results = _normalize_scenario_query_result(result)
+    normalized_result, _ = _normalize_scenario_query_result(result)
 
-    update: dict = {
-        "messages": [
-            ToolMessage(
-                content=json.dumps(normalized_result, ensure_ascii=False),
-                tool_call_id=runtime.tool_call_id,
-            )
-        ]
-    }
-    if normalized_result["success"]:
-        update["scenario_query_results"] = scenario_results
-        resolved_scene_name: str | None = result.get("current_scene_name")
-        if resolved_scene_name:
-            update["current_scene_name"] = resolved_scene_name
-    return Command(update=update)
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(
+                    content=json.dumps(normalized_result, ensure_ascii=False),
+                    tool_call_id=runtime.tool_call_id,
+                )
+            ]
+        }
+    )
 
 
 @tool
@@ -115,14 +111,13 @@ async def open_scenario(
         tool_func=string_util.snake_to_camel(tool_func),
         args=args,
     )
-    update: dict = {
-        "messages": [
-            ToolMessage(
-                content=json.dumps(result, ensure_ascii=False),
-                tool_call_id=runtime.tool_call_id,
-            )
-        ]
-    }
-    if result["success"]:
-        update["current_scene_name"] = result.get("current_scene_name")
-    return Command(update=update)
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(
+                    content=json.dumps(result, ensure_ascii=False),
+                    tool_call_id=runtime.tool_call_id,
+                )
+            ]
+        }
+    )

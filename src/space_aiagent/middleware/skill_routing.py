@@ -20,11 +20,11 @@ from tenacity import AsyncRetrying, RetryError, retry_if_exception_type, stop_af
 from space_aiagent.infrastructure.config import RetryConfig
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
+from space_aiagent.infrastructure.skill.catalog import SkillCatalog, SkillCatalogError, SkillDefinition
 from space_aiagent.infrastructure.utils import message_util
 from space_aiagent.middleware.retry import _build_retryable_llm_errors, _make_before_sleep
-from space_aiagent.models.response_schema import response_constants, response_util
-from space_aiagent.models.response_schema.agent_struct_response import ResponseCode
-from space_aiagent.infrastructure.skill.catalog import SkillCatalog, SkillCatalogError, SkillDefinition
+from space_aiagent.models.response_schema import response_constants
+from space_aiagent.models.response_schema.worker_response import ResponseCode
 
 logger = get_logger(__name__)
 
@@ -48,14 +48,14 @@ class SkillRouteDecision(BaseModel):
 
 
 class SkillRoutingState(AgentState):
-    """只在当前子 Agent 内可见的 Skill 路由状态。"""
+    """只在当前 Worker 内可见的 Skill 路由状态。"""
 
     skill_route_status: NotRequired[Annotated[SkillRouteStatus, PrivateStateAttr]]
     active_skill_names: NotRequired[Annotated[list[str], PrivateStateAttr]]
     skill_route_error: NotRequired[Annotated[str | None, PrivateStateAttr]]
 
-# 提取最后一次human message
-# 子智能体的human message 就是主智能体给它的任务描述
+
+# Worker 的最后一条 HumanMessage 是 AgentStepExecutor 生成的单步骤任务描述。
 def _extract_last_human_content(messages: list[Any]) -> str | None:
     for message in reversed(messages):
         if not isinstance(message, HumanMessage):
@@ -133,7 +133,7 @@ class SkillRoutingMiddleware(AgentMiddleware[SkillRoutingState]):
                 raise RuntimeError("Skill 路由重试耗尽") from exc
 
     async def abefore_agent(self, state: SkillRoutingState, runtime: Any) -> dict[str, Any]:
-        """每次子 Agent 调用都覆盖私有路由状态，禁止跨任务复用。"""
+        """每次 Worker 调用都覆盖私有路由状态，禁止跨任务复用。"""
         task = _extract_last_human_content(state.get("messages", []))
         if not task:
             return {
@@ -142,7 +142,7 @@ class SkillRoutingMiddleware(AgentMiddleware[SkillRoutingState]):
                 "skill_route_error": "缺少可路由的用户任务",
             }
 
-        with optional_span("skill.route", **{"subagent.name": self._agent_name}) as span:
+        with optional_span("skill.route", **{"worker.name": self._agent_name}) as span:
             set_span_io(span, input={"task": task, "skills": sorted(self._catalog.names)})
             try:
                 decision = await self._route(task)
@@ -211,8 +211,7 @@ class SkillRoutingMiddleware(AgentMiddleware[SkillRoutingState]):
     @staticmethod
     def _failure_response() -> ModelResponse:
         shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.SKILL_ROUTING_FAILED]
-        display = response_util.render(shortcut)
-        return message_util.build_primary_agent_response(display, shortcut, "call_skill_routing_failed")
+        return message_util.build_worker_response(shortcut.summary, shortcut, "call_skill_routing_failed")
 
     async def awrap_model_call(
         self,

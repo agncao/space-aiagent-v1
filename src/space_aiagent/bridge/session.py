@@ -1,5 +1,5 @@
 """
-会话管理器（SSE 迁移）
+V2 SSE 会话管理器
 
 管理 StreamBridge 实例与 thread_id 的映射。每个活跃 SSE 会话对应一个 thread_id
 与一个 StreamBridge；POST /chat 在 register 时创建，event_generator 终止时
@@ -27,7 +27,7 @@ class SessionManager:
         # thread_id -> StreamBridge
         self._bridges: dict[str, StreamBridge] = {}
 
-    def register(self, thread_id: str) -> StreamBridge:
+    def register(self, thread_id: str, *, run_id: str | None = None) -> StreamBridge:
         """注册新会话并创建对应的 StreamBridge 实例
 
         调用方必须先调 ``get_bridge`` 做并发检查（活跃则 409），再调本方法。
@@ -36,7 +36,7 @@ class SessionManager:
         Returns:
             新创建的 StreamBridge 实例
         """
-        bridge = StreamBridge(thread_id)
+        bridge = StreamBridge(thread_id, run_id=run_id)
         self._bridges[thread_id] = bridge
         logger.info("注册新连接", thread_id=thread_id)
         return bridge
@@ -54,3 +54,6 @@ class SessionManager:
     def get_bridge(self, thread_id: str) -> StreamBridge | None:
         """根据 thread_id 获取 StreamBridge 实例"""
         return self._bridges.get(thread_id)
+
+
+session_manager = SessionManager()

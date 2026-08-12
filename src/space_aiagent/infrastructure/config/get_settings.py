@@ -10,10 +10,10 @@ from pydantic import Field
 from pydantic_settings import BaseSettings
 
 from space_aiagent.infrastructure.config.agent_config import (
-    AgentConfig,
     LLMConfig,
     LLMFlashConfig,
     ServerConfig,
+    WorkflowConfig,
 )
 from space_aiagent.infrastructure.config.observability_retry import (
     LoggingConfig,
@@ -67,15 +67,15 @@ class Settings(BaseSettings):
     """
 
     app_name: str = "space-aiagent"
-    app_version: str = "0.1.0"
+    app_version: str = "2.0.0"
     app_env: str = "dev"
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     llm_flash: LLMFlashConfig = Field(default_factory=LLMFlashConfig)
-    agent: AgentConfig = Field(default_factory=AgentConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
+    workflow: WorkflowConfig = Field(default_factory=WorkflowConfig)
 
     model_config = {"env_prefix": "", "env_nested_delimiter": "__"}
 
@@ -89,7 +89,7 @@ def apply_yaml_to_settings(yaml_config: dict[str, Any]) -> Settings:
 
     app_cfg = yaml_config.get("application", {})
     flat["app_name"] = app_cfg.get("name", "space-aiagent")
-    flat["app_version"] = app_cfg.get("version", "0.1.0")
+    flat["app_version"] = app_cfg.get("version", "2.0.0")
 
     server_cfg = yaml_config.get("server", {})
     flat["server"] = ServerConfig(
@@ -114,21 +114,22 @@ def apply_yaml_to_settings(yaml_config: dict[str, Any]) -> Settings:
     )
 
     flat["app_env"] = os.getenv("APP_ENV", "dev")
-    agent_cfg = yaml_config.get("agent", {})
+    worker_model_cfg = yaml_config.get("worker_model", {})
     flash_cfg = yaml_config.get("flash_model", {})
-    flat["agent"] = AgentConfig(
-        max_iterations=agent_cfg.get("max_iterations", 10),
-        primary_task_threshold=agent_cfg.get("primary_task_threshold", 20),
+    workflow_cfg = yaml_config.get("workflow", {})
+    flat["workflow"] = WorkflowConfig(
+        enabled=workflow_cfg.get("enabled", True),
+        database_path=workflow_cfg.get("database_path", "data/workflow.db"),
     )
 
-    # LLM 凭据仍从环境变量读取，运行参数从 agent 段读取
+    # LLM 凭据从环境变量读取，Worker 运行参数从 worker_model 段读取。
     flat["llm"] = LLMConfig(
         api_key=os.getenv("LLM_API_KEY", ""),
         base_url=os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
         model=os.getenv("LLM_MODEL", "deepseek-chat"),
-        temperature=float(agent_cfg.get("temperature", 0.1)),
-        streaming=agent_cfg.get("streaming", True),
-        enable_thinking=agent_cfg.get("enable_thinking", False),
+        temperature=float(worker_model_cfg.get("temperature", 0.1)),
+        streaming=worker_model_cfg.get("streaming", True),
+        enable_thinking=worker_model_cfg.get("enable_thinking", False),
     )
     flat["llm_flash"] = LLMFlashConfig(
         api_key=os.getenv("LLM_FLASH_API_KEY", ""),
@@ -143,7 +144,7 @@ def apply_yaml_to_settings(yaml_config: dict[str, Any]) -> Settings:
     flat["observability"] = ObservabilityConfig(
         enabled=obs_cfg.get("enabled", False),
         service_name=obs_cfg.get("service_name", app_cfg.get("name", "space-aiagent")),
-        service_version=obs_cfg.get("service_version", app_cfg.get("version", "0.1.0")),
+        service_version=obs_cfg.get("service_version", app_cfg.get("version", "2.0.0")),
         langfuse_endpoint=obs_cfg.get("langfuse_endpoint", "http://localhost:3000/api/public/otel"),
         langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", ""),
         langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY", ""),

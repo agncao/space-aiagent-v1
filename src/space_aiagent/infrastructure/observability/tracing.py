@@ -107,7 +107,7 @@ def optional_span(name: str, **attributes: Any) -> Iterator[Span]:
     """便利 context manager：自动从 enabled 状态决定是否创建 span。
 
     用法：
-        with optional_span("orchestrator.llm", thread_id=tid) as span:
+        with optional_span("workflow.worker.llm", thread_id=tid) as span:
             result = handler(request)
             span.set_attribute("response.code", code)
     """
@@ -116,6 +116,7 @@ def optional_span(name: str, **attributes: Any) -> Iterator[Span]:
         for k, v in attributes.items():
             span.set_attribute(k, v)
         yield span
+
 
 def set_span_io(
     span: Span,

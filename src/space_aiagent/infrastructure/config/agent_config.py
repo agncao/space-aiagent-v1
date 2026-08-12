@@ -35,8 +35,8 @@ class LLMFlashConfig(BaseSettings):
     enable_thinking: bool = False
 
 
-class AgentConfig(BaseSettings):
-    """Agent 配置。"""
+class WorkflowConfig(BaseSettings):
+    """V2 确定性工作流配置。"""
 
-    max_iterations: int = 10
-    primary_task_threshold: int = 20
+    enabled: bool = True
+    database_path: str = "data/workflow.db"

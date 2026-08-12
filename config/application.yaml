@@ -1,6 +1,6 @@
 application:
   name: space-aiagent
-  version: 0.1.0
+  version: 2.0.0
   description: "航天分析平台智能助手"
 
 server:
@@ -21,16 +21,14 @@ logging:
     backup_count: 10
     rotation: true
 
-websocket:
-  path: "/ws/space"
-  heartbeat_interval: 30
-
-agent:
-  max_iterations: 10
+worker_model:
   temperature: 0
   streaming: true
   enable_thinking: false
-  primary_task_threshold: 20
+
+workflow:
+  enabled: true
+  database_path: data/workflow.db
 
 flash_model:
   temperature: 0.1

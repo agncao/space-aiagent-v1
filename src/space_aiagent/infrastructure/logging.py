@@ -55,7 +55,7 @@ def _console_renderer(_, __, event_dict):
     """
     Spring 风格控制台渲染器。
 
-    格式: 2026-06-05 18:54:45.613 [INFO ] [MainThread] orchestrator.py:42 - 消息内容 key=value
+    格式: 2026-06-05 18:54:45.613 [INFO ] [MainThread] executor.py:42 - 消息内容 key=value
 
     timestamp 可能来自 TimeStamper（ISO 字符串）或 foreign_pre_chain（epoch float），
     统一转为可读格式。

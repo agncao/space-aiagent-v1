@@ -4,16 +4,15 @@
 基于 SGP4 模型的卫星轨道创建和更新。
 工具通过远程桥接发送指令到前端 Cesium 执行。
 
-桥接注入: 使用 bridge.bridge_var (ContextVar) 在会话级别注入 bridge 实例，
-         由 SSE event_generator（api/sse.py）在 run_agent 前 set，工具函数通过 get() 获取。
+桥接注入: V2 SSE handler 在启动 WorkflowRun 前设置 bridge_var，Worker 工具通过 get() 获取。
 
-前置条件: 场景必须已创建（由 ToolValidationMiddleware 在工具调用前校验）
+前置条件: 场景必须已打开（由 Scheduler 和 WorkerToolValidationMiddleware 双重校验）
 """
 
 from langchain_core.tools import tool
 
 from space_aiagent.bridge import bridge_var
-from space_aiagent.models.schemas import OrbitUpdateParam, SGP4Param
+from space_aiagent.models.biz_schemas import OrbitUpdateParam, SGP4Param
 
 _NAMESPACE = "entity_tools"
 

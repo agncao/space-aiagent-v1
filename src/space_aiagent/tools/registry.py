@@ -5,15 +5,13 @@
 - tools/ 下每个子目录是一个工具组（group）
 - 组内任意 .py 文件中通过 @tool 装饰的 BaseTool 实例会被自动收集
 - 新增工具: 只需在 tools/<group>/ 下写 @tool 函数，无需改本文件
-- 新增工具组: 在 tools/ 下建子目录 + 写工具代码 + 在 subagents.yaml 挂到某 agent
+- 新增工具组: 在 tools/ 下建子目录 + 写工具代码 + 在 workers.yaml 挂到某 Worker
 
-组描述不在此处维护，由 subagents.yaml 的 agents[].description 提供
-（Agent 描述是组能力的超集，且 orchestrator 实际委派对象是 Agent）
+组描述不在此处维护，由 workers.yaml 的 workers[].description 提供
+（Worker 描述是工具组能力的超集）
 """
 
 import importlib
-import re
-from contextvars import ContextVar
 from pathlib import Path
 
 from langchain_core.tools import BaseTool
@@ -95,7 +93,7 @@ def get_tools(groups: list[str]) -> list[BaseTool]:
         groups: 工具组名列表，如 ["entity_management", "orbit_management"]
 
     Returns:
-        去重后的工具列表，可直接传给子智能体的 tools 字段
+        去重后的工具列表，可直接传给 Worker 的 tools 字段
     """
     seen: set[str] = set()
     tools: list[BaseTool] = []
@@ -116,49 +114,3 @@ def get_all_groups() -> dict[str, list[BaseTool]]:
         {组名: [BaseTool, ...]} 的浅拷贝
     """
     return dict(_GROUPS)
-
-
-def _extract_first_sentence(description: str) -> str:
-    """提取 description 首段的首句作为用户面能力描述
-
-    用于 suggestions 候选集生成：每个工具的 description 首句作为该工具对应的
-    "用户面能力描述"，用于反向校验 LLM 生成的 suggestions 是否越界。
-
-    示例:
-      "创建航天场景。场景是所有实体的容器..." → "创建航天场景"
-      "查询场景信息。不传参数时查询当前场景。\\n\\n参数:..." → "查询场景信息"
-      "重命名/修改当前场景。\\n\\n参数:..." → "重命名/修改当前场景"
-
-    前提：工具 description 第一段第一句必须是用户视角的能力描述（不是开发者注释）。
-    """
-    first_paragraph = description.split("\n\n")[0].strip()
-    parts = re.split(r"[。\.！？\?]", first_paragraph, maxsplit=1)
-    first_sentence = parts[0].strip() if parts else ""
-    return " ".join(first_sentence.split())  # 归一化空白
-
-
-def get_suggestion_candidates(group_names: list[str]) -> list[str]:
-    """按工具组生成 suggestion 候选集（从 description 首句提取）
-
-    Args:
-        group_names: 工具组名列表，如 ["scene_management"]
-
-    Returns:
-        去重保序的能力描述列表
-    """
-    candidates: list[str] = []
-    for group_name in group_names:
-        for tool in _GROUPS.get(group_name, []):
-            first_sentence = _extract_first_sentence(tool.description)
-            if first_sentence:
-                candidates.append(first_sentence)
-    return list(dict.fromkeys(candidates))  # 去重保序
-
-
-# ContextVar：保存当前 agent 的 suggestion 候选集
-# 接入点：ToolValidationMiddleware.awrap_model_call（已挂在每个子 agent 上，
-# 通过 subagents.py 传入 tool_groups 参数），在每个 LLM 调用前 set
-# 参考现有 bridge_var 模式
-current_suggestion_candidates_var: ContextVar[frozenset[str]] = ContextVar(
-    "current_suggestion_candidates", default=frozenset()
-)

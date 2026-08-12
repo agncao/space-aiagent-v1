@@ -1,0 +1,110 @@
+actions:
+  ensure_scene_context:
+    description: 确保后续动作执行前已有打开的场景；缺失时等待用户选择打开已有场景或创建场景。
+    executor: system
+    allowed_tools: []
+    completion_tools: []
+    requires: []
+    provides: [scene.opened]
+    side_effect: false
+    completion_codes: []
+    retry_policy: none
+
+  query_scene:
+    description: 查询符合名称条件的已有场景，返回候选列表但不打开。
+    executor: scene-agent
+    allowed_tools: [query_scenario]
+    completion_tools: [query_scenario]
+    requires: []
+    provides: [scene.candidates]
+    side_effect: false
+    completion_codes: [SCENE_QUERIED]
+    retry_policy: read_safe
+
+  open_scene:
+    description: 查询并打开一个已有场景；多个候选时等待用户选择。
+    executor: scene-agent
+    allowed_tools: [query_scenario, open_scenario]
+    completion_tools: [open_scenario]
+    requires: []
+    provides: [scene.opened]
+    side_effect: true
+    completion_codes: [SCENE_OPENED]
+    retry_policy: side_effect_safe
+
+  create_scene:
+    description: 创建并打开一个新场景。
+    executor: scene-agent
+    allowed_tools: [create_scenario]
+    completion_tools: [create_scenario]
+    requires: []
+    provides: [scene.opened]
+    side_effect: true
+    completion_codes: [SCENE_CREATED]
+    retry_policy: side_effect_safe
+
+  rename_scene:
+    description: 重命名当前已经打开的场景。
+    executor: scene-agent
+    allowed_tools: [rename_scenario]
+    completion_tools: [rename_scenario]
+    requires: [scene.opened]
+    provides: [scene.opened]
+    side_effect: true
+    completion_codes: [SCENE_RENAMED]
+    retry_policy: side_effect_safe
+
+  delete_scene:
+    description: 删除当前已经打开的场景。
+    executor: scene-agent
+    allowed_tools: [delete_scene]
+    completion_tools: [delete_scene]
+    requires: [scene.opened]
+    provides: [scene.none]
+    side_effect: true
+    completion_codes: [SCENE_DELETED]
+    retry_policy: none
+
+  add_entity:
+    description: 在当前场景添加一个非卫星点实体；批量请求应拆成多个串行步骤。
+    executor: entity-agent
+    allowed_tools: [add_point_entity]
+    completion_tools: [add_point_entity]
+    requires: [scene.opened]
+    provides: [entity.created]
+    side_effect: true
+    completion_codes: [ENTITY_CREATED, ENTITIES_ADDED]
+    retry_policy: side_effect_safe
+
+  create_sgp4_orbit:
+    description: 使用两行 TLE 在当前场景创建一个 SGP4 卫星。
+    executor: entity-agent
+    allowed_tools: [create_sgp4_orbit]
+    completion_tools: [create_sgp4_orbit]
+    requires: [scene.opened]
+    provides: [entity.created]
+    side_effect: true
+    completion_codes: [ENTITY_CREATED, ENTITIES_ADDED]
+    retry_policy: side_effect_safe
+
+  query_entities:
+    description: 查询当前场景实体列表。
+    executor: entity-agent
+    allowed_tools: [query_entities]
+    completion_tools: [query_entities]
+    requires: [scene.opened]
+    provides: [entity.queried]
+    side_effect: false
+    completion_codes: [ENTITIES_LIST, ENTITIES_EMPTY]
+    retry_policy: read_safe
+
+  clear_entities:
+    description: 清空当前场景全部实体。
+    executor: entity-agent
+    allowed_tools: [clear_entities]
+    completion_tools: [clear_entities]
+    requires: [scene.opened]
+    provides: [entity.empty]
+    side_effect: true
+    completion_codes: [ENTITIES_CLEARED]
+    retry_policy: none

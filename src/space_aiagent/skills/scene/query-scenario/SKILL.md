@@ -94,7 +94,7 @@ query_scenario(scene_name="502")
 
 ## 2. 检查最终查询结果
 
-从最后一次有效查询返回的 `data` 或 state 中的 `scenario_query_results` 读取规范化场景列表。
+从最后一次有效 `query_scenario` 的 ToolMessage `data` 读取规范化场景列表。
 如果第一次查询已经返回非空结果，它就是最终结果。
 
 ### 将 `scene_name` 当作不透明标识符

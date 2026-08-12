@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "space-aiagent"
-version = "0.1.0"
-description = "航天分析平台智能助手 - 基于 DeepAgent 的多 Agent 系统"
+version = "2.0.0"
+description = "航天分析平台智能助手 - 确定性工作流与 DeepAgents Worker"
 requires-python = ">=3.13"
 readme = "README.md"
 
@@ -13,10 +13,8 @@ dependencies = [
     # Web 框架
     "fastapi>=0.136.3",
     "uvicorn[standard]>=0.49.0",
-    "websockets>=14.0,<16",
-
     # Agent 框架
-    "deepagents>=0.6.8",
+    "deepagents==0.6.10",
     "langgraph>=1.2.4",
     "langgraph-checkpoint-sqlite>=3.1.0",
     "langchain-core>=1.4.0",

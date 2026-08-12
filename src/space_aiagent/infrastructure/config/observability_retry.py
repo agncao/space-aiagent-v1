@@ -28,7 +28,7 @@ class ObservabilityConfig(BaseSettings):
 
     enabled: bool = False
     service_name: str = "space-aiagent"
-    service_version: str = "0.1.0"
+    service_version: str = "2.0.0"
 
     langfuse_endpoint: str = "http://localhost:3000/api/public/otel"
     langfuse_public_key: str = ""

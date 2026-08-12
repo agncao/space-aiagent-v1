@@ -12,8 +12,8 @@ from pydantic import BaseModel, ValidationError
 
 from space_aiagent.infrastructure.config import RetryConfig, RetryLLMConfig
 from space_aiagent.middleware.retry import RetryMiddleware
-from space_aiagent.models.response_schema import response_constants, response_util
-from space_aiagent.models.response_schema.agent_struct_response import ResponseCode
+from space_aiagent.models.response_schema import response_constants
+from space_aiagent.models.response_schema.worker_response import ResponseCode
 
 
 def test_llm_unavailable_shortcut_exists():
@@ -21,8 +21,7 @@ def test_llm_unavailable_shortcut_exists():
     shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.LLM_UNAVAILABLE]
     assert shortcut.code == ResponseCode.LLM_UNAVAILABLE
     assert shortcut.status == "error"
-    text = response_util.render(shortcut)
-    assert len(text) > 0
+    assert shortcut.summary
 
 
 # ── 辅助构造 openai 异常 ──
@@ -92,7 +91,7 @@ async def test_llm_exhausted_degrades_to_unavailable():
 
 
 async def test_llm_unavailable_shortcut_keeps_toolstrategy_response():
-    """降级响应保留 AgentResponse tool call，与当前 ToolStrategy 结构化输出一致。"""
+    """降级响应保留 WorkerResponse tool call，与 ToolStrategy 结构化输出一致。"""
     mw = RetryMiddleware(_fast_cfg())
     handler = AsyncMock(side_effect=_make_rate_limit_error())
     result = await mw.awrap_model_call(SimpleNamespace(), handler)
@@ -102,7 +101,7 @@ async def test_llm_unavailable_shortcut_keeps_toolstrategy_response():
     assert len(result.result) == 1
     ai = result.result[0]
     assert ai.content == result.structured_response.summary
-    assert ai.tool_calls[0]["name"] == "AgentResponse"
+    assert ai.tool_calls[0]["name"] == "WorkerResponse"
     assert ai.tool_calls[0]["args"]["code"] == "LLM_UNAVAILABLE"
 
 
@@ -172,7 +171,7 @@ async def test_tool_timeout_exhausted_returns_tool_message():
 
 
 async def test_tool_non_timeout_exception_propagates():
-    """非 TimeoutError 异常（如 ValueError/WebSocketDisconnect）→ 不重试，原样冒泡"""
+    """非 TimeoutError 异常（如 ValueError）→ 不重试，原样冒泡"""
     mw = RetryMiddleware(_fast_cfg())
     handler = AsyncMock(side_effect=ValueError("bug"))
     with pytest.raises(ValueError):

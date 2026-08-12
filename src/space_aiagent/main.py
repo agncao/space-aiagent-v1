@@ -16,8 +16,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from space_aiagent.api.routes import router as api_router
-from space_aiagent.api.sse import router as sse_router
+from space_aiagent.api.routes import router
 from space_aiagent.infrastructure.config import get_settings
 from space_aiagent.infrastructure.logging import setup_logging
 from space_aiagent.infrastructure.observability import (
@@ -78,16 +77,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # 注册路由（SSE 流端点由 sse_router 提供，已切除 WebSocket 路由）
-    app.include_router(api_router)
-    app.include_router(sse_router)
+    app.include_router(router)
 
     # 启用 FastAPI OTel 自动 instrumentation（仅当 observability.enabled=true）
-    # excluded_urls 排除 /api/v1/space/chat 让 agent.session 手动 span 成为 trace root
+    # 排除 chat，让 workflow 手动 span 成为 trace root。
     if settings.observability.enabled:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-        FastAPIInstrumentor.instrument_app(app, excluded_urls="/health,/api/v1/space/chat")
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="/api/v2/space/health,/api/v2/space/chat")
 
     return app
 

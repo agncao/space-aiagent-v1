@@ -1,4 +1,4 @@
-"""场景查询结果规范化与渲染测试。"""
+"""场景工具结果规范化与 Worker State 边界测试。"""
 
 import json
 from types import SimpleNamespace
@@ -7,10 +7,9 @@ from unittest.mock import AsyncMock
 from langchain_core.messages import ToolMessage
 
 from space_aiagent.bridge import bridge_var
-from space_aiagent.models.response_schema import response_util
-from space_aiagent.models.response_schema.agent_struct_response import AgentResponse, ResponseCode
-from space_aiagent.models.schemas import ScenarioInfo
+from space_aiagent.models.biz_schemas import ScenarioInfo
 from space_aiagent.tools.scene_management.read_tools import _normalize_scenario_query_result, query_scenario
+from space_aiagent.tools.scene_management.write_tools import _build_command
 
 
 def test_scenario_info_only_keeps_display_fields() -> None:
@@ -74,7 +73,7 @@ def test_query_result_normalization_preserves_scene_name_verbatim() -> None:
     assert [item["scene_name"] for item in normalized["data"]] == expected_names
 
 
-async def test_query_tool_writes_sanitized_results_to_state_and_tool_message() -> None:
+async def test_query_tool_writes_sanitized_results_only_to_tool_message() -> None:
     bridge = AsyncMock()
     bridge.send_tool_call.return_value = {
         "success": True,
@@ -104,7 +103,7 @@ async def test_query_tool_writes_sanitized_results_to_state_and_tool_message() -
     finally:
         bridge_var.reset(token)
 
-    assert [item["scene_name"] for item in command.update["scenario_query_results"]] == ["场景1001", "场景1000"]
+    assert set(command.update) == {"messages"}
     tool_message = command.update["messages"][0]
     assert isinstance(tool_message, ToolMessage)
     assert tool_message.tool_call_id == "call-query"
@@ -114,53 +113,11 @@ async def test_query_tool_writes_sanitized_results_to_state_and_tool_message() -
     assert "场景1000" in tool_message.content
 
 
-def test_scene_query_renders_response_data_as_complete_table() -> None:
-    response = AgentResponse(
-        status="info",
-        code=ResponseCode.SCENE_QUERIED,
-        summary="找到了以下名称包含“场景”的场景",
-        data=[
-            {
-                "scene_name": "场景1001",
-                "update_time": "2026-07-15 15:56:29",
-                "file_url": "admin/场景1001/场景1001.czml",
-                "uploader_name": "系统管理员",
-            },
-            {
-                "scene_name": "场景0942_ 1个火箭",
-                "update_time": "2024-11-22 16:38:31",
-                "file_url": "admin/场景0942_ 1个火箭/场景0942.czml",
-                "uploader_name": "系统管理员",
-            },
-            {
-                "scene_name": "场景2",
-                "update_time": "2023-05-03 17:56:33",
-                "file_url": "zhangpc/场景2/场景2.czml",
-                "uploader_name": "张鹏程",
-            },
-            {
-                "scene_name": "场景1",
-                "update_time": "2023-05-03 17:56:19",
-                "file_url": "zhangpc/场景1/场景1.czml",
-                "uploader_name": "张鹏程",
-            },
-        ],
+def test_scene_write_tool_command_does_not_create_domain_state_channel() -> None:
+    command = _build_command(
+        {"success": True, "code": "SCENE_CREATED", "current_scene_name": "场景A"},
+        SimpleNamespace(tool_call_id="call-create"),
     )
 
-    rendered = response_util.render(response)
-
-    assert "找到了以下名称包含“场景”的场景" in rendered
-    assert "| 场景名 | 更新时间 | 上传人 |" in rendered
-    assert "场景1001" in rendered
-    assert "场景0942_ 1个火箭" in rendered
-    assert "场景2" in rendered
-    assert "场景1" in rendered
-    assert "%E5%9C%BA%E6%99%AF1001" in rendered
-    assert "接下来您可以" in rendered
-    assert "打开其中一个场景" in rendered
-
-
-def test_scene_query_empty_result_has_deterministic_message() -> None:
-    response = AgentResponse(status="info", code=ResponseCode.SCENE_QUERIED, summary="查询完成")
-
-    assert response_util.render(response) == "未查询到符合条件的场景。"
+    assert set(command.update) == {"messages"}
+    assert json.loads(command.update["messages"][0].content)["current_scene_name"] == "场景A"

@@ -4,7 +4,6 @@
 """
 
 from space_aiagent.infrastructure.config.agent_config import (
-    AgentConfig,
     LLMConfig,
     LLMFlashConfig,
     ServerConfig,
@@ -27,7 +26,6 @@ from space_aiagent.infrastructure.config.observability_retry import (
 __all__ = [
     "CONFIG_DIR",
     "PROJECT_ROOT",
-    "AgentConfig",
     "LLMConfig",
     "LLMFlashConfig",
     "LoggingConfig",

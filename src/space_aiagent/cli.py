@@ -12,9 +12,11 @@ space-aiagent CLI 入口
 
 import click
 
+from space_aiagent import __version__
+
 
 @click.group()
-@click.version_option(version="0.1.0")
+@click.version_option(version=__version__)
 def main() -> None:
     """航天分析平台智能助手"""
     pass
@@ -43,23 +45,18 @@ def tools() -> None:
 
 
 def _build_group_descriptions_from_yaml() -> dict[str, str]:
-    """
-    从 subagents.yaml 反查 group → description 映射
-
-    一个组可能被多个 agent 引用，取首个匹配的 agent description
-    （实际项目里通常 1:1，多:1 时取首个对 CLI 展示足够）
-    """
+    """从 workers.yaml 反查工具组到 Worker 描述的映射。"""
     import yaml
 
     from space_aiagent.infrastructure.config import CONFIG_DIR
 
-    config_path = CONFIG_DIR / "subagents.yaml"
+    config_path = CONFIG_DIR / "workers.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     group_desc: dict[str, str] = {}
-    for agent in config.get("agents", []):
-        for group in agent.get("tools", []):
+    for worker in config.get("workers", []):
+        for group in worker.get("tools", []):
             if group not in group_desc:
-                group_desc[group] = agent.get("description", "")
+                group_desc[group] = worker.get("description", "")
     return group_desc
 
 
@@ -74,7 +71,7 @@ def tools_list() -> None:
         click.echo("暂无已注册的工具组")
         return
     for name, tool_list in groups.items():
-        desc = group_desc.get(name, "（描述见 subagents.yaml）")
+        desc = group_desc.get(name, "（描述见 workers.yaml）")
         click.echo(f"  {name} ({len(tool_list)} 个工具): {desc}")
 
 
@@ -92,7 +89,7 @@ def tools_show(name: str) -> None:
 
     group_desc = _build_group_descriptions_from_yaml()
     click.echo(f"名称: {name}")
-    click.echo(f"描述: {group_desc.get(name, '（描述见 subagents.yaml）')}")
+    click.echo(f"描述: {group_desc.get(name, '（描述见 workers.yaml）')}")
 
     tool_list = groups[name]
     if tool_list:
