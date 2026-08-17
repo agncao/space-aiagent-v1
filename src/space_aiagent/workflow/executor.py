@@ -13,6 +13,7 @@ from langgraph.types import Checkpointer, Command
 from space_aiagent.agents.workers import load_workers
 from space_aiagent.infrastructure.backend import build_agent_backend
 from space_aiagent.models.response_schema.worker_response import ResponseCode, WorkerResponse
+from space_aiagent.models.workflow_schemas import PlanStep, StepError, StepResult, WorkflowRun
 
 from .execution_context import (
     StepAlreadyCompletedError,
@@ -20,7 +21,6 @@ from .execution_context import (
     StepExecutionLimitError,
     step_execution_context_var,
 )
-from .models import PlanStep, StepError, StepResult, WorkflowRun
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol

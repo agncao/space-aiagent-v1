@@ -1,7 +1,7 @@
 import json
 
 from space_aiagent.api import routes
-from space_aiagent.workflow.models import (
+from space_aiagent.models.workflow_schemas import (
     ArtifactRef,
     PlanStep,
     ResultRef,

@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from .models import (
+from space_aiagent.models.workflow_schemas import (
     RunResult,
     RunStatus,
     StepError,
@@ -23,6 +23,12 @@ class ScheduleDecision:
 class PreconditionEngine:
     @staticmethod
     def facts(run: WorkflowRun) -> set[str]:
+        """
+        收集当前 Run 已成立的前置事实（facts）:
+        1. 场景上下文注入 scene.opened |scene.none事实
+        2. 已成功步骤提供的 scene.opened |scene.candidates  |scene.none事实
+        3. 已成功步骤的动态产出 effects
+        """
         facts: set[str] = set()
         if run.scene_context.status == "opened":
             facts.add("scene.opened")
@@ -41,18 +47,29 @@ class Scheduler:
         self._preconditions = preconditions or PreconditionEngine()
 
     def decide(self, run: WorkflowRun) -> ScheduleDecision:
+        """
+        1. 所有steps 都在 正在运行/已经运行过了/BLOCKED 则 返回 finalize
+        2. 有一步骤 缺参数了，返回 wait
+        3. 发现有一步骤 缺打开的场景了，返回 wait
+
+        4. 以上都不是，至少有一步骤是PENDING/READY 则返回 execute
+        """
         step_map = {step.step_id: step for step in run.steps}
 
+        # 第一遍：只要某步骤依赖了失败/阻塞/取消的步骤，本步骤标记为 BLOCKED，
         for step in run.steps:
+            # 只处理尚未开始的步骤，已进入运行/终结态的不再重复处理
             if step.status not in {StepStatus.PENDING, StepStatus.READY}:
                 continue
             dependencies = [step_map[item] for item in step.depends_on]
+            # 找出处于失败/阻塞/取消等"未成功"终结态的依赖项
             failed_dependencies = [
                 item
                 for item in dependencies
                 if item.status in {StepStatus.FAILED, StepStatus.BLOCKED, StepStatus.CANCELLED}
             ]
             if failed_dependencies:
+                # 标记该步骤为 BLOCKED
                 step.status = StepStatus.BLOCKED
                 step.error = StepError(
                     code="DEPENDENCY_FAILED",
@@ -60,16 +77,22 @@ class Scheduler:
                 )
                 step.updated_at = utc_now()
 
+        # 安全检查：若仍有正在执行或等待工具结果的步骤，本轮不做新调度，等待其完成
         active = [step for step in run.steps if step.status in {StepStatus.RUNNING, StepStatus.WAITING_TOOL}]
         if active:
             return ScheduleDecision("wait", active[0].step_id)
 
+        # 计算当前 Run 已成立的前置事实集合（由场景状态与已成功步骤的 provides/effects 提供）
         facts = self._preconditions.facts(run)
+        # 第二遍：在依赖均已成功的前提下，按顺序挑选下一个可执行的步骤
         for step in run.steps:
+            # 只运行PENDING/READY, 正在运行/已经运行过了/BLOCKED 继续
             if step.status not in {StepStatus.PENDING, StepStatus.READY}:
                 continue
+            # 依赖尚未全部成功（或跳过）的步骤本轮跳过，等其依赖就绪
             if any(step_map[item].status not in {StepStatus.SUCCEEDED, StepStatus.SKIPPED} for item in step.depends_on):
                 continue
+            # 缺少必需参数：进入等待用户补充状态，由前端收集后再继续
             if step.missing_arguments:
                 step.status = StepStatus.WAITING_USER
                 run.status = RunStatus.WAITING_USER
@@ -81,6 +104,7 @@ class Scheduler:
                 )
                 step.updated_at = utc_now()
                 return ScheduleDecision("wait", step.step_id)
+            # 特殊动作：确保场景上下文存在。已打开则直接视为成功，否则转为等待用户选择打开/新建场景
             if step.action == "ensure_scene_context":
                 if "scene.opened" in facts:
                     step.status = StepStatus.SUCCEEDED
@@ -96,6 +120,7 @@ class Scheduler:
                 )
                 step.updated_at = utc_now()
                 return ScheduleDecision("wait", step.step_id)
+            # 校验步骤要求的前置事实是否全部成立；缺失则阻塞并记录原因
             missing_facts = [fact for fact in step.requires if fact not in facts]
             if missing_facts:
                 step.status = StepStatus.BLOCKED
@@ -105,14 +130,17 @@ class Scheduler:
                 )
                 step.updated_at = utc_now()
                 continue
+            # 所有条件满足：置为 READY，并指示引擎立即执行该步骤
             step.status = StepStatus.READY
             run.status = RunStatus.RUNNING
             run.waiting_context = None
             return ScheduleDecision("execute", step.step_id)
 
+        # 走到这里说明本轮没有可执行步骤：若任一步骤在等待用户，则整体维持等待态
         if any(step.status == StepStatus.WAITING_USER for step in run.steps):
             run.status = RunStatus.WAITING_USER
             return ScheduleDecision("wait")
+        # 无可执行步骤且无人等待用户输入：全部步骤已终结，可结束本次 Run
         return ScheduleDecision("finalize")
 
 

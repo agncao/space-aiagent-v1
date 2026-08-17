@@ -567,7 +567,7 @@ logging.getLogger().addHandler(handler)
 | 成熟度 | 生产验证多年 | 较新，生态待完善 |
 | 性能 | 几乎为零 | 多一条 OTLP 上报链路 |
 
-本项目已有的 structlog + Spring 风格日志体系已经很成熟（[见 `python教程.md` §6](./python教程.md)），路线 A 顺理成章：**Langfuse 看 Trace 树，Loki/ELK 看 trace_id 关联的日志**，各司其职。
+本项目已有的 structlog + Spring 风格日志体系已经很成熟（[见 `python教程.md` §6](python教程.md)），路线 A 顺理成章：**Langfuse 看 Trace 树，Loki/ELK 看 trace_id 关联的日志**，各司其职。
 
 ### 12. 没有 Prometheus / 运维平台时怎么办
 
@@ -1454,4 +1454,4 @@ with optional_span("my.operation", user_id=uid) as span:
 
 > **结语**：OpenTelemetry 的价值不在于它本身是个多强的工具，而在于它是一个**全行业共识的标准**——让 instrumentation 一次编写、后端随意切换、跨语言跨服务拼成完整链路。本项目的实践（OTel SDK + 自托管 Langfuse + structlog trace_id 注入 + 零开销 NoOp 兜底）是一个可直接复用的生产级模板。掌握了这套，无论你下一个项目是 Python AI Agent、Java 微服务、还是混合栈，都能用同一套心智模型落地可观测性。
 >
-> 进一步的系统指标（Prometheus）和可视化（Grafana）规划，见 [CLAUDE.md](../CLAUDE.md) 的 Phase 1A-2 / 1A-3，以及 [`python教程.md` §26](./python教程.md)。
+> 进一步的系统指标（Prometheus）和可视化（Grafana）规划，见 [CLAUDE.md](../../CLAUDE.md) 的 Phase 1A-2 / 1A-3，以及 [`python教程.md` §26](python教程.md)。

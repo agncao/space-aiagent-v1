@@ -1,8 +1,6 @@
 import pytest
 
-from space_aiagent.workflow.catalog import ActionCatalog
-from space_aiagent.workflow.engine import WorkflowEngine
-from space_aiagent.workflow.models import (
+from space_aiagent.models.workflow_schemas import (
     DraftResultRef,
     DraftStep,
     PlanDraft,
@@ -11,6 +9,8 @@ from space_aiagent.workflow.models import (
     StepResult,
     StepStatus,
 )
+from space_aiagent.workflow.catalog import ActionCatalog
+from space_aiagent.workflow.engine import WorkflowEngine
 from space_aiagent.workflow.repository import SqliteRunRepository
 
 

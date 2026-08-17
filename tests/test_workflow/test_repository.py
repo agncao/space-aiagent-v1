@@ -1,6 +1,6 @@
 import pytest
 
-from space_aiagent.workflow.models import ToolExecution, WorkflowRun
+from space_aiagent.models.workflow_schemas import ToolExecution, WorkflowRun
 from space_aiagent.workflow.repository import ConcurrentRunUpdateError, SqliteRunRepository
 
 

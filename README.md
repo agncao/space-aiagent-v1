@@ -53,7 +53,7 @@ SSE 事件包括 `plan_snapshot`、`step_update`、`run_update`、`tool_start`�
 | --- | --- |
 | FastAPI 路由 | `src/space_aiagent/api/routes.py` |
 | 工作流引擎 | `src/space_aiagent/workflow/engine.py` |
-| 工作流模型 | `src/space_aiagent/workflow/models.py` |
+| 工作流 Schema | `src/space_aiagent/models/workflow_schemas.py` |
 | Planner / Validator / Scheduler | `src/space_aiagent/workflow/` |
 | Worker 执行器 | `src/space_aiagent/workflow/executor.py` |
 | ActionCatalog | `config/actions.yaml` |

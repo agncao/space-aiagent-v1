@@ -2,7 +2,8 @@
 
 from typing import Any
 
-from .models import WorkflowRun
+from space_aiagent.models.workflow_schemas import WorkflowRun
+
 from .result_resolver import InputBindingError, resolve_result_reference
 
 

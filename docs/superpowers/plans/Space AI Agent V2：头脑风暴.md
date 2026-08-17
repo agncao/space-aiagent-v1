@@ -109,7 +109,6 @@ actions:
 ```python
 class SceneContext(BaseModel):
     status: Literal["unknown", "none", "open"]
-    scene_id: str | None
     scene_name: str | None
     revision: str | None
     verified_at: datetime | None

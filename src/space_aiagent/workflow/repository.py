@@ -10,8 +10,7 @@ from typing import Any, Protocol
 import aiosqlite
 
 from space_aiagent.infrastructure.config import PROJECT_ROOT
-
-from .models import TERMINAL_RUN_STATUSES, ToolExecution, WorkflowRun, utc_now
+from space_aiagent.models.workflow_schemas import TERMINAL_RUN_STATUSES, ToolExecution, WorkflowRun, utc_now
 
 
 class ConcurrentRunUpdateError(RuntimeError):
@@ -169,12 +168,12 @@ class SqliteRunRepository:
 
     async def initialize(self) -> None:
         """初始化数据库，创建所需的表和索引（幂等操作）。仅首次调用执行建表：
-           创建以下 5 张表：
-           - workflow_runs：工作流运行记录
-           - workflow_steps：工作流步骤记录
-           - tool_executions：工具执行记录（含幂等键）
-           - workflow_events：工作流事件流
-           - workflow_sequences：运行序列号
+        创建以下 5 张表：
+        - workflow_runs：工作流运行记录
+        - workflow_steps：工作流步骤记录
+        - tool_executions：工具执行记录（含幂等键）
+        - workflow_events：工作流事件流
+        - workflow_sequences：运行序列号
         """
         if self._initialized:
             return

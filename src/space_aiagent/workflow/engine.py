@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from space_aiagent.bridge import bridge_var
+from space_aiagent.infrastructure.database import get_db
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.models.sse_schemas import SSEEventType
-
-from .executor import StepExecutor, new_execution_id, AgentStepExecutor
-from .models import (
+from space_aiagent.models.workflow_schemas import (
     PlanDraft,
     ResultRef,
     RunStatus,
@@ -29,23 +28,37 @@ from space_aiagent.workflow.presentation import waiting_context_snapshot, workfl
 from space_aiagent.workflow.result_resolver import InputBindingError, ResultResolver
 from space_aiagent.workflow.scheduler import FinalizationGuard, Scheduler
 from space_aiagent.workflow.validator import PlanValidator
-from space_aiagent.infrastructure.database import get_db
+
+from .executor import AgentStepExecutor, StepExecutor, new_execution_id
 
 if TYPE_CHECKING:
     from langgraph.types import Checkpointer
 
+    from space_aiagent.workflow.repository import RunRepository, get_run_repository
+
     from .catalog import ActionCatalog
-    from space_aiagent.workflow.repository import RunRepository,get_run_repository
 
 logger = get_logger(__name__)
 
 
 class WorkflowGraphState(TypedDict, total=False):
+    """
+    LangGraph 节点间的瞬时路由状态；业务事实仍以 RunRepository 中的 WorkflowRun 为准。
+    """
+
     run_id: str
+    # 首次请求或恢复请求的用户输入
     user_input: str
+    # 是否从等待状态恢复
     is_resume: bool
+
+    # Planner生成的 由大模型根据用户意图推断出来的计划草案，仅供 validate 节点消费。
     plan_draft: dict[str, Any]
-    decision: str
+
+    # Scheduler 的路由结论，供条件边选择下一节点。
+    decision: Literal["execute", "wait", "finalize"]
+
+    # Scheduler 本轮选中的步骤；execute 时为待执行步骤，可能为空。
     next_step_id: str | None
 
 
@@ -58,9 +71,13 @@ class WorkflowEngine:
         executor: StepExecutor,
         checkpointer: Checkpointer | None,
     ) -> None:
+        # WorkflowRun仓库
         self._repository = repository
+        # {project_root}/config/actions.yaml 行为集合对象
         self._catalog = catalog
+        # 初始化规划器及其用的大模型
         self._planner = planner
+        # 规划器自动生成的规划是否合法的验证器
         self._validator = PlanValidator(catalog)
         self._scheduler = Scheduler()
         self._finalizer = FinalizationGuard()
@@ -69,6 +86,70 @@ class WorkflowEngine:
         self._graph = self._build_graph(checkpointer)
 
     def _build_graph(self, checkpointer: Checkpointer | None) -> Any:
+        """构建 LangGraph 工作流图。
+
+        ::
+
+                                    START
+                                      │
+                                      │ 条件边: is_resume?
+                                      │
+                          ┌───────────┴───────────┐
+                          │ 否（新请求）              │ 是（恢复执行）
+                          ▼                       │
+                     ┌─────────┐                  │
+                     │  plan   │                  │
+                     │ 规划步骤  │                  │
+                     └────┬────┘                  │
+                          │                       │
+                          ▼                       │
+                     ┌─────────┐                  │
+                     │validate │                  │
+                     │ 校验装配  │                  │
+                     └────┬────┘                  │
+                          │                       │
+                          ▼                       ▼
+                     ┌──────────────────────────────────┐
+                     │           schedule               │
+                     │          调度决策                  │
+                     └────────────┬─────────────────────┘
+                                  │
+                                  │ 条件边: decision?
+                                  │
+                     ┌────────────┼────────────┐
+                     │            │            │
+                     ▼            ▼            ▼
+                ┌─────────┐  ┌────────┐  ┌──────────┐
+                │ execute │  │  wait  │  │ finalize │
+                │ 执行步骤  │  │ 等待用户 │  │ 结束运行  │
+                └────┬────┘  └───┬────┘  └────┬─────┘
+                     │           │            │
+                     │           ▼            ▼
+                     │         END           END
+                     │
+                     └────── 回到 schedule ──────┘
+                            （循环执行下一步）
+
+        节点说明
+        --------
+        plan       AI 规划器根据用户意图生成 PlanDraft（步骤草案）
+        validate   校验草案合法性，装配 PlanStep，注入 ensure_scene_context，
+                   状态 PLANNING → RUNNING
+        schedule   遍历步骤，检查前置条件与依赖，决定下一步动作
+        execute    执行当前步骤（调用工具 / Agent），处理结果与副作用
+        finalize   汇总所有步骤结果，设置最终状态 SUCCEEDED / FAILED /
+                   PARTIALLY_SUCCEEDED
+        wait       暂停等待用户输入（如选场景、补参数），不进入图节点，直接 END
+
+        核心循环 —— execute ⇄ schedule
+        ------------------------------
+        每执行完一个步骤就回到 schedule 重新决策，直到所有步骤完成
+        或需要用户输入为止。
+
+        恢复路径（is_resume=true）
+        -------------------------
+        START 跳过 plan & validate，直接进入 schedule，继续执行剩余步骤。
+        """
         graph = StateGraph(WorkflowGraphState)
         graph.add_node("plan", self._plan_node)
         graph.add_node("validate", self._validate_node)
@@ -94,15 +175,15 @@ class WorkflowEngine:
         intent: str,
         scene_context: SceneContext,
     ) -> WorkflowRun:
-        '''
+        """
         创建一个会话里的新的一个轮次数据记录
         并启动一个会话里的轮次对话
-        '''
+        """
         run = WorkflowRun(
-            run_id=f"run_{uuid.uuid4().hex}",   #轮次id
-            thread_id=thread_id,    # 会话id
-            original_intent=intent, # 用户意图
-            scene_context=scene_context,    # 当前场景
+            run_id=f"run_{uuid.uuid4().hex}",  # 轮次id
+            thread_id=thread_id,  # 会话id
+            original_intent=intent,  # 用户意图
+            scene_context=scene_context,  # 当前场景
         )
         bridge = bridge_var.get()
         # 表示会话已经创建，需要更新轮次id
@@ -120,6 +201,7 @@ class WorkflowEngine:
             )
         except Exception as exc:
             logger.exception("workflow.run_failed", run_id=run.run_id)
+            # _graph.ainvoke 失败后，_fail_run 会把 run 状态改为 FAILED
             await self._fail_run(run.run_id, "WORKFLOW_ERROR", str(exc))
 
         # 查询当前轮次并返回当前轮次信息
@@ -185,24 +267,39 @@ class WorkflowEngine:
         return run
 
     async def _plan_node(self, state: WorkflowGraphState) -> dict[str, Any]:
+        # 查询 WorkflowRun 信息，得到用户原始意图
         run = await self._required_run(state["run_id"])
+        # 用 AI根据用户意图生成规划
         draft = await self._planner.plan(run.original_intent, run.scene_context)
+        # 将执行规划存储到WorkflowGraphState 里
         return {"plan_draft": draft.model_dump(mode="json")}
 
     async def _validate_node(self, state: WorkflowGraphState) -> dict[str, Any]:
+        """
+        将规划(初步计划) -> 计划
+        将工作流设置为运行中
+        发送一条计划类型的消息
+        """
+        # 查询 WorkflowRun 信息
         run = await self._required_run(state["run_id"])
+        # 将 WorkflowGraphState里存储的规划信息转换成强类型的PlanDraft规划信息
         draft = PlanDraft.model_validate(state["plan_draft"])
+        # 将规划转化成计划
         steps = self._validator.validate(draft, run.scene_context)
+
+        # 当规划顺利转化成计划，标志这工作流开始
         expected = run.revision
         run.steps = steps
         run.status = RunStatus.RUNNING
         await self._repository.save_run(run, expected_revision=expected)
+        # 发送一条工作流开始的消息
         await self._emit(SSEEventType.PLAN_SNAPSHOT, run, {"run": workflow_run_snapshot(run)})
         return {}
 
     async def _schedule_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
         before = run.model_dump(mode="json")
+        # 决定哪个分支：finally, wait, execute
         decision = self._scheduler.decide(run)
         if run.model_dump(mode="json") != before:
             expected = run.revision
@@ -238,6 +335,7 @@ class WorkflowEngine:
             return {"next_step_id": None}
 
         execution_step = step.model_copy(deep=True, update={"args": resolved_args})
+        # 将当前更改为运行步骤
         expected = run.revision
         step.status = StepStatus.RUNNING
         step.attempt_count += 1
@@ -257,11 +355,12 @@ class WorkflowEngine:
 
         result = await self._executor.execute(run, execution_step, execution_id)
         tool_executions = await self._repository.list_tool_executions(execution_id)
+        # 取最后一次工具调用返回来的的 current_scene_name
         acknowledged_scene = next(
             (
                 item.result
                 for item in reversed(tool_executions)
-                if item.result and (item.result.get("current_scene_name") or item.result.get("current_scene_id"))
+                if item.result and (item.result.get("current_scene_name") )
             ),
             None,
         )
@@ -269,7 +368,7 @@ class WorkflowEngine:
         if (
             acknowledged_scene is None
             and isinstance(evidence_tool_result, dict)
-            and (evidence_tool_result.get("current_scene_name") or evidence_tool_result.get("current_scene_id"))
+            and (evidence_tool_result.get("current_scene_name") )
         ):
             acknowledged_scene = evidence_tool_result
         expected = run.revision
@@ -285,20 +384,16 @@ class WorkflowEngine:
                 )
                 run.scene_context.status = "opened"
                 run.scene_context.scene_name = scene_name or run.scene_context.scene_name
-                run.scene_context.scene_id = (acknowledged_scene or {}).get(
-                    "current_scene_id"
-                ) or run.scene_context.scene_id
                 acknowledged_revision = int((acknowledged_scene or {}).get("scene_revision") or 0)
                 run.scene_context.revision = max(run.scene_context.revision + 1, acknowledged_revision)
                 run.scene_context.verified_at = utc_now()
             if "scene.none" in result.effects:
                 run.scene_context.status = "none"
-                run.scene_context.scene_id = None
                 run.scene_context.scene_name = None
                 run.scene_context.revision += 1
                 run.scene_context.verified_at = utc_now()
             elif acknowledged_scene:
-                run.scene_context.scene_id = acknowledged_scene.get("current_scene_id") or run.scene_context.scene_id
+                run.scene_context.status = "opened"
                 run.scene_context.scene_name = (
                     acknowledged_scene.get("current_scene_name") or run.scene_context.scene_name
                 )

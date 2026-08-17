@@ -11,7 +11,6 @@ from fastapi.responses import StreamingResponse
 from space_aiagent.api.transport import format_sse_frame
 from space_aiagent.bridge import StreamBridge, bridge_var, session_manager
 from space_aiagent.infrastructure.config import get_settings
-from space_aiagent.infrastructure.database import get_db
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.models.sse_schemas import (
     TERMINAL_EVENTS,
@@ -20,11 +19,8 @@ from space_aiagent.models.sse_schemas import (
     SSEEventType,
     ToolResultRequest,
 )
-from space_aiagent.workflow.catalog import ActionCatalog
-from space_aiagent.workflow.engine import WorkflowEngine
-from space_aiagent.workflow.executor import AgentStepExecutor
-from space_aiagent.workflow.models import RunStatus, SceneContext, WorkflowRun
-from space_aiagent.workflow.engine import get_engine
+from space_aiagent.models.workflow_schemas import RunStatus, SceneContext, WorkflowRun
+from space_aiagent.workflow.engine import WorkflowEngine, get_engine
 from space_aiagent.workflow.presentation import waiting_context_snapshot, workflow_run_snapshot
 from space_aiagent.workflow.repository import get_run_repository
 
@@ -53,11 +49,21 @@ def _streaming_response(generator: AsyncIterator[str]) -> StreamingResponse:
 
 
 async def _finish_workflow_stream(bridge: StreamBridge, run: WorkflowRun) -> None:
+    """工作流执行结束后，根据 run 的最终状态向 SSE 流发送收尾事件。
+
+    两种收尾路径：
+    - WAITING_USER：发送 INTERRUPT 事件（携带等待上下文）→ 发送 DONE(interrupted=True) → 流关闭
+    - 其他终端状态：发送 DONE 事件（携带 final_result 摘要）→ 流关闭
+    """
+    # 将 run 信息回写到 bridge，供 finally 清理时使用
     bridge.set_workflow_run(run.run_id)
     bridge.set_workflow_revision(run.revision)
+
     if run.status == RunStatus.WAITING_USER and run.waiting_context:
         waiting = run.waiting_context
+        # 生成 waiting_context 快照，解析关联的前序步骤结果
         waiting_payload = waiting_context_snapshot(run) or {}
+        # 推送 INTERRUPT 事件，前端据此展示等待提示（如确认框、参数输入等）
         await bridge._emit(
             SSEEventType.INTERRUPT,
             {
@@ -72,9 +78,11 @@ async def _finish_workflow_stream(bridge: StreamBridge, run: WorkflowRun) -> Non
                 "step_id": waiting.step_id,
             },
         )
+        # DONE 事件标记 interrupted=True，前端以此区分"等待中"和"真正结束"
         await bridge._emit(SSEEventType.DONE, {"content": "", "interrupted": True})
         return
 
+    # 终端状态（SUCCEEDED / FAILED / CANCELLED 等）：发送最终结果
     result = run.final_result.model_dump(mode="json") if run.final_result else None
     if run.status == RunStatus.CANCELLED:
         content = "任务已取消。"
@@ -175,7 +183,6 @@ async def chat(req: ChatRequest) -> StreamingResponse:
     # 4. 无活跃 Run → 创建新 Run 并启动执行
     bridge = session_manager.register(req.thread_id)
     scene_context = SceneContext.from_request(
-        scene_id=req.scene_id,
         scene_name=req.current_scene_name,
         revision=req.scene_revision,
     )
@@ -228,13 +235,11 @@ async def tool_result(req: ToolResultRequest) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="工具回告 args 与原调用不匹配")
 
     data_scene_name = req.data.get("sceneName") if isinstance(req.data, dict) else None
-    data_scene_id = req.data.get("sceneId") if isinstance(req.data, dict) else None
     normalized_result: dict[str, Any] = {
         "success": req.success,
         "code": req.code,
         "message": req.message,
         "data": req.data,
-        "current_scene_id": req.scene_id or data_scene_id,
         "current_scene_name": req.scene_name or data_scene_name,
         "scene_revision": req.scene_revision,
     }

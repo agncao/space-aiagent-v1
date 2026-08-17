@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from .models import PlanStep, ResultRef, StepStatus, WorkflowRun
+from space_aiagent.models.workflow_schemas import PlanStep, ResultRef, StepStatus, WorkflowRun
 
 
 class InputBindingError(ValueError):

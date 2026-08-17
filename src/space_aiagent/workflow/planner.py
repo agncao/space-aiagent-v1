@@ -7,9 +7,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from space_aiagent.infrastructure.llm import build_model
+from space_aiagent.models.workflow_schemas import PlanDraft, SceneContext, WaitingContext
 
 from .catalog import ActionCatalog
-from .models import PlanDraft, SceneContext, WaitingContext
 
 
 class Planner(Protocol):

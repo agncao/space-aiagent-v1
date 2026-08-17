@@ -49,7 +49,6 @@ TERMINAL_STEP_STATUSES = frozenset(
 
 class SceneContext(BaseModel):
     status: Literal["unknown", "none", "opened"] = "unknown"
-    scene_id: str | None = None
     scene_name: str | None = None
     revision: int = 0
     verified_at: datetime | None = None
@@ -58,14 +57,12 @@ class SceneContext(BaseModel):
     def from_request(
         cls,
         *,
-        scene_id: str | None,
         scene_name: str | None,
         revision: int,
     ) -> SceneContext:
         status: Literal["unknown", "none", "opened"] = "opened" if scene_name else "none"
         return cls(
             status=status,
-            scene_id=scene_id,
             scene_name=scene_name,
             revision=revision,
             verified_at=utc_now(),
@@ -84,11 +81,91 @@ class ArtifactRef(BaseModel):
 
 
 class DraftResultRef(BaseModel):
-    """Planner 使用的本计划局部结果引用。"""
+    """Planner 使用的本计划局部结果引用。
+
+    ``pointer`` 的作用
+    -----------------
+    ``pointer`` 是一个 JSON Pointer（RFC 6901），告诉执行引擎"从源步骤的
+    输出结果中**取哪个字段**的值"。
+
+    默认 ``"/data"`` 表示取整个 ``result.data``。
+
+    业务场景举例
+    ------------
+    用户说："搜索高分系列卫星，然后加载第一个卫星的轨道"
+
+    step_1（搜索卫星）返回结果::
+
+        {
+          "status": "success",
+          "data": [
+            {"id": "GF-1", "name": "高分一号", "orbit_type": "LEO"},
+            {"id": "GF-2", "name": "高分二号", "orbit_type": "SSO"}
+          ]
+        }
+
+    step_2（加载轨道）需要第一个卫星的 id：::
+
+        {
+          "ref": "step_2",
+          "action": "load_satellite_orbit",
+          "input_bindings": {
+            "satellite_id": {
+              "source_ref": "step_1",
+              "pointer": "/data/0/id",    // ← 从 step_1 结果中取 data[0].id → "GF-1"
+              "required": true
+            }
+          }
+        }
+
+    ``pointer`` 取值示例
+    -------------------
+    ================= ====================================
+    pointer            含义
+    ================= ====================================
+    ``"/data"``        取整个 data 字段（默认值）
+    ``"/data/0/id"``   取 data 数组第一个元素的 id
+    ``"/data/name"``   取 data 对象的 name 字段
+    ``"/data/0"``      取 data 数组的第一个元素（整个对象）
+    ================= ====================================
+    """
 
     source_ref: str
     pointer: str = "/data"
     required: bool = True
+    """该数据绑定是否必需。
+
+    - ``True``（默认）：当前步骤**必须**拿到这个数据才能执行。如果源步骤失败
+      或数据缺失，当前步骤会被阻塞（BLOCKED）。
+    - ``False``：该数据是"尽力而为"的可选增强。如果源步骤失败或数据缺失，
+      当前步骤仍然可以执行（参数使用默认值或留空）。
+
+    业务场景举例
+    ------------
+    **required=True**：加载卫星轨道，必须要有 ``satellite_id``，否则无法执行::
+
+        {
+          "satellite_id": {
+            "source_ref": "step_1",
+            "pointer": "/data/0/id",
+            "required": true   // ← 没有卫星 ID 就阻塞
+          }
+        }
+
+    **required=False**：分析覆盖范围，可选传入时间范围。如果前序步骤没提供，
+    就用默认值（当前时间）::
+
+        {
+          "time_range": {
+            "source_ref": "step_1",
+            "pointer": "/data/time_range",
+            "required": false  // ← 没有时间范围也能执行，用默认值
+          }
+        }
+
+    校验规则：``required=True`` 的 binding 不能引用 ``required=False`` 的步骤
+    —— 因为非必需步骤可能被跳过，无法保证数据可用。
+    """
 
 
 class ResultRef(BaseModel):
@@ -100,13 +177,43 @@ class ResultRef(BaseModel):
 
 
 class DraftStep(BaseModel):
-    """Planner 可输出的非可信步骤。"""
+    """Planner (AI) 可输出的非可信步骤。
 
-    ref: str = Field(description="本计划内唯一的短引用，例如 step_1")
+    ``ref`` vs ``depends_on`` 的区别
+    -------------------------------
+    - ``ref``：本步骤的**身份证号**，在本计划内唯一标识自己，供其他步骤引用。
+    - ``depends_on``：本步骤**引用了哪些其他步骤的身份证号**，声明执行顺序依赖。
+
+    业务场景举例
+    ------------
+    用户说："加载高分一号的轨道，并分析它的覆盖范围"
+
+    Planner 可能生成两个步骤：::
+
+        [
+          {
+            "ref": "step_1",
+            "action": "load_satellite_orbit",
+            "title": "加载高分一号轨道",
+            "args": {"satellite_name": "高分一号"}
+          },
+          {
+            "ref": "step_2",
+            "action": "analyze_coverage",
+            "title": "分析覆盖范围",
+            "depends_on": ["step_1"]   // ← 引用 step_1 的 ref，表示"step_1 跑完我才能跑"
+          }
+        ]
+
+    这里 ``step_1`` 的 ``ref`` 是 ``"step_1"``，它是自己的标识；
+    ``step_2`` 的 ``depends_on`` 是 ``["step_1"]``，它引用了别人的标识来声明依赖。
+    """
+
+    ref: str = Field(description="本计划内唯一的短引用，例如 step_1（身份证号，供 depends_on / input_bindings 引用）")
     action: str = Field(description="ActionCatalog 中的 action 名")
     title: str = Field(description="给用户展示的简短步骤标题")
     args: dict[str, Any] = Field(default_factory=dict)
-    depends_on: list[str] = Field(default_factory=list, description="依赖步骤的 ref")
+    depends_on: list[str] = Field(default_factory=list, description="依赖步骤的 ref（执行顺序约束，不涉及数据传递）")
     input_bindings: dict[str, DraftResultRef] = Field(default_factory=dict)
     required: bool = True
     missing_arguments: list[str] = Field(default_factory=list)
@@ -123,15 +230,61 @@ class StepError(BaseModel):
     retryable: bool = False
     details: dict[str, Any] | None = None
 
-
+# 例1：用户要求“创建一个新场景”：
+# StepResult(
+#     status="success",
+#     code="SCENE_CREATED",
+#     summary="场景创建成功",
+#     data={"scene_id": "scene-001"},
+#     effects=["scene.opened"],
+#     evidence={
+#         "agent_status": "success",
+#         "tool_call_count": 1,
+#         "tool_result": {
+#             "sceneId": "scene-001",
+#             "sceneName": "测试场景",
+#         },
+#     },
+# )
 class StepResult(BaseModel):
+    """
+    单个步骤的执行结果。
+    """
+
+    # status: 执行状态，取值 "success" | "failed" | "waiting_user"
+    #     - "success"      步骤执行成功，data 中包含业务数据
+    #     - "failed"       步骤执行失败，error 字段包含错误详情
+    #     - "waiting_user" 等待用户确认/输入，前端应展示交互 UI
     status: Literal["success", "failed", "waiting_user"]
     code: str
+
+    # summary: 人类可读的摘要信息，用于日志/通知，如：
+    #     - "场景创建成功" / "创建场景失败"
     summary: str
     data: list[dict[str, Any]] | dict[str, Any] | None = None
+    #    artifacts: 步骤产生的产物引用列表，例如：
+    # StepResult(
+    #     status="success",
+    #     code="ANALYSIS_COMPLETED",
+    #     summary="可见性分析完成",
+    #     data={"window_count": 12},
+    #     artifacts=[
+    #         ArtifactRef(
+    #             artifact_id="report-1",
+    #             kind="report",
+    #             name="可见性分析报告",
+    #             uri="/artifacts/report-1",
+    #             media_type="application/pdf",
+    #             metadata={},
+    #         )
+    #     ],
+    # )
     artifacts: list[ArtifactRef] = Field(default_factory=list)
+    # effects: 步骤产生的副作用描述列表
     effects: list[str] = Field(default_factory=list)
+    # evidence: 调试/审计用的证据字典，记录中间过程，通常为空
     evidence: dict[str, Any] = Field(default_factory=dict)
+    # retryable: 是否可重试，失败时标记前端是否展示"重试"按钮
     retryable: bool = False
     error: StepError | None = None
 
@@ -141,7 +294,45 @@ class PlanStep(BaseModel):
     action: str
     title: str
     args: dict[str, Any] = Field(default_factory=dict)
+    # 执行顺序依赖。表示"步骤 B 必须在步骤 A 之后执行"，但不关心步骤 A 的输出数据。只是因为业务逻辑上 A 必须先完成。
+    # 例子：用户说"在当前场景中加载高分一号的轨道"
+    # {
+    #     "ref": "step_1",
+    #     "action": "ensure_scene_context",
+    #     "title": "确认要使用的场景",
+    #     "args": {}
+    # }
+    # {
+    #     "ref": "step_2",
+    #     "action": "load_satellite_orbit",
+    #     "title": "加载高分一号轨道",
+    #     "args": {"satellite_name": "高分一号"},
+    #     "depends_on": ["step_1"]
+    # }
     depends_on: list[str] = Field(default_factory=list)
+
+    # 数据传递依赖。表示"步骤 B 的参数 X，需要从步骤 A 的输出结果中提取某个字段"。既隐含了执行顺序依赖，又指定了数据来源。
+    # 例子：用户说"搜索高分系列卫星，然后加载第一个的轨道"
+    # {
+    #   "ref": "step_1",
+    #   "action": "search_satellites",
+    #   "title": "搜索高分系列卫星",
+    #   "args": { "keyword": "高分" }
+    # }
+    # {
+    #     "ref": "step_2",
+    #     "action": "load_satellite_orbit",
+    #     "title": "加载卫星轨道",
+    #     "args": {},
+    #     "depends_on": ["step_1"],
+    #     "input_bindings": {
+    #         "satellite_id": {
+    #             "source_ref": "step_1",
+    #             "pointer": "/data/0/id",
+    #             "required": true
+    #         }
+    #     }
+    # }
     input_bindings: dict[str, ResultRef] = Field(default_factory=dict)
     requires: list[str] = Field(default_factory=list)
     provides: list[str] = Field(default_factory=list)
@@ -170,9 +361,7 @@ class WaitingContext(BaseModel):
     确认有副作用的操作，以及继续 Worker 发起的交互式中断。
     """
 
-    kind: Literal[
-        "missing_precondition", "missing_arguments", "scene_selection", "approval", "agent_interrupt"
-    ]
+    kind: Literal["missing_precondition", "missing_arguments", "scene_selection", "approval", "agent_interrupt"]
     """等待原因；决定恢复阶段应采用的交互语义和解析策略。"""
 
     step_id: str

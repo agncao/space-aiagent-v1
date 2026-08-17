@@ -52,7 +52,7 @@ Scheduler 只领取依赖已完成、facts 已满足且没有活跃 attempt 的 
 所有依赖步骤转为 blocked，无依赖步骤可继续。FinalizationGuard 是唯一允许把 Run 置为终态的
 组件；`waiting_user` 只结束当前 SSE，不结束 Run。
 
-`scene.opened` 由 `SceneContext(status, scene_id, scene_name, revision, verified_at)` 表示。
+`scene.opened` 由 `SceneContext(status, scene_name, revision, verified_at)` 表示。
 缺少场景时，工作流插入 `ensure_scene_context` 并等待用户选择打开或创建；前置步骤成功后，
 原始待办自动恢复，不再询问是否继续。
 

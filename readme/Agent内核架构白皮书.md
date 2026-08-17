@@ -98,7 +98,6 @@ pending → ready → running → waiting_tool → succeeded
 
 ```text
 status: unknown | none | opened
-scene_id
 scene_name
 revision
 verified_at

@@ -38,6 +38,7 @@ POST /api/v2/space/chat
 | FastAPI 入口 | `src/space_aiagent/main.py` |
 | V2 API / SSE | `src/space_aiagent/api/routes.py` |
 | SSE schema | `src/space_aiagent/models/sse_schemas.py` |
+| 工作流 schema | `src/space_aiagent/models/workflow_schemas.py` |
 | Bridge / 会话 | `src/space_aiagent/bridge/` |
 | 工作流核心 | `src/space_aiagent/workflow/` |
 | ActionCatalog | `config/actions.yaml` |

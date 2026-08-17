@@ -23,7 +23,6 @@
   "thread_id": "thread-1",
   "message_id": "message-1",
   "current_scene_name": null,
-  "scene_id": null,
   "scene_revision": 0,
   "mode": "continue"
 }
@@ -50,7 +49,6 @@
   "code": "ENTITY_CREATED",
   "message": "ok",
   "data": {"entity_id": "facility-1"},
-  "scene_id": "scene-1",
   "scene_name": "火箭场景",
   "scene_revision": 2
 }
@@ -123,5 +121,5 @@ GET Run Snapshot 恢复，不根据帧数量推测进度。
 ## 4. 场景版本
 
 - 每次场景切换或结构变化后递增 `scene_revision`。
-- 工具回告必须携带执行后的 `scene_id`、`scene_name`和 `scene_revision`。
+- 工具回告必须携带执行后的 `scene_name`和 `scene_revision`。
 - 场景选择 resume 必须原样回传候选列表中的 `scene_name`。

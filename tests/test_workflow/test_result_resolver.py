@@ -1,6 +1,6 @@
 import pytest
 
-from space_aiagent.workflow.models import (
+from space_aiagent.models.workflow_schemas import (
     ArtifactRef,
     PlanStep,
     ResultRef,

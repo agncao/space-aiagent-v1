@@ -1,7 +1,6 @@
 """V2 确定性工作流。"""
 
-from .catalog import ActionCatalog, ActionDefinition
-from .models import (
+from space_aiagent.models.workflow_schemas import (
     PlanDraft,
     PlanStep,
     RunResult,
@@ -12,6 +11,8 @@ from .models import (
     ToolExecution,
     WorkflowRun,
 )
+
+from .catalog import ActionCatalog, ActionDefinition
 from .repository import RunRepository, SqliteRunRepository, get_run_repository
 
 __all__ = [

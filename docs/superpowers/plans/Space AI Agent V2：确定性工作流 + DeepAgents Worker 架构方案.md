@@ -136,7 +136,6 @@ Scheduler 每次只调度满足以下条件的步骤：
 
 ```text
 status: unknown | none | opened
-scene_id
 scene_name
 revision
 verified_at
@@ -237,7 +236,7 @@ idempotency_key
 ```text
 thread_id、run_id、step_id、execution_id
 tool_call_id、idempotency_key
-scene_id、scene_name、scene_revision
+scene_name、scene_revision
 success、code、data、error
 ```
 

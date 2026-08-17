@@ -28,7 +28,7 @@ from typing import Any
 
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.models.sse_schemas import SSEEventType
-from space_aiagent.workflow.models import ToolExecution
+from space_aiagent.models.workflow_schemas import ToolExecution
 
 logger = get_logger(__name__)
 

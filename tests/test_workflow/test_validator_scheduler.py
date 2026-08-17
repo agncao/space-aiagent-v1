@@ -1,7 +1,6 @@
 import pytest
 
-from space_aiagent.workflow.catalog import ActionCatalog, ActionDefinition
-from space_aiagent.workflow.models import (
+from space_aiagent.models.workflow_schemas import (
     DraftResultRef,
     DraftStep,
     PlanDraft,
@@ -11,6 +10,7 @@ from space_aiagent.workflow.models import (
     StepStatus,
     WorkflowRun,
 )
+from space_aiagent.workflow.catalog import ActionCatalog, ActionDefinition
 from space_aiagent.workflow.scheduler import FinalizationGuard, Scheduler
 from space_aiagent.workflow.validator import PlanValidationError, PlanValidator
 

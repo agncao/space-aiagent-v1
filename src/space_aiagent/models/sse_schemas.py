@@ -71,7 +71,6 @@ class ChatRequest(BaseModel):
     thread_id: str = Field(min_length=1)
     message_id: str = ""
     current_scene_name: str | None = None
-    scene_id: str | None = None
     scene_revision: int = Field(default=0, ge=0)
     # continue 例如：Agent 向用户发起提问/确认后，用户回复时。此时 Run 处于暂停等待状态(WAITING_USER)，用户输入注入后继续执行。
     # replace 例如 对当前 Agent 的回答不满意，想要"打断"正在进行的对话，用新的输入重新开始一轮。相当于 中止旧 Run + 创建新 Run
@@ -93,7 +92,6 @@ class ToolResultRequest(BaseModel):
     code: str = ""
     message: str = ""
     data: dict[str, Any] | list[Any] | None = None
-    scene_id: str | None = None
     scene_name: str | None = None
     scene_revision: int = Field(ge=0)
 

@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from space_aiagent.bridge.stream_bridge import StreamBridge
-from space_aiagent.workflow.models import WorkflowRun
+from space_aiagent.models.workflow_schemas import WorkflowRun
 from space_aiagent.workflow.repository import SqliteRunRepository
 
 
