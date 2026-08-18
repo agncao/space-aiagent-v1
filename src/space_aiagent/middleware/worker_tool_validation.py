@@ -22,7 +22,6 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import ToolMessage
 from langgraph.config import get_config
-from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
@@ -30,8 +29,7 @@ from space_aiagent.bridge import bridge_var
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
 from space_aiagent.infrastructure.utils import message_util
-from space_aiagent.models.response_schema import response_constants
-from space_aiagent.models.response_schema.worker_response import ResponseCode, WorkerResponse
+from space_aiagent.models.response_schema.worker_response import WorkerResponse
 from space_aiagent.tools.scene_management import tools
 from space_aiagent.workflow.execution_context import (
     StepAlreadyCompletedError,
@@ -41,40 +39,15 @@ from space_aiagent.workflow.execution_context import (
 
 logger = get_logger(__name__)
 
-# LLM 偶尔把可选参数的「无值」输出成字符串化的 null 字面量（JSON 里没有 Python
-# 的 None，LLM 会吐 "None" / "null" / ""），而不是 JSON null。统一归一化回
-# Python None，让下游 args_to_camel(skip_none=True) 直接丢弃该参数，避免把
-# 字符串 "None" 当真实值发给前端（如 sceneName="None" 导致前端查不到结果）。
-_NULL_STRING_LITERALS = frozenset({"none", "null", ""})
-
-
-def _normalize_null_args(args: Any) -> Any:
-    """把字符串化的 null 字面量（"None"/"null"/""）归一化为 Python None。
-
-    仅处理顶层 str 值；非 dict 原样返回。返回值始终是新 dict（不就地修改）。
-    """
-    if not isinstance(args, dict):
-        return args
-    return {
-        key: (None if isinstance(val, str) and val.strip().lower() in _NULL_STRING_LITERALS else val)
-        for key, val in args.items()
-    }
-
 
 class WorkerToolValidationMiddleware(AgentMiddleware):
     """Worker 工具权限、前置条件与执行循环保护。"""
 
     state_schema = AgentState
-    # 不需要场景上下文的工具白名单
-    # - create_scenario: 场景入口工具，本身用于建立场景上下文
-    # - query_scenario: 查询场景信息，可确认当前是否已经打开场景，可建立场景上下文
-    # - WorkerResponse: 结构化输出伪工具，非真实工具调用
-    _SCENE_EXEMPT_TOOLS: ClassVar[set[str]] = {
+    # 工具白名单: 以下工具不需要在 config/actions.yaml 的 allowed_tools里, 默认就是允许通过的
+    _EXEMPT_TOOLS: ClassVar[set[str]] = {
         WorkerResponse.__name__,
         "read_file",
-        tools.create_scenario.name,
-        tools.query_scenario.name,
-        tools.open_scenario.name,
     }
 
     def __init__(
@@ -121,12 +94,6 @@ class WorkerToolValidationMiddleware(AgentMiddleware):
         tool_call_id = request.tool_call.get("id", "")
         thread_id = get_config().get("configurable", {}).get("thread_id", "")
 
-        # 校验 0: 归一化字符串化的 null 字面量（"None"/"null"/"" → None）
-        raw_args = request.tool_call.get("args", {})
-        normalized_args = _normalize_null_args(raw_args)
-        if normalized_args != raw_args:
-            request = request.override(tool_call={**request.tool_call, "args": normalized_args})
-
         logger.info(
             "tool call before",
             agent=self._agent_name,
@@ -140,7 +107,7 @@ class WorkerToolValidationMiddleware(AgentMiddleware):
         # 不属于领域动作，允许继续使用。
         execution_context = step_execution_context_var.get()
         execution_signature: str | None = None
-        if execution_context is not None and tool_name not in {"read_file", WorkerResponse.__name__}:
+        if execution_context is not None and tool_name not in self._EXEMPT_TOOLS:
             if tool_name not in execution_context.allowed_tools:
                 logger.warning(
                     "workflow.tool_not_allowed",
@@ -185,37 +152,6 @@ class WorkerToolValidationMiddleware(AgentMiddleware):
                     ensure_ascii=False,
                 ),
                 tool_call_id=tool_call_id,
-            )
-
-        # 校验 2: 场景上下文（白名单外）→ 返回 Command(goto=END) 终止 Worker 图
-        # ToolMessage 关闭 AI 的 tool_call（LLM API 协议要求），Command(goto=END)
-        # 跳过 Worker 后续 LLM 调用。场景事实来自 WorkflowRun 的只读步骤投影。
-        # Scheduler 已做前置条件判断；Worker 侧继续 fail-fast，形成纵深保护。
-        if (
-            execution_context is not None
-            and tool_name not in self._SCENE_EXEMPT_TOOLS
-            and not execution_context.scene_opened
-        ):
-            logger.warning("校验失败 无场景上下文", tool_name=tool_name)
-            shortcut = response_constants.SHORTCUT_RESPONSES[ResponseCode.NO_SCENE]
-            return Command(
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=json.dumps(
-                                {
-                                    "success": False,
-                                    "code": shortcut.code,
-                                    "status": shortcut.status,
-                                    "message": shortcut.summary,
-                                },
-                                ensure_ascii=False,
-                            ),
-                            tool_call_id=tool_call_id,
-                        )
-                    ]
-                },
-                goto=END,
             )
 
         # 未来扩展点: 参数校验、权限、限流等

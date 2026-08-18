@@ -97,7 +97,7 @@ class AgentStepExecutor:
         if resume_payload := step.args.pop("_agent_resume", None):
             graph_input = Command(resume=resume_payload)
 
-        context = StepExecutionContext(
+        step_execute_context = StepExecutionContext(
             run_id=run.run_id,
             step_id=step.step_id,
             execution_id=execution_id,
@@ -106,7 +106,7 @@ class AgentStepExecutor:
             scene_revision=run.scene_context.revision,
             scene_opened=run.scene_context.status == "opened",
         )
-        token = step_execution_context_var.set(context)
+        step_execute_context_token = step_execution_context_var.set(step_execute_context)
         try:
             result = await agent.ainvoke(
                 graph_input,
@@ -131,8 +131,19 @@ class AgentStepExecutor:
                 error=StepError(code="NO_PROGRESS", message=str(exc), retryable=False),
             )
         finally:
-            step_execution_context_var.reset(token)
+            step_execution_context_var.reset(step_execute_context_token)
 
+        # 1. config/workers.yaml 配置了 interrupt_on 会在此中断
+        # 2. 在此处 执行器捕获
+        # 3. 然后在 engine.py _execute_node方法：
+        #         waiting_kind = result.evidence.get("waiting_kind", "missing_arguments")
+        #         run.waiting_context = WaitingContext(
+        #             kind=waiting_kind,  # → "agent_interrupt"
+        #             ...
+        #         )
+        # 4. 恢复时消费：_apply_resume 方法:
+        #         elif waiting.kind == "agent_interrupt":
+        #         step.args["_agent_resume"] = data or {"content": user_input}
         interrupts = result.get("__interrupt__") if isinstance(result, dict) else None
         if interrupts:
             values = [getattr(item, "value", item) for item in interrupts]
@@ -155,10 +166,10 @@ class AgentStepExecutor:
         code = response.code.value
         evidence: dict[str, Any] = {
             "agent_status": response.status,
-            "tool_call_count": context.tool_call_count,
+            "tool_call_count": step_execute_context.tool_call_count,
         }
-        if context.signature_results:
-            evidence["tool_result"] = next(reversed(context.signature_results.values()))
+        if step_execute_context.signature_results:
+            evidence["tool_result"] = next(reversed(step_execute_context.signature_results.values()))
 
         if response.code == ResponseCode.NO_SCENE:
             return StepResult(

@@ -257,9 +257,6 @@ class StepResult(BaseModel):
     #     - "waiting_user" 等待用户确认/输入，前端应展示交互 UI
     status: Literal["success", "failed", "waiting_user"]
     code: str
-
-    # summary: 人类可读的摘要信息，用于日志/通知，如：
-    #     - "场景创建成功" / "创建场景失败"
     summary: str
     data: list[dict[str, Any]] | dict[str, Any] | None = None
     #    artifacts: 步骤产生的产物引用列表，例如：
@@ -282,7 +279,7 @@ class StepResult(BaseModel):
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     # effects: 步骤产生的副作用描述列表
     effects: list[str] = Field(default_factory=list)
-    # evidence: 调试/审计用的证据字典，记录中间过程，通常为空
+    # evidence: 步骤执行的证据/元信息字典，承载执行器内部状态，不直接面向最终用户。
     evidence: dict[str, Any] = Field(default_factory=dict)
     # retryable: 是否可重试，失败时标记前端是否展示"重试"按钮
     retryable: bool = False
