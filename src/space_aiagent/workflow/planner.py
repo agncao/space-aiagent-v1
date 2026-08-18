@@ -48,7 +48,14 @@ class StructuredPlanner:
 """
         human = f"当前场景上下文：{scene_context.model_dump(mode='json')}\n用户原始请求：{intent}"
         planner = self._model.with_structured_output(PlanDraft)
-        result = await planner.ainvoke([SystemMessage(content=system), HumanMessage(content=human)])
+        # 结构化输出只能在收到完整响应后校验，不需要 token 流。
+        # 某些 OpenAI 兼容接口在 json_schema 流的最终帧中会将 Pydantic
+        # 实例写入仍标注为 None 的 parsed 字段，导致无害但误导的
+        # PydanticSerializationUnexpectedValue 警告。
+        result = await planner.ainvoke(
+            [SystemMessage(content=system), HumanMessage(content=human)],
+            stream=False,
+        )
         return PlanDraft.model_validate(result)
 
     async def resolve_waiting(
@@ -68,6 +75,7 @@ class StructuredPlanner:
             [
                 SystemMessage(content=system),
                 HumanMessage(content=(f"暂停上下文：{waiting.model_dump(mode='json')}\n用户回答：{user_input}")),
-            ]
+            ],
+            stream=False,
         )
         return ResumeDecision.model_validate(result)

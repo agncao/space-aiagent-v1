@@ -30,15 +30,24 @@ TERMINAL_RUN_STATUSES = frozenset(
 
 
 class StepStatus(StrEnum):
+    # 待调度.步骤已经创建，但依赖步骤可能尚未完成。
     PENDING = "pending"
+    # 可以执行。依赖和前置条件均已满足，等待执行器领取。
     READY = "ready"
+    # 正在执行
     RUNNING = "running"
+    # 已经发出工具请求，等待 前端 回告
     WAITING_TOOL = "waiting_tool"
+    # 需要用户回答
     WAITING_USER = "waiting_user"
     SUCCEEDED = "succeeded"
+    # 执行失败
     FAILED = "failed"
+    # 因依赖步骤失败而无法执行。它不是自身执行失败，而是根本没有执行机会。
     BLOCKED = "blocked"
+    # 根据工作流规则主动跳过，通常用于非必需步骤或已经不需要执行的分支。
     SKIPPED = "skipped"
+    # 因整个 Run 被取消而终止。尚未完成的步骤通常都会转成这个状态。
     CANCELLED = "cancelled"
 
 

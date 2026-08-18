@@ -147,6 +147,7 @@ async def _stream_workflow_response(
 
 @router.post("/chat")
 async def chat(req: ChatRequest) -> StreamingResponse:
+    logger.debug("收到用户输入", req=req)
     _ensure_enabled()
     if session_manager.get_bridge(req.thread_id) is not None:
         raise HTTPException(status_code=409, detail="该会话已有活跃请求在处理")
