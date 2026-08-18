@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Checkpointer
 
 from space_aiagent.bridge import bridge_var
 from space_aiagent.infrastructure.database import get_db
@@ -25,18 +26,13 @@ from space_aiagent.models.workflow_schemas import (
 )
 from space_aiagent.workflow.planner import ResumeDecision, StructuredPlanner
 from space_aiagent.workflow.presentation import waiting_context_snapshot, workflow_run_snapshot
+from space_aiagent.workflow.repository import RunRepository, get_run_repository
 from space_aiagent.workflow.result_resolver import InputBindingError, ResultResolver
 from space_aiagent.workflow.scheduler import FinalizationGuard, Scheduler
 from space_aiagent.workflow.validator import PlanValidator
 
+from .catalog import ActionCatalog
 from .executor import AgentStepExecutor, StepExecutor, new_execution_id
-
-if TYPE_CHECKING:
-    from langgraph.types import Checkpointer
-
-    from space_aiagent.workflow.repository import RunRepository, get_run_repository
-
-    from .catalog import ActionCatalog
 
 logger = get_logger(__name__)
 
@@ -538,6 +534,9 @@ class WorkflowEngine:
             "revision": run.revision,
             "waiting_context": waiting_context_snapshot(run),
         }
+
+
+_engine: WorkflowEngine | None = None
 
 
 async def get_engine() -> WorkflowEngine:

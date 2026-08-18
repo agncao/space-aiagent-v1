@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 from deepagents import create_deep_agent
+from deepagents.backends.protocol import BackendProtocol
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import HumanMessage
 from langgraph.types import Checkpointer, Command
@@ -15,17 +16,13 @@ from space_aiagent.infrastructure.backend import build_agent_backend
 from space_aiagent.models.response_schema.worker_response import ResponseCode, WorkerResponse
 from space_aiagent.models.workflow_schemas import PlanStep, StepError, StepResult, WorkflowRun
 
-from .execution_context import (
+from space_aiagent.workflow.catalog import ActionCatalog
+from space_aiagent.workflow.execution_context import (
     StepAlreadyCompletedError,
     StepExecutionContext,
     StepExecutionLimitError,
     step_execution_context_var,
 )
-
-if TYPE_CHECKING:
-    from deepagents.backends.protocol import BackendProtocol
-
-    from .catalog import ActionCatalog
 
 
 class StepExecutor(Protocol):
