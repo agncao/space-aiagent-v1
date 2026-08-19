@@ -9,8 +9,10 @@ from pydantic import BaseModel, Field
 from space_aiagent.infrastructure.llm import build_model
 from space_aiagent.models.workflow_schemas import PlanDraft, SceneContext, WaitingContext
 
-from .catalog import ActionCatalog
+from space_aiagent.workflow.catalog import ActionCatalog
+from space_aiagent.infrastructure.logging import get_logger
 
+logger = get_logger(__name__)
 
 class Planner(Protocol):
     async def plan(self, intent: str, scene_context: SceneContext) -> PlanDraft: ...
@@ -78,4 +80,6 @@ class StructuredPlanner:
             ],
             stream=False,
         )
+
+        logger.debug("规划已恢复中断", result = result)
         return ResumeDecision.model_validate(result)

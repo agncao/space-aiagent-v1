@@ -13,6 +13,7 @@ from langgraph.types import Checkpointer, Command
 
 from space_aiagent.agents.workers import load_workers
 from space_aiagent.infrastructure.backend import build_agent_backend
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.models.response_schema.worker_response import ResponseCode, WorkerResponse
 from space_aiagent.models.workflow_schemas import PlanStep, StepError, StepResult, WorkflowRun
 
@@ -24,6 +25,8 @@ from space_aiagent.workflow.execution_context import (
     step_execution_context_var,
 )
 
+logger = get_logger(__name__)
+
 
 class StepExecutor(Protocol):
     async def execute(self, run: WorkflowRun, step: PlanStep, execution_id: str) -> StepResult: ...
@@ -33,10 +36,10 @@ class AgentStepExecutor:
     """每次只给 Worker 一个 Action，外层顺序不再交给模型。"""
 
     def __init__(
-        self,
-        catalog: ActionCatalog,
-        checkpointer: Checkpointer | None,
-        backend: BackendProtocol | None = None,
+            self,
+            catalog: ActionCatalog,
+            checkpointer: Checkpointer | None,
+            backend: BackendProtocol | None = None,
     ) -> None:
         self._catalog = catalog
         self._checkpointer = checkpointer
@@ -82,6 +85,8 @@ class AgentStepExecutor:
             raise ValueError("system step 不应交给 AgentStepExecutor")
         action = self._catalog.get(step.action)
         agent = self._get_agent(step.executor)
+        logger.info(f"将任务交给子智能体{step.executor},行为:{step.action}",
+                    thread_id=run.thread_id, run_id=run.run_id, args=step.args)
         task = (
             f"只执行这个步骤：{step.title}\n"
             f"action: {step.action}\n"
@@ -143,6 +148,8 @@ class AgentStepExecutor:
         #         step.args["_agent_resume"] = data or {"content": user_input}
         interrupts = result.get("__interrupt__") if isinstance(result, dict) else None
         if interrupts:
+            logger.info(f"子智能体{step.executor}调用{step.action}产生中断",
+                        thread_id=run.thread_id, run_id=run.run_id)
             values = [getattr(item, "value", item) for item in interrupts]
             return StepResult(
                 status="waiting_user",
@@ -166,6 +173,7 @@ class AgentStepExecutor:
             "tool_call_count": step_execute_context.tool_call_count,
         }
         if step_execute_context.signature_results:
+            logger.info(f"子智能体{step.executor}产生了执行结果",signature_results=step_execute_context.signature_results)
             evidence["tool_result"] = next(reversed(step_execute_context.signature_results.values()))
 
         if response.code == ResponseCode.NO_SCENE:
@@ -177,23 +185,30 @@ class AgentStepExecutor:
                 evidence={**evidence, "waiting_kind": "missing_precondition"},
             )
         if response.code == ResponseCode.MISSING_REQUIRED_INFO or response.status == "confirm":
-            return StepResult(
+            step_result = StepResult(
                 status="waiting_user",
                 code=code,
                 summary=response.summary,
                 data=response.data,
                 evidence={**evidence, "waiting_kind": "missing_arguments"},
             )
+            logger.info(f"子智能体{step.executor}调用{step.action}返回结果: "
+                        f"status={step_result.status},waiting_kind={step_result.evidence.get('waiting_kind')}",
+                        thread_id=run.thread_id, run_id=run.run_id,args=step.args)
+            return step_result
         if step.action == "open_scene" and response.code == ResponseCode.SCENE_QUERIED:
             candidates = response.data or []
             if len(candidates) > 1:
-                return StepResult(
+                step_result = StepResult(
                     status="waiting_user",
                     code=code,
                     summary=response.summary,
                     data=candidates,
                     evidence={**evidence, "waiting_kind": "scene_selection"},
                 )
+                logger.info(f"子智能体{step.executor}调用{step.action}返回结果: "
+                            f"status={step_result.status},waiting_kind={step_result.evidence.get('waiting_kind')}",
+                            thread_id=run.thread_id, run_id=run.run_id,args=step.args)
             return StepResult(
                 status="failed",
                 code="OPEN_SCENE_INCOMPLETE",
@@ -221,6 +236,10 @@ class AgentStepExecutor:
                 effects=action.provides,
                 evidence=evidence,
             )
+
+        logger.warning(f"子智能体{step.executor}调用{step.action}失败: "
+                    f"summary={response.summary}",
+                    thread_id=run.thread_id, run_id=run.run_id, args=step.args)
         return StepResult(
             status="failed",
             code=code,

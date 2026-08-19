@@ -11,7 +11,7 @@ actions:
     retry_policy: none
 
   query_scene:
-    description: 查询符合名称条件的已有场景，返回候选列表但不打开。
+    description: 查询符合名称条件的航天场景。
     executor: scene-agent
     allowed_tools: [query_scenario]
     completion_tools: [query_scenario]
@@ -22,7 +22,7 @@ actions:
     retry_policy: read_safe
 
   open_scene:
-    description: 查询并打开一个已有场景；多个候选时等待用户选择。
+    description: 打开一个航天场景。
     executor: scene-agent
     allowed_tools: [query_scenario, open_scenario]
     completion_tools: [open_scenario]
@@ -33,7 +33,7 @@ actions:
     retry_policy: side_effect_safe
 
   create_scene:
-    description: 创建并打开一个新场景。
+    description: 创建场景。
     executor: scene-agent
     allowed_tools: [create_scenario]
     completion_tools: [create_scenario]

@@ -30,7 +30,6 @@ from space_aiagent.workflow.repository import RunRepository, get_run_repository
 from space_aiagent.workflow.result_resolver import InputBindingError, ResultResolver
 from space_aiagent.workflow.scheduler import FinalizationGuard, Scheduler
 from space_aiagent.workflow.validator import PlanValidator
-
 from .catalog import ActionCatalog
 from .executor import AgentStepExecutor, StepExecutor, new_execution_id
 
@@ -60,12 +59,12 @@ class WorkflowGraphState(TypedDict, total=False):
 
 class WorkflowEngine:
     def __init__(
-        self,
-        repository: RunRepository,
-        catalog: ActionCatalog,
-        planner: StructuredPlanner,
-        executor: StepExecutor,
-        checkpointer: Checkpointer | None,
+            self,
+            repository: RunRepository,
+            catalog: ActionCatalog,
+            planner: StructuredPlanner,
+            executor: StepExecutor,
+            checkpointer: Checkpointer | None,
     ) -> None:
         # WorkflowRun仓库
         self._repository = repository
@@ -165,11 +164,11 @@ class WorkflowEngine:
         return graph.compile(checkpointer=checkpointer)
 
     async def create_run(
-        self,
-        *,
-        thread_id: str,
-        intent: str,
-        scene_context: SceneContext,
+            self,
+            *,
+            thread_id: str,
+            intent: str,
+            scene_context: SceneContext,
     ) -> WorkflowRun:
         """
         创建一个会话里的新的一个轮次数据记录
@@ -191,9 +190,11 @@ class WorkflowEngine:
         # 发送一条轮次事件消息：payload:{run_id,thread_id,RunStatus.PLANNING}
         await self._emit(SSEEventType.RUN_UPDATE, run, {"run": self._run_summary(run)})
         try:
+            thread_id:str=f"workflow:{run.run_id}"
+            logger.info("开始执行工作流",thread_id=thread_id, run_id=run.run_id)
             await self._graph.ainvoke(
                 {"run_id": run.run_id, "user_input": intent, "is_resume": False},
-                config={"configurable": {"thread_id": f"workflow:{run.run_id}"}, "recursion_limit": 100},
+                config={"configurable": {"thread_id": thread_id}, "recursion_limit": 100},
             )
         except Exception as exc:
             logger.exception("workflow.run_failed", run_id=run.run_id)
@@ -207,11 +208,11 @@ class WorkflowEngine:
         return resolved
 
     async def resume_run(
-        self,
-        run_id: str,
-        *,
-        user_input: str,
-        data: dict[str, Any] | None = None,
+            self,
+            run_id: str,
+            *,
+            user_input: str,
+            data: dict[str, Any] | None = None,
     ) -> WorkflowRun:
         run = await self._repository.get_run(run_id)
         if run is None:
@@ -265,8 +266,10 @@ class WorkflowEngine:
     async def _plan_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         # 查询 WorkflowRun 信息，得到用户原始意图
         run = await self._required_run(state["run_id"])
+        logger.info("工作流开始生成计划草案",thread_id=run.thread_id, run_id=run.run_id)
         # 用 AI根据用户意图生成规划
         draft = await self._planner.plan(run.original_intent, run.scene_context)
+        logger.info("工作流已生成计划草案",thread_id=run.thread_id, run_id=run.run_id, draft=draft)
         # 将执行规划存储到WorkflowGraphState 里
         return {"plan_draft": draft.model_dump(mode="json")}
 
@@ -300,6 +303,8 @@ class WorkflowEngine:
         if run.model_dump(mode="json") != before:
             expected = run.revision
             await self._repository.save_run(run, expected_revision=expected)
+            if decision.outcome == "wait":
+                logger.info(f"下一步为wait节点", thread_id=run.thread_id, run_id=run.run_id)
             await self._emit(SSEEventType.RUN_UPDATE, run, {"run": self._run_summary(run)})
             if decision.step_id:
                 await self._emit(
@@ -356,15 +361,15 @@ class WorkflowEngine:
             (
                 item.result
                 for item in reversed(tool_executions)
-                if item.result and (item.result.get("current_scene_name") )
+                if item.result and (item.result.get("current_scene_name"))
             ),
             None,
         )
         evidence_tool_result = result.evidence.get("tool_result")
         if (
-            acknowledged_scene is None
-            and isinstance(evidence_tool_result, dict)
-            and (evidence_tool_result.get("current_scene_name") )
+                acknowledged_scene is None
+                and isinstance(evidence_tool_result, dict)
+                and (evidence_tool_result.get("current_scene_name"))
         ):
             acknowledged_scene = evidence_tool_result
         expected = run.revision
@@ -374,9 +379,9 @@ class WorkflowEngine:
             step.status = StepStatus.SUCCEEDED
             if "scene.opened" in result.effects:
                 scene_name = (
-                    (acknowledged_scene or {}).get("current_scene_name")
-                    or result.evidence.get("scene_name")
-                    or execution_step.args.get("scene_name")
+                        (acknowledged_scene or {}).get("current_scene_name")
+                        or result.evidence.get("scene_name")
+                        or execution_step.args.get("scene_name")
                 )
                 run.scene_context.status = "opened"
                 run.scene_context.scene_name = scene_name or run.scene_context.scene_name
@@ -391,7 +396,7 @@ class WorkflowEngine:
             elif acknowledged_scene:
                 run.scene_context.status = "opened"
                 run.scene_context.scene_name = (
-                    acknowledged_scene.get("current_scene_name") or run.scene_context.scene_name
+                        acknowledged_scene.get("current_scene_name") or run.scene_context.scene_name
                 )
                 run.scene_context.revision = max(
                     run.scene_context.revision,
@@ -416,6 +421,8 @@ class WorkflowEngine:
             step.status = StepStatus.FAILED
             step.error = result.error or StepError(code=result.code, message=result.summary, retryable=result.retryable)
         await self._repository.save_run(run, expected_revision=expected)
+        logger.info(f"调用子智能体{step.executor}执行{step.action}完成", thread_id=run.thread_id, run_id=run.run_id,
+                    args=step.args)
         await self._emit(SSEEventType.STEP_UPDATE, run, {"step": step.model_dump(mode="json")})
         if bridge is not None and hasattr(bridge, "clear_workflow_execution"):
             bridge.clear_workflow_execution()
@@ -424,6 +431,7 @@ class WorkflowEngine:
     async def _finalize_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
         expected = run.revision
+        logger.debug("工作流的收尾节点",thread_id=run.thread_id, run_id=run.run_id)
         self._finalizer.finalize(run)
         await self._repository.save_run(run, expected_revision=expected)
         await self._emit(SSEEventType.RUN_UPDATE, run, {"run": workflow_run_snapshot(run)})
@@ -481,10 +489,10 @@ class WorkflowEngine:
         await self._emit(SSEEventType.STEP_UPDATE, run, {"step": step.model_dump(mode="json")})
 
     async def _resume_decision(
-        self,
-        user_input: str,
-        waiting: WaitingContext,
-        data: dict[str, Any],
+            self,
+            user_input: str,
+            waiting: WaitingContext,
+            data: dict[str, Any],
     ) -> ResumeDecision:
         explicit = data.get("decision") or data.get("action")
         if explicit in {"open_scene", "create_scene", "provide_arguments", "cancel", "unknown"}:
@@ -523,6 +531,8 @@ class WorkflowEngine:
         if bridge is not None:
             if hasattr(bridge, "set_workflow_revision"):
                 bridge.set_workflow_revision(run.revision)
+            logger.debug(f"发送一条{event.value}消息",
+                         thread_id=run.thread_id, run_id=run.run_id, payload=payload)
             await bridge._emit(event, payload)
 
     @staticmethod

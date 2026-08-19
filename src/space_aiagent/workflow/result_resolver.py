@@ -5,8 +5,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.models.workflow_schemas import PlanStep, ResultRef, StepStatus, WorkflowRun
 
+
+logger = get_logger(__name__)
 
 class InputBindingError(ValueError):
     """ResultRef 无法解析为步骤输入。"""
@@ -69,6 +72,7 @@ class ResultResolver:
                     raise
                 continue
             resolved[argument] = deepcopy(value)
+        logger.info("解析本次执行参数",resolved=resolved)
         return resolved
 
 

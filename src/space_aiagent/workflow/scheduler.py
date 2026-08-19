@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.models.workflow_schemas import (
     RunResult,
     RunStatus,
@@ -13,6 +14,8 @@ from space_aiagent.models.workflow_schemas import (
     utc_now,
 )
 
+
+logger = get_logger(__name__)
 
 @dataclass(frozen=True)
 class ScheduleDecision:
@@ -103,6 +106,10 @@ class Scheduler:
                     data={"missing_arguments": step.missing_arguments},
                 )
                 step.updated_at = utc_now()
+                logger.info(f"规划器发现子智能体{step.executor}执行{step.action}时,缺失参数，"
+                            f"准备跳转到 'wait' graph节点",
+                            thread_id=run.thread_id,run_id=run.id,
+                            args=step.args,kind=run.waiting_context.kind)
                 return ScheduleDecision("wait", step.step_id)
             # 特殊动作：确保场景上下文存在。已打开则直接视为成功，否则转为等待用户选择打开/新建场景
             if step.action == "ensure_scene_context":
@@ -118,6 +125,10 @@ class Scheduler:
                     prompt="当前没有打开场景，请选择打开已有场景或新建场景。",
                     data={"required_fact": "scene.opened", "choices": ["open_scene", "create_scene"]},
                 )
+                logger.info(f"规划器发现子智能体{step.executor}执行{step.action}时,未打开场景，"
+                            f"准备跳转到 'wait' graph节点",
+                            thread_id=run.thread_id,run_id=run.id,
+                            args=step.args,kind=run.waiting_context.kind)
                 step.updated_at = utc_now()
                 return ScheduleDecision("wait", step.step_id)
             # 校验步骤要求的前置事实是否全部成立；缺失则阻塞并记录原因
@@ -139,6 +150,10 @@ class Scheduler:
         # 走到这里说明本轮没有可执行步骤：若任一步骤在等待用户，则整体维持等待态
         if any(step.status == StepStatus.WAITING_USER for step in run.steps):
             run.status = RunStatus.WAITING_USER
+            logger.info(f"规划器发现子智能体{step.executor}还有等待用户的步骤，"
+                        f"准备跳转到 'wait' graph节点",
+                        thread_id=run.thread_id, run_id=run.id,
+                        args=step.args, kind=run.waiting_context.kind)
             return ScheduleDecision("wait")
         # 无可执行步骤且无人等待用户输入：全部步骤已终结，可结束本次 Run
         return ScheduleDecision("finalize")
