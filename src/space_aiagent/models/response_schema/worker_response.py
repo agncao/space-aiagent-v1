@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from space_aiagent.models.workflow_schemas import WorkerRequirement
+
 
 class ResponseCode(StrEnum):
     """Worker 可返回的领域结果编码。"""
@@ -49,8 +51,11 @@ class ResponseCode(StrEnum):
 class WorkerResponse(BaseModel):
     """单个 Worker 步骤的标准结构化输出。"""
 
-    status: Literal["success", "error", "info", "confirm"] = Field(
-        description="响应状态: success=操作成功, error=操作失败, info=信息查询, confirm=需要确认"
+    status: Literal["success", "error", "info", "confirm", "requires"] = Field(
+        description=(
+            "响应状态: success=操作成功, error=操作失败, info=信息查询, "
+            "confirm=需要用户确认, requires=需要其他 Worker 先完成前置任务"
+        )
     )
     code: ResponseCode = Field(description=ResponseCode.schema_description())
     summary: str = Field(description="步骤结果摘要")
@@ -60,6 +65,10 @@ class WorkerResponse(BaseModel):
             "本步骤产生的结构化结果。仅包含工具实际返回的数据，不得推测；"
             "无结构化结果时返回 null；必须直接输出 JSON，不得二次序列化"
         ),
+    )
+    requirements: list[WorkerRequirement] = Field(
+        default_factory=list,
+        description="仅 status=requires 时填写的跨 Worker 前置要求",
     )
 
     @field_validator("data", mode="before")

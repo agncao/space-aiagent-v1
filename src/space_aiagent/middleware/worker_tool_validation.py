@@ -30,7 +30,7 @@ from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.observability import optional_span, set_span_io
 from space_aiagent.infrastructure.utils import message_util
 from space_aiagent.models.response_schema.worker_response import WorkerResponse
-from space_aiagent.tools.scene_management import tools
+from space_aiagent.tools.contracts import get_workflow_tool_contract
 from space_aiagent.workflow.execution_context import (
     StepAlreadyCompletedError,
     StepExecutionLimitError,
@@ -44,7 +44,7 @@ class WorkerToolValidationMiddleware(AgentMiddleware):
     """Worker 工具权限、前置条件与执行循环保护。"""
 
     state_schema = AgentState
-    # 工具白名单: 以下工具不需要在 config/actions.yaml 的 allowed_tools里, 默认就是允许通过的
+    # Worker 的结构化返回与 Skill 加载工具不属于领域工具契约。
     _EXEMPT_TOOLS: ClassVar[set[str]] = {
         WorkerResponse.__name__,
         "read_file",
@@ -102,11 +102,12 @@ class WorkerToolValidationMiddleware(AgentMiddleware):
             args=request.tool_call.get("args", {}),
         )
 
-        # V2 步骤执行上下文：工具权限由 ActionCatalog 决定，模型不能越权扩展动作；
-        # 同时限制总调用数和相同参数的无进展循环。read_file 是 Skill 渐进加载工具，
-        # 不属于领域动作，允许继续使用。
+        # V2 Todo 执行上下文：工具权限来自 workers.yaml，工具自身契约负责声明
+        # requires/effects；这里同时限制总调用数和相同参数的无进展循环。
         execution_context = step_execution_context_var.get()
         execution_signature: str | None = None
+        request_tool = getattr(request, "tool", None)
+        tool_contract = get_workflow_tool_contract(request_tool) if request_tool is not None else None
         if execution_context is not None and tool_name not in self._EXEMPT_TOOLS:
             if tool_name not in execution_context.allowed_tools:
                 logger.warning(
@@ -121,6 +122,27 @@ class WorkerToolValidationMiddleware(AgentMiddleware):
                             "success": False,
                             "code": "ACTION_TOOL_NOT_ALLOWED",
                             "message": f"当前步骤不允许调用工具 {tool_name}",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+
+            missing_facts = sorted((tool_contract.requires if tool_contract else set()) - execution_context.facts)
+            if missing_facts:
+                for fact in missing_facts:
+                    execution_context.missing_requirements[fact] = {
+                        "key": fact,
+                        "description": f"执行 {tool_name} 前需要先满足 {fact}",
+                        "context": {"tool_name": tool_name, "worker": self._agent_name},
+                    }
+                return ToolMessage(
+                    content=json.dumps(
+                        {
+                            "success": False,
+                            "code": "REQUIREMENT_UNSATISFIED",
+                            "message": "当前 Todo 缺少跨 Worker 前置条件",
+                            "requirements": [execution_context.missing_requirements[fact] for fact in missing_facts],
                         },
                         ensure_ascii=False,
                     ),
@@ -171,10 +193,13 @@ class WorkerToolValidationMiddleware(AgentMiddleware):
                 if (
                     execution_context is not None
                     and execution_signature is not None
-                    and tool_name in execution_context.completion_tools
                     and (payload := _extract_success_payload(result)) is not None
                 ):
                     execution_context.signature_results[execution_signature] = payload
+                    execution_context.successful_tool_names.append(tool_name)
+                    if tool_contract is not None:
+                        execution_context.effects.update(tool_contract.effects)
+                        execution_context.invalidates.update(tool_contract.invalidates)
                 span.set_attribute("tool.success", True)
                 set_span_io(span, output=result)
                 return result

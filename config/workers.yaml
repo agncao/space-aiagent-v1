@@ -15,7 +15,7 @@ workers:
     prompt_file: scene_agent.md
 
   - name: entity-agent
-    description: 处理实体和轨道相关单步骤操作：添加实体，创建和更新 SGP4 轨道。
+    description: 处理实体和轨道相关单步骤操作：添加、查询、统计或清除实体，创建和更新 SGP4 轨道。
     tools:
       - entity_management
       - orbit_management

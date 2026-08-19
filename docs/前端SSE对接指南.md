@@ -84,39 +84,48 @@ data: {"thread_id":"thread-1","run_id":"run_x","seq":3,"revision":2,"timestamp":
 前端按 `seq` 去重，按 `run_id + revision` 更新 TodoList。断线或刷新后使用
 GET Run Snapshot 恢复，不根据帧数量推测进度。
 
-## 3. 步骤结果
+`waiting_dependency` 只是 Todo 的内部进度状态，不发送 `interrupt`。只有
+`waiting_user` 才发送 `interrupt` 并用 `done {interrupted:true}` 结束当前流。
+
+## 3. Worker Todo 与步骤结果
 
 ```json
 {
-  "step_id": "step_analysis",
-  "input_bindings": {
-    "facility_id": {
-      "source_step_id": "step_add",
-      "pointer": "/data/entity_id",
-      "required": true
-    }
-  },
+  "step_id": "step_count",
+  "worker": "entity-agent",
+  "task": "统计当前场景中的实体数量",
+  "source": "user_intent",
+  "generated_for_step_id": null,
+  "requirement_key": null,
+  "depends_on": [],
+  "required": true,
+  "status": "succeeded",
+  "attempt_count": 1,
   "result": {
     "status": "success",
-    "code": "ANALYSIS_COMPLETED",
-    "summary": "分析完成",
-    "data": {"window_count": 12},
-    "artifacts": [
-      {
-        "artifact_id": "report-1",
-        "kind": "report",
-        "name": "可见性报告",
-        "uri": "/artifacts/report-1",
-        "media_type": "application/pdf",
-        "metadata": {}
-      }
-    ]
+    "code": "ENTITIES_LIST",
+    "summary": "当前场景共有 3 个实体",
+    "data": {"count": 3},
+    "effects": [],
+    "invalidates": []
   }
 }
 ```
 
+Planner 只生成 `worker/task/source/depends_on/required`，不会向前端暴露 action、
+工具名或结构化参数。`source=user_intent` 表示来自用户原始请求；
+`source=requirement` 表示运行时为其他 Todo 动态插入的前置 Todo，此时
+`generated_for_step_id` 和 `requirement_key` 用于说明来源。
+
+`plan_snapshot.run.steps` 与 `step_update.step` 都使用上述结构。动态前插会发送新的
+`plan_snapshot`；原 Todo 保持同一 `step_id`，前置 Todo 完成后增加
+`attempt_count` 并重新执行。
+
 `waiting_context.result_ref` 指向权威步骤结果；`resolved_data` 是后端派生的前端
 展示值，前端不应将它再回写为新结果。
+
+终态 `done.content` 来自 Finalizer 对原始请求和可信 Todo 结果的汇总。查询类请求
+会返回实际查询结果，例如“当前场景共有 3 个实体”，而不是固定“任务已完成”。
 
 ## 4. 场景版本
 

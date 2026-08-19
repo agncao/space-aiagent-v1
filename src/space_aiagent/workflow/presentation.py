@@ -4,7 +4,7 @@ from typing import Any
 
 from space_aiagent.models.workflow_schemas import WorkflowRun
 
-from .result_resolver import InputBindingError, resolve_result_reference
+from .result_resolver import ResultReferenceError, resolve_result_reference
 
 
 def waiting_context_snapshot(run: WorkflowRun) -> dict[str, Any] | None:
@@ -25,7 +25,7 @@ def waiting_context_snapshot(run: WorkflowRun) -> dict[str, Any] | None:
     if waiting.result_ref is not None:
         try:
             resolved_data = resolve_result_reference(run, waiting.result_ref, require_source_success=False)
-        except InputBindingError:
+        except ResultReferenceError:
             # 引用结果不可用时不阻断，前端按 resolved_data 为 None 处理即可
             resolved_data = None
     payload["resolved_data"] = resolved_data

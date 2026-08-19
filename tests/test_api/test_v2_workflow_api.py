@@ -12,6 +12,7 @@ from space_aiagent.models.workflow_schemas import (
     StepStatus,
     ToolExecution,
     WaitingContext,
+    WorkerTodoSource,
     WorkflowRun,
 )
 from space_aiagent.workflow.repository import SqliteRunRepository
@@ -60,7 +61,7 @@ async def test_v2_chat_done_contains_workflow_correlation(client, monkeypatch, t
         return FakeEngine(run)
 
     monkeypatch.setattr(routes, "get_run_repository", fake_repository)
-    monkeypatch.setattr(routes, "_get_engine", fake_engine)
+    monkeypatch.setattr(routes, "get_engine", fake_engine)
     response = await client.post(
         "/api/v2/space/chat",
         json={"content": "测试", "thread_id": "thread_api", "scene_revision": 0},
@@ -83,7 +84,7 @@ async def test_v2_waiting_run_emits_interrupt_then_done(client, monkeypatch, tmp
         original_intent="添加实体",
         status=RunStatus.WAITING_USER,
         waiting_context=WaitingContext(
-            kind="missing_precondition",
+            kind="missing_arguments",
             step_id="step_1",
             prompt="请选择场景",
             data={"choices": ["open_scene", "create_scene"]},
@@ -97,14 +98,14 @@ async def test_v2_waiting_run_emits_interrupt_then_done(client, monkeypatch, tmp
         return FakeEngine(run)
 
     monkeypatch.setattr(routes, "get_run_repository", fake_repository)
-    monkeypatch.setattr(routes, "_get_engine", fake_engine)
+    monkeypatch.setattr(routes, "get_engine", fake_engine)
     response = await client.post(
         "/api/v2/space/chat",
         json={"content": "添加实体", "thread_id": "thread_wait"},
     )
     events = _sse_events(response.text)
     assert [item[0] for item in events] == ["interrupt", "done"]
-    assert events[0][1]["interrupt_type"] == "missing_precondition"
+    assert events[0][1]["interrupt_type"] == "missing_arguments"
     assert events[1][1]["interrupted"] is True
 
 
@@ -112,9 +113,9 @@ async def test_v2_snapshot_derives_waiting_data_and_serializes_artifacts(client,
     repository = SqliteRunRepository(tmp_path / "workflow.db")
     step = PlanStep(
         step_id="step_select",
-        action="open_scene",
-        title="选择场景",
-        executor="scene-agent",
+        worker="scene-agent",
+        task="选择场景",
+        source=WorkerTodoSource.USER_INTENT,
         status=StepStatus.WAITING_USER,
         result=StepResult(
             status="waiting_user",
@@ -138,7 +139,7 @@ async def test_v2_snapshot_derives_waiting_data_and_serializes_artifacts(client,
         status=RunStatus.WAITING_USER,
         steps=[step],
         waiting_context=WaitingContext(
-            kind="scene_selection",
+            kind="missing_arguments",
             step_id=step.step_id,
             prompt="请选择",
             result_ref=ResultRef(source_step_id=step.step_id, pointer="/data"),

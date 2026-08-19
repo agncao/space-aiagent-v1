@@ -6,7 +6,7 @@
 
 桥接注入: V2 SSE handler 在启动 WorkflowRun 前设置 bridge_var，Worker 工具通过 get() 获取。
 
-前置条件: 场景必须已打开（由 Scheduler 和 WorkerToolValidationMiddleware 双重校验）
+前置条件: 场景必须已打开（由 @workflow_tool 契约和 WorkerToolValidationMiddleware 校验）
 """
 
 from langchain_core.tools import tool
@@ -14,10 +14,15 @@ from langchain_core.tools import tool
 from space_aiagent.bridge import bridge_var
 from space_aiagent.models.biz_schemas import EntityConfig, EntityPosition
 from space_aiagent.models.enums import EntityType
+from space_aiagent.tools.contracts import workflow_tool
 
 _NAMESPACE: str = "entity_tools"
 
 
+@workflow_tool(
+    requires={"scene.opened"},
+    effects={"entity.created"},
+)
 @tool(args_schema=EntityConfig)
 async def add_point_entity(
     entity_type: EntityType,
@@ -56,6 +61,7 @@ async def add_point_entity(
     )
 
 
+@workflow_tool(requires={"scene.opened"})
 @tool
 async def query_entities() -> dict:
     """
@@ -69,6 +75,10 @@ async def query_entities() -> dict:
     )
 
 
+@workflow_tool(
+    requires={"scene.opened"},
+    effects={"entity.empty"},
+)
 @tool
 async def clear_entities() -> dict:
     """

@@ -16,11 +16,9 @@ from langchain_core.tools import tool
 from langgraph.types import Command
 
 from space_aiagent.bridge import bridge_var
-from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.biz_schemas import ScenarioConfig
-
-logger = get_logger(__name__)
+from space_aiagent.tools.contracts import workflow_tool
 
 _NAMESPACE = "scene_tools"
 
@@ -42,6 +40,10 @@ def _build_command(
     )
 
 
+@workflow_tool(
+    effects={"scene.opened"},
+    invalidates={"scene.none"},
+)
 @tool(args_schema=ScenarioConfig)
 async def create_scenario(
     runtime: ToolRuntime,
@@ -66,6 +68,10 @@ async def create_scenario(
     return _build_command(result, runtime)
 
 
+@workflow_tool(
+    requires={"scene.opened"},
+    effects={"scene.opened"},
+)
 @tool
 async def rename_scenario(runtime: ToolRuntime, scene_name: str) -> Command:
     """
@@ -83,6 +89,11 @@ async def rename_scenario(runtime: ToolRuntime, scene_name: str) -> Command:
     return _build_command(result, runtime)
 
 
+@workflow_tool(
+    requires={"scene.opened"},
+    effects={"scene.none"},
+    invalidates={"scene.opened"},
+)
 @tool
 async def delete_scene(runtime: ToolRuntime) -> Command:
     """

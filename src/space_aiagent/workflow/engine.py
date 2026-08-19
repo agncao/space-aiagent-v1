@@ -1,12 +1,14 @@
-"""V2 LangGraph 外层工作流。"""
+"""V2 Worker Todo LangGraph 外层工作流。"""
 
 from __future__ import annotations
 
+import json
 import uuid
-from typing import Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict
 
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Checkpointer
+from langgraph.graph.message import add_messages
 
 from space_aiagent.bridge import bridge_var
 from space_aiagent.infrastructure.database import get_db
@@ -15,136 +17,61 @@ from space_aiagent.models.sse_schemas import SSEEventType
 from space_aiagent.models.workflow_schemas import (
     PlanDraft,
     ResultRef,
+    RunResult,
     RunStatus,
     SceneContext,
     StepError,
     StepResult,
     StepStatus,
     WaitingContext,
+    WorkerRequirement,
+    WorkerTodoSource,
     WorkflowRun,
     utc_now,
 )
-from space_aiagent.workflow.planner import ResumeDecision, StructuredPlanner
+from space_aiagent.workflow.catalog import WorkerCatalog
+from space_aiagent.workflow.executor import AgentStepExecutor, StepExecutor, new_execution_id
+from space_aiagent.workflow.planner import Planner, StructuredPlanner
 from space_aiagent.workflow.presentation import waiting_context_snapshot, workflow_run_snapshot
 from space_aiagent.workflow.repository import RunRepository, get_run_repository
-from space_aiagent.workflow.result_resolver import InputBindingError, ResultResolver
 from space_aiagent.workflow.scheduler import FinalizationGuard, Scheduler
-from space_aiagent.workflow.validator import PlanValidator
-from .catalog import ActionCatalog
-from .executor import AgentStepExecutor, StepExecutor, new_execution_id
+from space_aiagent.workflow.validator import PlanValidationError, PlanValidator
+
+if TYPE_CHECKING:
+    from langgraph.types import Checkpointer
 
 logger = get_logger(__name__)
+_MAX_DEPENDENCY_DEPTH = 5
 
 
 class WorkflowGraphState(TypedDict, total=False):
-    """
-    LangGraph 节点间的瞬时路由状态；业务事实仍以 RunRepository 中的 WorkflowRun 为准。
-    """
-
     run_id: str
-    # 首次请求或恢复请求的用户输入
-    user_input: str
-    # 是否从等待状态恢复
     is_resume: bool
-
-    # Planner生成的 由大模型根据用户意图推断出来的计划草案，仅供 validate 节点消费。
+    messages: Annotated[list[AnyMessage], add_messages]
     plan_draft: dict[str, Any]
-
-    # Scheduler 的路由结论，供条件边选择下一节点。
     decision: Literal["execute", "wait", "finalize"]
-
-    # Scheduler 本轮选中的步骤；execute 时为待执行步骤，可能为空。
     next_step_id: str | None
 
 
 class WorkflowEngine:
     def __init__(
-            self,
-            repository: RunRepository,
-            catalog: ActionCatalog,
-            planner: StructuredPlanner,
-            executor: StepExecutor,
-            checkpointer: Checkpointer | None,
+        self,
+        repository: RunRepository,
+        catalog: WorkerCatalog,
+        planner: Planner,
+        executor: StepExecutor,
+        checkpointer: Checkpointer | None,
     ) -> None:
-        # WorkflowRun仓库
         self._repository = repository
-        # {project_root}/config/actions.yaml 行为集合对象
         self._catalog = catalog
-        # 初始化规划器及其用的大模型
         self._planner = planner
-        # 规划器自动生成的规划是否合法的验证器
         self._validator = PlanValidator(catalog)
         self._scheduler = Scheduler()
         self._finalizer = FinalizationGuard()
         self._executor = executor
-        self._result_resolver = ResultResolver()
         self._graph = self._build_graph(checkpointer)
 
     def _build_graph(self, checkpointer: Checkpointer | None) -> Any:
-        """构建 LangGraph 工作流图。
-
-        ::
-
-                                    START
-                                      │
-                                      │ 条件边: is_resume?
-                                      │
-                          ┌───────────┴───────────┐
-                          │ 否（新请求）              │ 是（恢复执行）
-                          ▼                       │
-                     ┌─────────┐                  │
-                     │  plan   │                  │
-                     │ 规划步骤  │                  │
-                     └────┬────┘                  │
-                          │                       │
-                          ▼                       │
-                     ┌─────────┐                  │
-                     │validate │                  │
-                     │ 校验装配  │                  │
-                     └────┬────┘                  │
-                          │                       │
-                          ▼                       ▼
-                     ┌──────────────────────────────────┐
-                     │           schedule               │
-                     │          调度决策                  │
-                     └────────────┬─────────────────────┘
-                                  │
-                                  │ 条件边: decision?
-                                  │
-                     ┌────────────┼────────────┐
-                     │            │            │
-                     ▼            ▼            ▼
-                ┌─────────┐  ┌────────┐  ┌──────────┐
-                │ execute │  │  wait  │  │ finalize │
-                │ 执行步骤  │  │ 等待用户 │  │ 结束运行  │
-                └────┬────┘  └───┬────┘  └────┬─────┘
-                     │           │            │
-                     │           ▼            ▼
-                     │         END           END
-                     │
-                     └────── 回到 schedule ──────┘
-                            （循环执行下一步）
-
-        节点说明
-        --------
-        plan       AI 规划器根据用户意图生成 PlanDraft（步骤草案）
-        validate   校验草案合法性，装配 PlanStep，注入 ensure_scene_context，
-                   状态 PLANNING → RUNNING
-        schedule   遍历步骤，检查前置条件与依赖，决定下一步动作
-        execute    执行当前步骤（调用工具 / Agent），处理结果与副作用
-        finalize   汇总所有步骤结果，设置最终状态 SUCCEEDED / FAILED /
-                   PARTIALLY_SUCCEEDED
-        wait       暂停等待用户输入（如选场景、补参数），不进入图节点，直接 END
-
-        核心循环 —— execute ⇄ schedule
-        ------------------------------
-        每执行完一个步骤就回到 schedule 重新决策，直到所有步骤完成
-        或需要用户输入为止。
-
-        恢复路径（is_resume=true）
-        -------------------------
-        START 跳过 plan & validate，直接进入 schedule，继续执行剩余步骤。
-        """
         graph = StateGraph(WorkflowGraphState)
         graph.add_node("plan", self._plan_node)
         graph.add_node("validate", self._validate_node)
@@ -164,86 +91,77 @@ class WorkflowEngine:
         return graph.compile(checkpointer=checkpointer)
 
     async def create_run(
-            self,
-            *,
-            thread_id: str,
-            intent: str,
-            scene_context: SceneContext,
+        self,
+        *,
+        thread_id: str,
+        intent: str,
+        scene_context: SceneContext,
     ) -> WorkflowRun:
-        """
-        创建一个会话里的新的一个轮次数据记录
-        并启动一个会话里的轮次对话
-        """
         run = WorkflowRun(
-            run_id=f"run_{uuid.uuid4().hex}",  # 轮次id
-            thread_id=thread_id,  # 会话id
-            original_intent=intent,  # 用户意图
-            scene_context=scene_context,  # 当前场景
+            run_id=f"run_{uuid.uuid4().hex}",
+            thread_id=thread_id,
+            original_intent=intent,
+            scene_context=scene_context,
         )
         bridge = bridge_var.get()
-        # 表示会话已经创建，需要更新轮次id
         if bridge is not None and hasattr(bridge, "set_workflow_run"):
             bridge.set_workflow_run(run.run_id)
             bridge.set_workflow_repository(self._repository)
-        # 创建一条新的工作流运行记录
         await self._repository.create_run(run)
-        # 发送一条轮次事件消息：payload:{run_id,thread_id,RunStatus.PLANNING}
         await self._emit(SSEEventType.RUN_UPDATE, run, {"run": self._run_summary(run)})
         try:
-            thread_id:str=f"workflow:{run.run_id}"
-            logger.info("开始执行工作流",thread_id=thread_id, run_id=run.run_id)
+            logger.debug("开始执行工作流",thread_id=run.thread_id,run_id=run.run_id)
             await self._graph.ainvoke(
-                {"run_id": run.run_id, "user_input": intent, "is_resume": False},
-                config={"configurable": {"thread_id": thread_id}, "recursion_limit": 100},
+                {
+                    "run_id": run.run_id,
+                    "is_resume": False,
+                    "messages": [HumanMessage(content=intent)],
+                },
+                config={
+                    "configurable": {"thread_id": f"workflow:{run.run_id}"},
+                    "recursion_limit": 100,
+                },
             )
         except Exception as exc:
             logger.exception("workflow.run_failed", run_id=run.run_id)
-            # _graph.ainvoke 失败后，_fail_run 会把 run 状态改为 FAILED
             await self._fail_run(run.run_id, "WORKFLOW_ERROR", str(exc))
-
-        # 查询当前轮次并返回当前轮次信息
-        resolved = await self._repository.get_run(run.run_id)
-        if resolved is None:
-            raise RuntimeError("WorkflowRun 丢失")
-        return resolved
+        return await self._resolved_run(run.run_id)
 
     async def resume_run(
-            self,
-            run_id: str,
-            *,
-            user_input: str,
-            data: dict[str, Any] | None = None,
+        self,
+        run_id: str,
+        *,
+        user_input: str,
+        data: dict[str, Any] | None = None,
     ) -> WorkflowRun:
-        run = await self._repository.get_run(run_id)
-        if run is None:
-            raise KeyError(run_id)
+        run = await self._required_run(run_id)
         if run.status != RunStatus.WAITING_USER or run.waiting_context is None:
             raise ValueError("Run 当前不处于 waiting_user")
-
         bridge = bridge_var.get()
         if bridge is not None and hasattr(bridge, "set_workflow_repository"):
             bridge.set_workflow_repository(self._repository)
-
         await self._apply_resume(run, user_input, data or {})
         if run.status == RunStatus.CANCELLED:
             return run
         try:
             await self._graph.ainvoke(
-                {"run_id": run.run_id, "user_input": user_input, "is_resume": True},
-                config={"configurable": {"thread_id": f"workflow:{run.run_id}"}, "recursion_limit": 100},
+                {
+                    "run_id": run.run_id,
+                    "is_resume": True,
+                    "messages": [HumanMessage(content=user_input)],
+                },
+                config={
+                    "configurable": {"thread_id": f"workflow:{run.run_id}"},
+                    "recursion_limit": 100,
+                },
             )
         except Exception as exc:
             logger.exception("workflow.resume_failed", run_id=run.run_id)
             await self._fail_run(run.run_id, "WORKFLOW_RESUME_ERROR", str(exc))
-        resolved = await self._repository.get_run(run.run_id)
-        if resolved is None:
-            raise RuntimeError("WorkflowRun 丢失")
-        return resolved
+        return await self._resolved_run(run.run_id)
 
     async def cancel_run(self, run_id: str) -> WorkflowRun:
-        run = await self._repository.get_run(run_id)
-        if run is None:
-            raise KeyError(run_id)
+        run = await self._required_run(run_id)
         if run.status in {RunStatus.SUCCEEDED, RunStatus.PARTIALLY_SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
             return run
         expected = run.revision
@@ -254,7 +172,6 @@ class WorkflowEngine:
                 StepStatus.SUCCEEDED,
                 StepStatus.FAILED,
                 StepStatus.BLOCKED,
-                StepStatus.SKIPPED,
                 StepStatus.CANCELLED,
             }:
                 step.status = StepStatus.CANCELLED
@@ -264,47 +181,31 @@ class WorkflowEngine:
         return run
 
     async def _plan_node(self, state: WorkflowGraphState) -> dict[str, Any]:
-        # 查询 WorkflowRun 信息，得到用户原始意图
         run = await self._required_run(state["run_id"])
-        logger.info("工作流开始生成计划草案",thread_id=run.thread_id, run_id=run.run_id)
-        # 用 AI根据用户意图生成规划
         draft = await self._planner.plan(run.original_intent, run.scene_context)
-        logger.info("工作流已生成计划草案",thread_id=run.thread_id, run_id=run.run_id, draft=draft)
-        # 将执行规划存储到WorkflowGraphState 里
-        return {"plan_draft": draft.model_dump(mode="json")}
+        return {
+            "plan_draft": draft.model_dump(mode="json"),
+            "messages": [self._todo_list_message(draft, WorkerTodoSource.USER_INTENT)],
+        }
 
     async def _validate_node(self, state: WorkflowGraphState) -> dict[str, Any]:
-        """
-        将规划(初步计划) -> 计划
-        将工作流设置为运行中
-        发送一条计划类型的消息
-        """
-        # 查询 WorkflowRun 信息
         run = await self._required_run(state["run_id"])
-        # 将 WorkflowGraphState里存储的规划信息转换成强类型的PlanDraft规划信息
         draft = PlanDraft.model_validate(state["plan_draft"])
-        # 将规划转化成计划
-        steps = self._validator.validate(draft, run.scene_context)
-
-        # 当规划顺利转化成计划，标志这工作流开始
+        steps = self._validator.validate(draft, expected_source=WorkerTodoSource.USER_INTENT)
         expected = run.revision
         run.steps = steps
         run.status = RunStatus.RUNNING
         await self._repository.save_run(run, expected_revision=expected)
-        # 发送一条工作流开始的消息
         await self._emit(SSEEventType.PLAN_SNAPSHOT, run, {"run": workflow_run_snapshot(run)})
         return {}
 
     async def _schedule_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
         before = run.model_dump(mode="json")
-        # 决定哪个分支：finally, wait, execute
         decision = self._scheduler.decide(run)
         if run.model_dump(mode="json") != before:
             expected = run.revision
             await self._repository.save_run(run, expected_revision=expected)
-            if decision.outcome == "wait":
-                logger.info(f"下一步为wait节点", thread_id=run.thread_id, run_id=run.run_id)
             await self._emit(SSEEventType.RUN_UPDATE, run, {"run": self._run_summary(run)})
             if decision.step_id:
                 await self._emit(
@@ -317,32 +218,14 @@ class WorkflowEngine:
     async def _execute_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
         step = run.step(state["next_step_id"] or "")
-        try:
-            resolved_args = self._result_resolver.resolve_args(run, step)
-        except InputBindingError as exc:
-            expected = run.revision
-            error = StepError(code="INPUT_BINDING_ERROR", message=str(exc), retryable=False)
-            step.status = StepStatus.FAILED
-            step.error = error
-            step.result = StepResult(
-                status="failed",
-                code=error.code,
-                summary=error.message,
-                error=error,
-            )
-            step.updated_at = utc_now()
-            await self._repository.save_run(run, expected_revision=expected)
-            await self._emit(SSEEventType.STEP_UPDATE, run, {"step": step.model_dump(mode="json")})
-            return {"next_step_id": None}
-
-        execution_step = step.model_copy(deep=True, update={"args": resolved_args})
-        # 将当前更改为运行步骤
         expected = run.revision
         step.status = StepStatus.RUNNING
         step.attempt_count += 1
         step.updated_at = utc_now()
+        step.agent_thread_id = step.agent_thread_id or (f"v2:{run.run_id}:{step.step_id}:{step.attempt_count}")
         execution_id = new_execution_id()
         await self._repository.save_run(run, expected_revision=expected)
+
         bridge = bridge_var.get()
         if bridge is not None and hasattr(bridge, "set_workflow_execution"):
             bridge.set_workflow_execution(
@@ -354,55 +237,52 @@ class WorkflowEngine:
             )
         await self._emit(SSEEventType.STEP_UPDATE, run, {"step": step.model_dump(mode="json")})
 
-        result = await self._executor.execute(run, execution_step, execution_id)
+        dispatch_message = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "task",
+                    "args": {"worker": step.worker, "task": step.task, "step_id": step.step_id},
+                    "id": execution_id,
+                    "type": "tool_call",
+                }
+            ],
+            additional_kwargs={"message_kind": "worker_dispatch", "step_id": step.step_id},
+        )
+        logger.debug(f"正将任务分派给子智能体{step.worker}: {dispatch_message}")
+        result = await self._executor.execute(run, step.model_copy(deep=True), execution_id)
+        result_message = ToolMessage(
+            content=result.model_dump_json(),
+            tool_call_id=execution_id,
+            name="task",
+            additional_kwargs={"message_kind": "worker_result", "step_id": step.step_id},
+        )
+        extra_messages: list[AnyMessage] = [dispatch_message, result_message]
+
         tool_executions = await self._repository.list_tool_executions(execution_id)
-        # 取最后一次工具调用返回来的的 current_scene_name
         acknowledged_scene = next(
             (
                 item.result
                 for item in reversed(tool_executions)
-                if item.result and (item.result.get("current_scene_name"))
+                if item.result and item.result.get("current_scene_name")
             ),
             None,
         )
         evidence_tool_result = result.evidence.get("tool_result")
         if (
-                acknowledged_scene is None
-                and isinstance(evidence_tool_result, dict)
-                and (evidence_tool_result.get("current_scene_name"))
+            acknowledged_scene is None
+            and isinstance(evidence_tool_result, dict)
+            and evidence_tool_result.get("current_scene_name")
         ):
             acknowledged_scene = evidence_tool_result
+
         expected = run.revision
         step.result = result
         step.updated_at = utc_now()
+        plan_changed = False
         if result.status == "success":
             step.status = StepStatus.SUCCEEDED
-            if "scene.opened" in result.effects:
-                scene_name = (
-                        (acknowledged_scene or {}).get("current_scene_name")
-                        or result.evidence.get("scene_name")
-                        or execution_step.args.get("scene_name")
-                )
-                run.scene_context.status = "opened"
-                run.scene_context.scene_name = scene_name or run.scene_context.scene_name
-                acknowledged_revision = int((acknowledged_scene or {}).get("scene_revision") or 0)
-                run.scene_context.revision = max(run.scene_context.revision + 1, acknowledged_revision)
-                run.scene_context.verified_at = utc_now()
-            if "scene.none" in result.effects:
-                run.scene_context.status = "none"
-                run.scene_context.scene_name = None
-                run.scene_context.revision += 1
-                run.scene_context.verified_at = utc_now()
-            elif acknowledged_scene:
-                run.scene_context.status = "opened"
-                run.scene_context.scene_name = (
-                        acknowledged_scene.get("current_scene_name") or run.scene_context.scene_name
-                )
-                run.scene_context.revision = max(
-                    run.scene_context.revision,
-                    int(acknowledged_scene.get("scene_revision") or 0),
-                )
-                run.scene_context.verified_at = utc_now()
+            self._apply_effects(run, result, acknowledged_scene)
         elif result.status == "waiting_user":
             step.status = StepStatus.WAITING_USER
             run.status = RunStatus.WAITING_USER
@@ -417,68 +297,134 @@ class WorkflowEngine:
                     **{key: value for key, value in result.evidence.items() if key != "waiting_kind"},
                 },
             )
+        elif result.status == "waiting_dependency":
+            try:
+                requirement_messages = await self._insert_requirement_todos(run, step, result.requirements)
+                extra_messages.extend(requirement_messages)
+                plan_changed = True
+            except (PlanValidationError, ValueError) as exc:
+                error = StepError(code="REQUIREMENT_PLANNING_FAILED", message=str(exc))
+                step.status = StepStatus.FAILED
+                step.error = error
+                step.result = StepResult(status="failed", code=error.code, summary=error.message)
         else:
             step.status = StepStatus.FAILED
-            step.error = result.error or StepError(code=result.code, message=result.summary, retryable=result.retryable)
+            step.error = StepError(
+                code=result.code,
+                message=result.summary,
+            )
+
         await self._repository.save_run(run, expected_revision=expected)
-        logger.info(f"调用子智能体{step.executor}执行{step.action}完成", thread_id=run.thread_id, run_id=run.run_id,
-                    args=step.args)
         await self._emit(SSEEventType.STEP_UPDATE, run, {"step": step.model_dump(mode="json")})
+        if plan_changed:
+            await self._emit(SSEEventType.PLAN_SNAPSHOT, run, {"run": workflow_run_snapshot(run)})
         if bridge is not None and hasattr(bridge, "clear_workflow_execution"):
             bridge.clear_workflow_execution()
-        return {"next_step_id": None}
+        return {"next_step_id": None, "messages": extra_messages}
+
+    async def _insert_requirement_todos(
+        self,
+        run: WorkflowRun,
+        blocked_step: Any,
+        requirements: list[WorkerRequirement],
+    ) -> list[AIMessage]:
+        if not requirements:
+            raise ValueError("Worker 声明 waiting_dependency 但未提供 requirement")
+        if blocked_step.dependency_depth >= _MAX_DEPENDENCY_DEPTH:
+            raise ValueError("requirement Todo 展开超过最大深度")
+
+        insert_at = run.steps.index(blocked_step)
+        inherited_dependencies = list(blocked_step.depends_on)
+        messages: list[AIMessage] = []
+        for requirement in requirements:
+            ancestor = blocked_step
+            while ancestor.generated_for_step_id is not None:
+                if ancestor.requirement_key == requirement.key:
+                    raise ValueError(f"requirement 依赖环：{requirement.key}")
+                ancestor = run.step(ancestor.generated_for_step_id)
+            expansion_key = f"{blocked_step.step_id}:{requirement.key}"
+            if expansion_key in blocked_step.dependency_expansion_keys:
+                raise ValueError(f"重复 requirement 无进展：{requirement.key}")
+            providers = self._catalog.providers_for(requirement.key, exclude={blocked_step.worker})
+            if not providers:
+                raise ValueError(f"没有 Worker 能提供 requirement：{requirement.key}")
+            draft = await self._planner.plan_requirement(
+                requirement,
+                blocked_worker=blocked_step.worker,
+                blocked_task=blocked_step.task,
+                scene_context=run.scene_context,
+            )
+            generated = self._validator.validate(
+                draft,
+                expected_source=WorkerTodoSource.REQUIREMENT,
+                generated_for_step_id=blocked_step.step_id,
+                requirement_key=requirement.key,
+                dependency_depth=blocked_step.dependency_depth + 1,
+                inherited_dependencies=inherited_dependencies,
+            )
+            unsupported_workers = {todo.worker for todo in generated} - providers
+            if unsupported_workers:
+                raise ValueError(
+                    f"requirement {requirement.key} 被委派给无提供能力的 Worker："
+                    + ", ".join(sorted(unsupported_workers))
+                )
+            run.steps[insert_at:insert_at] = generated
+            insert_at += len(generated)
+            inherited_dependencies = self._validator.terminal_step_ids(generated)
+            blocked_step.dependency_expansion_keys.append(expansion_key)
+            messages.append(self._todo_list_message(draft, WorkerTodoSource.REQUIREMENT))
+
+        blocked_step.depends_on = list(dict.fromkeys(inherited_dependencies))
+        blocked_step.status = StepStatus.WAITING_DEPENDENCY
+        blocked_step.agent_thread_id = None
+        blocked_step.resume_payload = None
+        blocked_step.resume_user_input = None
+        blocked_step.updated_at = utc_now()
+        return messages
 
     async def _finalize_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
         expected = run.revision
-        logger.debug("工作流的收尾节点",thread_id=run.thread_id, run_id=run.run_id)
         self._finalizer.finalize(run)
+        try:
+            final_content = await self._planner.finalize(list(state.get("messages", [])), run)
+            if self._is_generic_final_answer(final_content):
+                logger.warning("workflow.generic_final_answer_rejected", run_id=run.run_id)
+                final_content = run.final_result.summary if run.final_result else "未产生可展示的执行结果。"
+            elif run.final_result is not None:
+                run.final_result.summary = final_content
+        except Exception:
+            logger.exception("workflow.final_answer_failed", run_id=run.run_id)
+            final_content = run.final_result.summary if run.final_result else "未产生可展示的执行结果。"
         await self._repository.save_run(run, expected_revision=expected)
         await self._emit(SSEEventType.RUN_UPDATE, run, {"run": workflow_run_snapshot(run)})
-        return {}
+        return {
+            "messages": [
+                AIMessage(
+                    content=final_content,
+                    additional_kwargs={"message_kind": "final_answer", "run_id": run.run_id},
+                )
+            ]
+        }
 
     async def _apply_resume(self, run: WorkflowRun, user_input: str, data: dict[str, Any]) -> None:
         waiting = run.waiting_context
         if waiting is None:
             raise ValueError("缺少 waiting_context")
-        step = run.step(waiting.step_id)
-        decision = await self._resume_decision(user_input, waiting, data)
-        if decision.decision == "cancel":
+        if data.get("decision") == "cancel" or user_input.strip().lower() in {"取消", "cancel"}:
             await self.cancel_run(run.run_id)
             run.status = RunStatus.CANCELLED
             return
-        if waiting.kind == "missing_precondition":
-            if decision.decision not in {"open_scene", "create_scene"}:
-                raise ValueError("请明确选择打开已有场景或创建场景")
-            definition = self._catalog.get(decision.decision)
-            step.action = definition.name
-            step.title = "打开已有场景" if decision.decision == "open_scene" else "创建新场景"
-            step.args = decision.args
-            step.executor = definition.executor
-            step.allowed_tools = definition.allowed_tools
-            step.requires = definition.requires
-            step.provides = definition.provides
-            step.side_effect = definition.side_effect
-        elif waiting.kind == "scene_selection":
-            scene_name = data.get("scene_name") or decision.args.get("scene_name") or user_input.strip()
-            if not scene_name:
-                raise ValueError("缺少选中的场景名")
-            candidates = step.result.data if step.result and isinstance(step.result.data, list) else []
-            candidate_names = {
-                item.get("scene_name") for item in candidates if isinstance(item, dict) and item.get("scene_name")
-            }
-            if scene_name not in candidate_names:
-                raise ValueError("选中的场景不在候选列表中")
-            step.args["scene_name"] = scene_name
-        elif waiting.kind == "agent_interrupt":
-            step.args["_agent_resume"] = data or {"content": user_input}
-        else:
-            if decision.decision != "provide_arguments" and not data:
-                raise ValueError("未识别到待补充参数")
-            step.args.update(data.get("args", data) or decision.args)
-            step.missing_arguments = []
 
+        step = run.step(waiting.step_id)
         expected = run.revision
+        if waiting.kind == "agent_interrupt":
+            step.resume_payload = data or {"content": user_input}
+            step.resume_user_input = None
+        else:
+            step.resume_payload = data
+            step.resume_user_input = user_input
+            step.agent_thread_id = None
         step.status = StepStatus.PENDING
         step.result = None
         step.error = None
@@ -488,24 +434,36 @@ class WorkflowEngine:
         await self._repository.save_run(run, expected_revision=expected)
         await self._emit(SSEEventType.STEP_UPDATE, run, {"step": step.model_dump(mode="json")})
 
-    async def _resume_decision(
-            self,
-            user_input: str,
-            waiting: WaitingContext,
-            data: dict[str, Any],
-    ) -> ResumeDecision:
-        explicit = data.get("decision") or data.get("action")
-        if explicit in {"open_scene", "create_scene", "provide_arguments", "cancel", "unknown"}:
-            args = data.get("args", {})
-            if data.get("scene_name"):
-                args = {**args, "scene_name": data["scene_name"]}
-            return ResumeDecision(decision=explicit, args=args)
-        if waiting.kind == "scene_selection" and (data.get("scene_name") or user_input.strip()):
-            return ResumeDecision(
-                decision="open_scene",
-                args={"scene_name": data.get("scene_name") or user_input.strip()},
+    @staticmethod
+    def _apply_effects(
+        run: WorkflowRun,
+        result: StepResult,
+        acknowledged_scene: dict[str, Any] | None,
+    ) -> None:
+        if "scene.opened" in result.effects:
+            scene_name = (
+                (acknowledged_scene or {}).get("current_scene_name")
+                or result.evidence.get("scene_name")
+                or run.scene_context.scene_name
             )
-        return await self._planner.resolve_waiting(user_input, waiting)
+            run.scene_context.status = "opened"
+            run.scene_context.scene_name = scene_name
+            acknowledged_revision = int((acknowledged_scene or {}).get("scene_revision") or 0)
+            run.scene_context.revision = max(run.scene_context.revision + 1, acknowledged_revision)
+            run.scene_context.verified_at = utc_now()
+        if "scene.none" in result.effects:
+            run.scene_context.status = "none"
+            run.scene_context.scene_name = None
+            run.scene_context.revision += 1
+            run.scene_context.verified_at = utc_now()
+        elif acknowledged_scene:
+            run.scene_context.status = "opened"
+            run.scene_context.scene_name = acknowledged_scene.get("current_scene_name") or run.scene_context.scene_name
+            run.scene_context.revision = max(
+                run.scene_context.revision,
+                int(acknowledged_scene.get("scene_revision") or 0),
+            )
+            run.scene_context.verified_at = utc_now()
 
     async def _fail_run(self, run_id: str, code: str, message: str) -> None:
         run = await self._required_run(run_id)
@@ -513,9 +471,14 @@ class WorkflowEngine:
         run.status = RunStatus.FAILED
         run.waiting_context = None
         for step in run.steps:
-            if step.status in {StepStatus.RUNNING, StepStatus.WAITING_TOOL}:
+            if step.status == StepStatus.RUNNING:
                 step.status = StepStatus.FAILED
                 step.error = StepError(code=code, message=message)
+        run.final_result = RunResult(
+            status=RunStatus.FAILED,
+            summary=message,
+            failures=[{"code": code, "message": message}],
+        )
         await self._repository.save_run(run, expected_revision=expected)
         await self._emit(SSEEventType.RUN_UPDATE, run, {"run": self._run_summary(run), "error": message})
 
@@ -525,15 +488,26 @@ class WorkflowEngine:
             raise KeyError(run_id)
         return run
 
+    async def _resolved_run(self, run_id: str) -> WorkflowRun:
+        run = await self._repository.get_run(run_id)
+        if run is None:
+            raise RuntimeError("WorkflowRun 丢失")
+        return run
+
     async def _emit(self, event: SSEEventType, run: WorkflowRun, payload: dict[str, Any]) -> None:
         await self._repository.append_event(run, event.value, payload)
         bridge = bridge_var.get()
         if bridge is not None:
             if hasattr(bridge, "set_workflow_revision"):
                 bridge.set_workflow_revision(run.revision)
-            logger.debug(f"发送一条{event.value}消息",
-                         thread_id=run.thread_id, run_id=run.run_id, payload=payload)
             await bridge._emit(event, payload)
+
+    @staticmethod
+    def _todo_list_message(draft: PlanDraft, source: WorkerTodoSource) -> AIMessage:
+        return AIMessage(
+            content=json.dumps(draft.model_dump(mode="json"), ensure_ascii=False),
+            additional_kwargs={"message_kind": "worker_todo_list", "source": source.value},
+        )
 
     @staticmethod
     def _run_summary(run: WorkflowRun) -> dict[str, Any]:
@@ -545,28 +519,23 @@ class WorkflowEngine:
             "waiting_context": waiting_context_snapshot(run),
         }
 
+    @staticmethod
+    def _is_generic_final_answer(content: str) -> bool:
+        normalized = content.strip().rstrip("。！!").replace(" ", "")
+        return normalized in {"任务已完成", "已完成", "处理完成", "操作完成"}
+
 
 _engine: WorkflowEngine | None = None
 
 
 async def get_engine() -> WorkflowEngine:
-    """获取全局 WorkflowEngine 单例，延迟初始化。
-
-    Returns:
-        WorkflowEngine: 全局唯一的引擎实例。
-    """
     global _engine
     if _engine is None:
-        # 得到一个 RunRepository（持久化运行记录）
         repository = await get_run_repository()
-        # 从 YAML 加载动作定义
-        catalog = ActionCatalog.from_yaml()
+        catalog = WorkerCatalog.from_yaml()
         database = await get_db()
-        # checkpointer 数据库实例
         checkpointer = await database.get_checkpointer()
-        # 初始化规划起
         planner = StructuredPlanner(catalog)
-        # 初始化步骤执行器
-        executor = AgentStepExecutor(catalog, checkpointer)
+        executor = AgentStepExecutor(checkpointer)
         _engine = WorkflowEngine(repository, catalog, planner, executor, checkpointer)
     return _engine

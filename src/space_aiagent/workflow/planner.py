@@ -1,85 +1,152 @@
-"""结构化 Planner 与 waiting_user 恢复解析器。"""
+"""Worker Todo Planner 与最终答复生成器。"""
 
-from typing import Any, Literal, Protocol
+from __future__ import annotations
 
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+import json
+from typing import TYPE_CHECKING, Any, Protocol
+
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, message_to_dict
 from pydantic import BaseModel, Field
 
 from space_aiagent.infrastructure.llm import build_model
-from space_aiagent.models.workflow_schemas import PlanDraft, SceneContext, WaitingContext
+from space_aiagent.models.workflow_schemas import (
+    PlanDraft,
+    SceneContext,
+    WorkerRequirement,
+    WorkflowRun,
+)
 
-from space_aiagent.workflow.catalog import ActionCatalog
-from space_aiagent.infrastructure.logging import get_logger
+if TYPE_CHECKING:
+    from langchain_core.language_models.chat_models import BaseChatModel
 
-logger = get_logger(__name__)
+    from space_aiagent.workflow.catalog import WorkerCatalog
+
 
 class Planner(Protocol):
     async def plan(self, intent: str, scene_context: SceneContext) -> PlanDraft: ...
 
+    async def plan_requirement(
+        self,
+        requirement: WorkerRequirement,
+        *,
+        blocked_worker: str,
+        blocked_task: str,
+        scene_context: SceneContext,
+    ) -> PlanDraft: ...
 
-class ResumeDecision(BaseModel):
-    decision: Literal["open_scene", "create_scene", "provide_arguments", "cancel", "unknown"]
-    args: dict[str, Any] = Field(default_factory=dict)
-    reason: str = ""
+    async def finalize(self, messages: list[AnyMessage], run: WorkflowRun) -> str: ...
+
+
+class FinalAnswer(BaseModel):
+    content: str = Field(min_length=1)
 
 
 class StructuredPlanner:
-    """无领域工具权限的结构化 Planner。"""
+    """只规划 Worker Todo，不选择 action、工具或结构化参数。"""
 
-    def __init__(self, catalog: ActionCatalog, model: BaseChatModel | None = None) -> None:
+    def __init__(self, catalog: WorkerCatalog, model: BaseChatModel | None = None) -> None:
         self._catalog = catalog
         self._model = model or build_model()
 
     async def plan(self, intent: str, scene_context: SceneContext) -> PlanDraft:
-        system = f"""你是航天 GIS 助手的计划生成器，只负责把用户目标拆成 action DAG，不执行工具。
-只能使用以下 action：
+        system = f"""你是航天 GIS 助手的全局任务拆解器。
+你只按 Worker 维度把用户目标拆成 Todo DAG，不执行任务，也不选择 action、工具或结构化参数。
+
+可用 Worker：
 {self._catalog.planner_context()}
 
 规则：
-1. 复合请求必须拆为多个步骤，并用 depends_on 表达顺序。
-2. 打开场景后添加实体必须输出 open_scene -> add_entity，不能合并。
-3. 批量添加多个实体时，每个实体一个 add_entity 步骤，并串行依赖，避免重复副作用。
-4. 用户没有要求打开/创建场景时，不要自行增加场景动作；代码会处理前置条件。
-5. args 只写用户明确提供的参数，不得猜测经纬度、TLE、名称或场景。
-6. 缺少执行必需参数时写入 missing_arguments，但仍保留原始目标步骤。
-7. ref 在本计划内唯一；depends_on 只能引用已有 ref。
-8. 只有下游 action 必须消费上游结果时才写 input_bindings；source_ref 必须引用已有 ref，
-   pointer 使用 JSON Pointer（例如 /data/entity_id），不得使用“最近结果”。
-9. 不生成步骤 ID、状态、执行器、事实或幂等键。
+1. 每个 Todo 只写 worker、自然语言 task、source、depends_on 和 required。
+2. 所有 Todo 的 source 必须是 user_intent。
+3. task 保留用户明确提供的名称、数值和先后语义，但不得提取成 args，不得出现工具名。
+4. 复合请求按用户表达的先后顺序拆分；同一 Worker 在不同顺序位置可以出现多次。
+5. 不要自行补充用户未提出的前置任务；运行时 requirement 由 Graph 另行规划。
+6. ref 唯一；depends_on 只能引用前面的 ref，禁止环和前向引用。
+7. 不生成 step_id、状态、执行证据、场景事实或幂等键。
 """
         human = f"当前场景上下文：{scene_context.model_dump(mode='json')}\n用户原始请求：{intent}"
+        return await self._invoke_plan(system, human)
+
+    async def plan_requirement(
+        self,
+        requirement: WorkerRequirement,
+        *,
+        blocked_worker: str,
+        blocked_task: str,
+        scene_context: SceneContext,
+    ) -> PlanDraft:
+        providers = self._catalog.providers_for(requirement.key, exclude={blocked_worker})
+        if not providers:
+            raise ValueError(f"没有 Worker 能提供 requirement：{requirement.key}")
+        available = self._catalog.planner_context(include=providers)
+        system = f"""你是航天 GIS 助手的前置任务拆解器。
+当前 Worker Todo 发现了一个必须由其他 Worker 满足的 requirement。
+你只生成满足该 requirement 所必需的 Worker Todo DAG，不重复原 Todo，不选择 action、工具或结构化参数。
+
+可用 Worker（已排除当前 Worker）：
+{available or "（无）"}
+
+规则：
+1. 所有 Todo 的 source 必须是 requirement。
+2. task 使用自然语言描述需要达成的前置目标，不写工具名或 args。
+3. 只生成前置 Todo，不生成被阻塞的原 Todo。
+4. ref 唯一；depends_on 只能引用前面的 ref。
+"""
+        human = (
+            f"当前场景上下文：{scene_context.model_dump(mode='json')}\n"
+            f"被阻塞 Worker：{blocked_worker}\n"
+            f"被阻塞 Todo：{blocked_task}\n"
+            f"requirement：{requirement.model_dump(mode='json')}"
+        )
+        return await self._invoke_plan(system, human)
+
+    async def finalize(self, messages: list[AnyMessage], run: WorkflowRun) -> str:
+        """根据消息链和可信 Run 结果生成直接回答用户问题的最终文本。"""
+        system = """你是航天 GIS 工作流的最终答复生成器。
+请根据用户原始请求、Worker Todo 执行结果和可信 Run 快照，直接回答用户真正询问的内容。
+- 查询类请求必须给出查询到的数量、名称或结果，不要只说“任务已完成”。
+- 操作类请求简洁说明实际完成了什么。
+- 部分失败或失败时准确指出完成项与失败项。
+- 只能使用输入中存在的结果，不得猜测或补造数据。
+"""
+        transcript = [message_to_dict(message) for message in messages]
+        run_payload = {
+            "original_intent": run.original_intent,
+            "status": run.status.value,
+            "steps": [
+                {
+                    "step_id": step.step_id,
+                    "worker": step.worker,
+                    "task": step.task,
+                    "source": step.source.value,
+                    "status": step.status.value,
+                    "result": step.result.model_dump(mode="json") if step.result else None,
+                    "error": step.error.model_dump(mode="json") if step.error else None,
+                }
+                for step in run.steps
+            ],
+        }
+        finalizer = self._model.with_structured_output(FinalAnswer)
+        result = await finalizer.ainvoke(
+            [
+                SystemMessage(content=system),
+                HumanMessage(
+                    content=(
+                        "消息链：\n"
+                        + json.dumps(transcript, ensure_ascii=False, default=str)
+                        + "\n可信 Run 快照：\n"
+                        + json.dumps(run_payload, ensure_ascii=False)
+                    )
+                ),
+            ],
+            stream=False,
+        )
+        return FinalAnswer.model_validate(result).content
+
+    async def _invoke_plan(self, system: str, human: str) -> PlanDraft:
         planner = self._model.with_structured_output(PlanDraft)
-        # 结构化输出只能在收到完整响应后校验，不需要 token 流。
-        # 某些 OpenAI 兼容接口在 json_schema 流的最终帧中会将 Pydantic
-        # 实例写入仍标注为 None 的 parsed 字段，导致无害但误导的
-        # PydanticSerializationUnexpectedValue 警告。
-        result = await planner.ainvoke(
+        result: Any = await planner.ainvoke(
             [SystemMessage(content=system), HumanMessage(content=human)],
             stream=False,
         )
         return PlanDraft.model_validate(result)
-
-    async def resolve_waiting(
-        self,
-        user_input: str,
-        waiting: WaitingContext,
-    ) -> ResumeDecision:
-        system = """你只把用户对暂停问题的回答转换成结构化决策，不执行动作。
-- 用户要打开/选择已有场景：open_scene，args.scene_name 只在用户明确给出时填写。
-- 用户要创建/新建场景：create_scene，args.scene_name 只在用户明确命名时填写。
-- 用户补充经纬度、TLE、名称等参数：provide_arguments，原样提取到 args。
-- 用户明确取消：cancel。
-- 无法确认：unknown，不得猜测。
-"""
-        resolver = self._model.with_structured_output(ResumeDecision)
-        result = await resolver.ainvoke(
-            [
-                SystemMessage(content=system),
-                HumanMessage(content=(f"暂停上下文：{waiting.model_dump(mode='json')}\n用户回答：{user_input}")),
-            ],
-            stream=False,
-        )
-
-        logger.debug("规划已恢复中断", result = result)
-        return ResumeDecision.model_validate(result)

@@ -6,17 +6,22 @@
 
 桥接注入: V2 SSE handler 在启动 WorkflowRun 前设置 bridge_var，Worker 工具通过 get() 获取。
 
-前置条件: 场景必须已打开（由 Scheduler 和 WorkerToolValidationMiddleware 双重校验）
+前置条件: 场景必须已打开（由 @workflow_tool 契约和 WorkerToolValidationMiddleware 校验）
 """
 
 from langchain_core.tools import tool
 
 from space_aiagent.bridge import bridge_var
 from space_aiagent.models.biz_schemas import OrbitUpdateParam, SGP4Param
+from space_aiagent.tools.contracts import workflow_tool
 
 _NAMESPACE = "entity_tools"
 
 
+@workflow_tool(
+    requires={"scene.opened"},
+    effects={"entity.created"},
+)
 @tool(args_schema=SGP4Param)
 async def create_sgp4_orbit(
     tles: list[str],
@@ -57,6 +62,10 @@ async def create_sgp4_orbit(
     )
 
 
+@workflow_tool(
+    requires={"scene.opened"},
+    effects={"entity.updated"},
+)
 @tool(args_schema=OrbitUpdateParam)
 async def update_sgp4_orbit(
     name: str,

@@ -17,6 +17,7 @@ from langgraph.types import Command
 from space_aiagent.bridge import bridge_var
 from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.biz_schemas import ScenarioInfo
+from space_aiagent.tools.contracts import workflow_tool
 
 _NAMESPACE = "scene_tools"
 
@@ -86,6 +87,10 @@ async def query_scenario(runtime: ToolRuntime, scene_name: str | None = None) ->
     )
 
 
+@workflow_tool(
+    effects={"scene.opened"},
+    invalidates={"scene.none"},
+)
 @tool
 async def open_scenario(
     runtime: ToolRuntime,

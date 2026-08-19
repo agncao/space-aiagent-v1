@@ -1,72 +1,66 @@
-"""领域 ActionCatalog；通用调度器只消费该声明。"""
+"""Graph Planner 可见的 Worker 目录。"""
 
 from pathlib import Path
-from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel
 
 from space_aiagent.infrastructure.config import CONFIG_DIR
 
 
-class ActionDefinition(BaseModel):
-    '''
-    {project_root}/config/actions.yaml 映射的实体类
-    '''
+class WorkerDefinition(BaseModel):
+    """Graph 可见的最小 Worker 能力描述。"""
+
     name: str
     description: str
-    executor: str
-    allowed_tools: list[str] = Field(default_factory=list)
-    completion_tools: list[str] = Field(default_factory=list)
-    requires: list[str] = Field(default_factory=list)
-    provides: list[str] = Field(default_factory=list)
-    side_effect: bool = False
-    completion_codes: list[str] = Field(default_factory=list)
-    retry_policy: Literal["none", "read_safe", "side_effect_safe"] = "none"
-    sandbox_policy: Literal["none", "isolated"] = "none"
-
-    @model_validator(mode="after")
-    def validate_completion_tools(self) -> "ActionDefinition":
-        unknown = set(self.completion_tools) - set(self.allowed_tools)
-        if unknown:
-            raise ValueError(f"completion_tools 不在 allowed_tools 中: {sorted(unknown)}")
-        return self
 
 
-class ActionCatalog:
-    '''
-    全部 {project_root}/config/actions.yaml 映射的实体类ActionDefinition 的集合
-    '''
-    def __init__(self, actions: list[ActionDefinition]) -> None:
-        self._actions = {action.name: action for action in actions}
-        if len(self._actions) != len(actions):
-            raise ValueError("ActionCatalog 中存在重复 action")
+class WorkerCatalog:
+    """向 Planner 只暴露 Worker 描述，并内部维护自动发现的事实提供者。"""
+
+    def __init__(
+        self,
+        workers: list[WorkerDefinition],
+        fact_providers: dict[str, set[str]] | None = None,
+    ) -> None:
+        self._workers = {worker.name: worker for worker in workers}
+        if len(self._workers) != len(workers):
+            raise ValueError("WorkerCatalog 中存在重复 Worker")
+        self._fact_providers = {fact: frozenset(providers) for fact, providers in (fact_providers or {}).items()}
 
     @classmethod
-    def from_yaml(cls, path: Path | None = None) -> "ActionCatalog":
-        catalog_path = path or CONFIG_DIR / "actions.yaml"
+    def from_yaml(cls, path: Path | None = None) -> "WorkerCatalog":
+        catalog_path = path or CONFIG_DIR / "workers.yaml"
         payload = yaml.safe_load(catalog_path.read_text(encoding="utf-8")) or {}
-        raw_actions = payload.get("actions", {})
-        if not isinstance(raw_actions, dict) or not raw_actions:
-            raise ValueError(f"ActionCatalog 为空: {catalog_path}")
-        return cls([ActionDefinition(name=name, **body) for name, body in raw_actions.items()])
+        raw_workers = payload.get("workers", [])
+        if not isinstance(raw_workers, list) or not raw_workers:
+            raise ValueError(f"WorkerCatalog 为空: {catalog_path}")
+        from space_aiagent.tools.contracts import get_workflow_tool_contract
+        from space_aiagent.tools.registry import get_tools
 
-    def get(self, name: str) -> ActionDefinition:
-        try:
-            return self._actions[name]
-        except KeyError as exc:
-            raise ValueError(f"未知 action: {name}") from exc
+        fact_providers: dict[str, set[str]] = {}
+        for item in raw_workers:
+            for tool in get_tools(item.get("tools", [])):
+                for effect in get_workflow_tool_contract(tool).effects:
+                    fact_providers.setdefault(effect, set()).add(item["name"])
+        workers = [WorkerDefinition(name=item["name"], description=item["description"]) for item in raw_workers]
+        return cls(workers, fact_providers)
 
     def contains(self, name: str) -> bool:
-        return name in self._actions
+        return name in self._workers
 
-    def definitions(self) -> list[ActionDefinition]:
-        return list(self._actions.values())
+    def providers_for(self, fact: str, *, exclude: set[str] | None = None) -> set[str]:
+        return set(self._fact_providers.get(fact, set())) - (exclude or set())
 
-    def planner_context(self) -> str:
-        lines = []
-        for action in self._actions.values():
-            if action.executor == "system":
-                continue
-            lines.append(f"- {action.name}: {action.description}")
-        return "\n".join(lines)
+    def planner_context(
+        self,
+        *,
+        exclude: set[str] | None = None,
+        include: set[str] | None = None,
+    ) -> str:
+        excluded = exclude or set()
+        return "\n".join(
+            f"- {worker.name}: {worker.description}"
+            for worker in self._workers.values()
+            if worker.name not in excluded and (include is None or worker.name in include)
+        )

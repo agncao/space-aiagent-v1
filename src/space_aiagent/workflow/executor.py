@@ -1,12 +1,11 @@
-"""复用 DeepAgents Worker 的 V2 步骤执行器。"""
+"""Worker Todo 执行器。"""
 
 from __future__ import annotations
 
 import uuid
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from deepagents import create_deep_agent
-from deepagents.backends.protocol import BackendProtocol
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import HumanMessage
 from langgraph.types import Checkpointer, Command
@@ -15,15 +14,22 @@ from space_aiagent.agents.workers import load_workers
 from space_aiagent.infrastructure.backend import build_agent_backend
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.models.response_schema.worker_response import ResponseCode, WorkerResponse
-from space_aiagent.models.workflow_schemas import PlanStep, StepError, StepResult, WorkflowRun
-
-from space_aiagent.workflow.catalog import ActionCatalog
+from space_aiagent.models.workflow_schemas import (
+    PlanStep,
+    StepResult,
+    WorkerRequirement,
+    WorkflowRun,
+)
+from space_aiagent.tools.contracts import get_workflow_tool_contract
 from space_aiagent.workflow.execution_context import (
     StepAlreadyCompletedError,
     StepExecutionContext,
     StepExecutionLimitError,
     step_execution_context_var,
 )
+
+if TYPE_CHECKING:
+    from deepagents.backends.protocol import BackendProtocol
 
 logger = get_logger(__name__)
 
@@ -33,37 +39,36 @@ class StepExecutor(Protocol):
 
 
 class AgentStepExecutor:
-    """每次只给 Worker 一个 Action，外层顺序不再交给模型。"""
+    """每次只执行一个 Worker Todo；Worker 自行选择 Skill 和工具。"""
 
     def __init__(
-            self,
-            catalog: ActionCatalog,
-            checkpointer: Checkpointer | None,
-            backend: BackendProtocol | None = None,
+        self,
+        checkpointer: Checkpointer | None,
+        backend: BackendProtocol | None = None,
     ) -> None:
-        self._catalog = catalog
         self._checkpointer = checkpointer
         self._backend = backend or build_agent_backend()
         self._agents: dict[str, Any] = {}
+        self._worker_tool_names: dict[str, frozenset[str]] = {}
+        self._worker_tools: dict[str, dict[str, Any]] = {}
 
-    def _get_agent(self, executor_name: str) -> Any:
-        if executor_name in self._agents:
-            return self._agents[executor_name]
+    def _get_agent(self, worker_name: str) -> Any:
+        if worker_name in self._agents:
+            return self._agents[worker_name]
         configs = {item["name"]: item for item in load_workers(self._backend)}
-        if executor_name not in configs:
-            raise ValueError(f"找不到步骤执行器: {executor_name}")
-        config = configs[executor_name]
-        worker_tool_names = {tool.name for tool in config["tools"]}
-        for action in self._catalog.definitions():
-            if action.executor != executor_name:
-                continue
-            missing_tools = set(action.allowed_tools) - worker_tool_names
-            if missing_tools:
-                raise ValueError(f"action {action.name} 引用了 {executor_name} 未绑定的工具: {sorted(missing_tools)}")
+        if worker_name not in configs:
+            raise ValueError(f"找不到 Worker: {worker_name}")
+        config = configs[worker_name]
+        tools = {tool.name: tool for tool in config["tools"]}
+        self._worker_tool_names[worker_name] = frozenset(tools)
+        self._worker_tools[worker_name] = tools
         worker_prompt = (
             f"{config['system_prompt'].rstrip()}\n\n"
-            "## V2 单步骤执行约束\n"
-            "你只执行本轮给出的一个 action。不得规划或委派后续 action；工具结果返回后立即生成 WorkerResponse。"
+            "## V2 Worker Todo 执行约束\n"
+            "你只完成本轮给出的一个 Todo，不规划或委派其他 Worker。"
+            "你可以在本 Worker 内选择必要的 Skill 和工具。"
+            "若工具返回 REQUIREMENT_UNSATISFIED，必须返回 status=requires 并原样携带 requirements。"
+            "工具结果足以回答 Todo 后立即返回 WorkerResponse。"
         )
         agent = create_deep_agent(
             model=config["model"],
@@ -75,54 +80,65 @@ class AgentStepExecutor:
             backend=self._backend,
             response_format=ToolStrategy(WorkerResponse),
             checkpointer=self._checkpointer,
-            name=f"v2-{executor_name}",
+            name=f"v2-{worker_name}",
         )
-        self._agents[executor_name] = agent
+        self._agents[worker_name] = agent
         return agent
 
     async def execute(self, run: WorkflowRun, step: PlanStep, execution_id: str) -> StepResult:
-        if step.executor == "system":
-            raise ValueError("system step 不应交给 AgentStepExecutor")
-        action = self._catalog.get(step.action)
-        agent = self._get_agent(step.executor)
-        logger.info(f"将任务交给子智能体{step.executor},行为:{step.action}",
-                    thread_id=run.thread_id, run_id=run.run_id, args=step.args)
+        agent = self._get_agent(step.worker)
+        tool_names = self._worker_tool_names[step.worker]
+        dependency_context = [
+            {
+                "step_id": dependency.step_id,
+                "worker": dependency.worker,
+                "task": dependency.task,
+                "result": dependency.result.model_dump(mode="json") if dependency.result else None,
+            }
+            for dependency_id in step.depends_on
+            if (dependency := run.step(dependency_id)).result is not None
+        ]
         task = (
-            f"只执行这个步骤：{step.title}\n"
-            f"action: {step.action}\n"
-            f"args: {step.args}\n"
-            f"原始用户目标（仅供参数语义参考，不得执行其他步骤）：{run.original_intent}\n"
+            f"只执行这个 Worker Todo：{step.task}\n"
+            f"Todo 来源：{step.source.value}\n"
+            f"原始用户目标：{run.original_intent}\n"
             f"当前场景：{run.scene_context.scene_name or '无'}\n"
-            f"允许的业务工具：{', '.join(step.allowed_tools) or '无'}"
+            f"直接依赖结果：{dependency_context or '无'}"
         )
-        graph_input: dict[str, Any] | Command = {"messages": [HumanMessage(content=task)]}
-        if resume_payload := step.args.pop("_agent_resume", None):
-            graph_input = Command(resume=resume_payload)
+        if step.resume_user_input:
+            task += f"\n用户补充：{step.resume_user_input}\n补充数据：{step.resume_payload or {}}"
 
-        step_execute_context = StepExecutionContext(
+        graph_input: dict[str, Any] | Command = {"messages": [HumanMessage(content=task)]}
+        if step.resume_payload and not step.resume_user_input:
+            graph_input = Command(resume=step.resume_payload)
+
+        facts = self._facts(run)
+        execution_context = StepExecutionContext(
             run_id=run.run_id,
             step_id=step.step_id,
-            execution_id=execution_id,
-            allowed_tools=frozenset(step.allowed_tools),
-            completion_tools=frozenset(action.completion_tools),
+            allowed_tools=tool_names,
             scene_revision=run.scene_context.revision,
-            scene_opened=run.scene_context.status == "opened",
+            facts=frozenset(facts),
         )
-        step_execute_context_token = step_execution_context_var.set(step_execute_context)
+        token = step_execution_context_var.set(execution_context)
         try:
             result = await agent.ainvoke(
                 graph_input,
                 config={
-                    "configurable": {"thread_id": f"v2:{run.run_id}:{step.step_id}"},
+                    "configurable": {
+                        "thread_id": step.agent_thread_id or f"v2:{run.run_id}:{step.step_id}:{step.attempt_count}"
+                    },
                     "recursion_limit": 60,
                 },
             )
         except StepAlreadyCompletedError as exc:
+            contract = get_workflow_tool_contract(self._worker_tools[step.worker][exc.tool_name])
             return StepResult(
                 status="success",
                 code="DEDUPLICATED_SUCCESS",
                 summary=str(exc),
-                effects=action.provides,
+                effects=sorted(contract.effects),
+                invalidates=sorted(contract.invalidates),
                 evidence={"tool_func": exc.tool_name, "tool_result": exc.result, "deduplicated": True},
             )
         except StepExecutionLimitError as exc:
@@ -130,33 +146,21 @@ class AgentStepExecutor:
                 status="failed",
                 code="NO_PROGRESS",
                 summary=str(exc),
-                error=StepError(code="NO_PROGRESS", message=str(exc), retryable=False),
             )
         finally:
-            step_execution_context_var.reset(step_execute_context_token)
+            step_execution_context_var.reset(token)
 
-        # 1. config/workers.yaml 配置了 interrupt_on 会在此中断
-        # 2. 在此处 执行器捕获
-        # 3. 然后在 engine.py _execute_node方法：
-        #         waiting_kind = result.evidence.get("waiting_kind", "missing_arguments")
-        #         run.waiting_context = WaitingContext(
-        #             kind=waiting_kind,  # → "agent_interrupt"
-        #             ...
-        #         )
-        # 4. 恢复时消费：_apply_resume 方法:
-        #         elif waiting.kind == "agent_interrupt":
-        #         step.args["_agent_resume"] = data or {"content": user_input}
         interrupts = result.get("__interrupt__") if isinstance(result, dict) else None
         if interrupts:
-            logger.info(f"子智能体{step.executor}调用{step.action}产生中断",
-                        thread_id=run.thread_id, run_id=run.run_id)
             values = [getattr(item, "value", item) for item in interrupts]
-            return StepResult(
+            step_result = StepResult(
                 status="waiting_user",
                 code="AGENT_INTERRUPT",
-                summary="步骤需要用户确认后继续。",
+                summary="Todo 需要用户确认后继续。",
                 evidence={"waiting_kind": "agent_interrupt", "interrupts": values},
             )
+            logger.info(f"子智能体{step.worker} Interrupt, 任务:{step.task}",thread_id=run.thread_id,run_id=run.run_id,status=step_result.status)
+            return step_result
 
         response = result.get("structured_response") if isinstance(result, dict) else None
         if not isinstance(response, WorkerResponse):
@@ -164,90 +168,84 @@ class AgentStepExecutor:
                 status="failed",
                 code="INVALID_STEP_OUTPUT",
                 summary="Worker 未返回合法结构化结果。",
-                error=StepError(code="INVALID_STEP_OUTPUT", message="缺少 WorkerResponse"),
+            )
+
+        evidence: dict[str, Any] = {
+            "agent_status": response.status,
+            "tool_call_count": execution_context.tool_call_count,
+            "successful_tools": execution_context.successful_tool_names,
+        }
+        if execution_context.signature_results:
+            evidence["tool_result"] = next(reversed(execution_context.signature_results.values()))
+
+        requirements = [
+            WorkerRequirement.model_validate(item) for item in execution_context.missing_requirements.values()
+        ]
+        requirements.extend(response.requirements)
+        if response.code == ResponseCode.NO_SCENE and not any(item.key == "scene.opened" for item in requirements):
+            requirements.append(
+                WorkerRequirement(
+                    key="scene.opened",
+                    description="当前 Todo 需要先创建场景或打开已有场景",
+                    context={"worker": step.worker, "task": step.task},
+                )
+            )
+        requirements = list({item.key: item for item in requirements}.values())
+        if requirements or response.status == "requires":
+
+            logger.info(f"子智能体{step.worker} {response.summary}",thread_id=run.thread_id,run_id=run.run_id,status="waiting_dependency")
+            return StepResult(
+                status="waiting_dependency",
+                code="REQUIREMENT_UNSATISFIED",
+                summary=response.summary or "Todo 缺少跨 Worker 前置条件。",
+                data=response.data,
+                evidence=evidence,
+                requirements=requirements,
             )
 
         code = response.code.value
-        evidence: dict[str, Any] = {
-            "agent_status": response.status,
-            "tool_call_count": step_execute_context.tool_call_count,
-        }
-        if step_execute_context.signature_results:
-            logger.info(f"子智能体{step.executor}产生了执行结果",signature_results=step_execute_context.signature_results)
-            evidence["tool_result"] = next(reversed(step_execute_context.signature_results.values()))
-
-        if response.code == ResponseCode.NO_SCENE:
-            return StepResult(
-                status="waiting_user",
-                code=code,
-                summary=response.summary,
-                data=response.data,
-                evidence={**evidence, "waiting_kind": "missing_precondition"},
-            )
         if response.code == ResponseCode.MISSING_REQUIRED_INFO or response.status == "confirm":
-            step_result = StepResult(
+            logger.info(f"子智能体{step.worker} {response.summary}",thread_id=run.thread_id,run_id=run.run_id,status="waiting_user")
+
+            return StepResult(
                 status="waiting_user",
                 code=code,
                 summary=response.summary,
                 data=response.data,
                 evidence={**evidence, "waiting_kind": "missing_arguments"},
             )
-            logger.info(f"子智能体{step.executor}调用{step.action}返回结果: "
-                        f"status={step_result.status},waiting_kind={step_result.evidence.get('waiting_kind')}",
-                        thread_id=run.thread_id, run_id=run.run_id,args=step.args)
-            return step_result
-        if step.action == "open_scene" and response.code == ResponseCode.SCENE_QUERIED:
-            candidates = response.data or []
-            if len(candidates) > 1:
-                step_result = StepResult(
-                    status="waiting_user",
-                    code=code,
-                    summary=response.summary,
-                    data=candidates,
-                    evidence={**evidence, "waiting_kind": "scene_selection"},
-                )
-                logger.info(f"子智能体{step.executor}调用{step.action}返回结果: "
-                            f"status={step_result.status},waiting_kind={step_result.evidence.get('waiting_kind')}",
-                            thread_id=run.thread_id, run_id=run.run_id,args=step.args)
-            return StepResult(
-                status="failed",
-                code="OPEN_SCENE_INCOMPLETE",
-                summary="场景查询完成但未打开唯一场景。",
-                data=candidates,
-                error=StepError(code="OPEN_SCENE_INCOMPLETE", message="Worker 未完成 open_scene action"),
-                evidence=evidence,
-            )
 
-        if code in action.completion_codes:
+        if response.status in {"success", "info"}:
             return StepResult(
                 status="success",
                 code=code,
                 summary=response.summary,
                 data=response.data,
-                effects=action.provides,
-                evidence=evidence,
-            )
-        if response.status == "success" and not action.completion_codes:
-            return StepResult(
-                status="success",
-                code=code,
-                summary=response.summary,
-                data=response.data,
-                effects=action.provides,
+                effects=sorted(execution_context.effects),
+                invalidates=sorted(execution_context.invalidates),
                 evidence=evidence,
             )
 
-        logger.warning(f"子智能体{step.executor}调用{step.action}失败: "
-                    f"summary={response.summary}",
-                    thread_id=run.thread_id, run_id=run.run_id, args=step.args)
         return StepResult(
             status="failed",
             code=code,
             summary=response.summary,
             data=response.data,
-            error=StepError(code=code, message=response.summary, retryable=False),
             evidence=evidence,
         )
+
+    @staticmethod
+    def _facts(run: WorkflowRun) -> set[str]:
+        facts: set[str] = set()
+        if run.scene_context.status == "opened":
+            facts.add("scene.opened")
+        elif run.scene_context.status == "none":
+            facts.add("scene.none")
+        for item in run.steps:
+            if item.result and item.status.value == "succeeded":
+                facts.difference_update(item.result.invalidates)
+                facts.update(item.result.effects)
+        return facts
 
 
 def new_execution_id() -> str:

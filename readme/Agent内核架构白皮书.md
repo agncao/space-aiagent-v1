@@ -1,7 +1,7 @@
 # Space AI Agent V2 架构白皮书
 
 > 状态：V2 唯一架构基线
-> 更新日期：2026-08-11
+> 更新日期：2026-08-20
 
 ## 1. 架构目标
 
@@ -19,17 +19,18 @@
 
 ```mermaid
 flowchart TD
-    U["用户请求"] --> P["结构化 Planner"]
+    U["用户请求 / HumanMessage"] --> P["Worker Todo Planner"]
     P --> V["PlanValidator"]
     V --> R["RunRepository"]
     R --> G["LangGraph Workflow"]
     G --> S["确定性 Scheduler"]
-    S --> C["Precondition Engine"]
-    C --> X["ResultResolver"]
-    X --> E["AgentStepExecutor"]
+    S --> E["AgentStepExecutor"]
     E --> SW["scene-agent Worker"]
     E --> EW["entity-agent Worker"]
     E --> AW["未来 analysis-agent Worker"]
+    SW --> REQ["WorkerRequirement"]
+    EW --> REQ
+    REQ --> G
     SW --> B["StreamBridge"]
     EW --> B
     AW --> B
@@ -37,21 +38,24 @@ flowchart TD
     UI --> L["Execution Ledger"]
     L --> S
     S --> F["Finalization Guard"]
-    F --> O["RunResult / Snapshot / SSE"]
+    F --> FM["Finalizer Model"]
+    G --> M["Graph messages"]
+    M --> FM
+    FM --> O["RunResult / Snapshot / SSE"]
 ```
 
 职责边界：
 
 | 组件 | 负责 | 不负责 |
 | --- | --- | --- |
-| Planner | 识别目标、拆分动作、声明草案依赖和缺失信息 | 可信步骤 ID、执行器选择、状态判断、工具调用 |
-| PlanValidator | ActionCatalog 校验、DAG 校验、补依赖、分配 ID、选择执行器 | 业务执行 |
-| Scheduler | ready 判定、失败传播、单步调度、等待与续跑 | 领域参数猜测 |
-| Precondition Engine | `scene.opened` 等持续事实检查与前置步骤激活 | 把查询结果塞进 Agent State |
-| ResultResolver | 按显式 ResultRef 解析上游输出 | 扫描“最近结果”或按 action 猜来源 |
-| Worker | 依据 Skill 执行一个步骤并返回 WorkerResponse | 规划、跨步骤调度、决定 Run 结束 |
+| Planner | 只按 Worker 拆分自然语言 Todo，声明用户顺序依赖；requirement 模式只拆前置 Todo | action、工具、结构化参数、运行状态 |
+| PlanValidator | Worker/source/ref/DAG 校验、分配稳定 `step_id` | 业务执行与参数猜测 |
+| Scheduler | ready 判定、失败传播、单 Todo 调度、依赖等待与续跑 | 领域行为选择 |
+| Worker | 依据 Skill 和本 Worker 工具执行一个 Todo，返回结果或 requirement | 跨 Worker 调度、决定 Run 结束 |
+| 工具契约 | 声明 `requires/effects/invalidates` | 生成 Todo 或直接改 Graph 状态 |
 | StreamBridge | 发工具事件、等待回告、关联工作流 ID | 直接操作 Cesium |
 | RunRepository | Run、Step、Result、Execution、序号的唯一事实源 | 保存大型文件正文 |
+| Finalizer | 结合消息链与可信步骤结果直接回答原始问题 | 改写步骤事实或判断终态 |
 
 ## 3. 确定性工作流
 
@@ -70,29 +74,31 @@ planning → running → waiting_user → running
 Step 状态：
 
 ```text
-pending → ready → running → waiting_tool → succeeded
+pending → ready → running → succeeded
                     ├→ waiting_user
+                    ├→ waiting_dependency → pending（前置 Todo 成功后重试）
                     ├→ failed
                     ├→ blocked
-                    ├→ skipped
                     └→ cancelled
 ```
 
-`RunRepository` 是运行状态、前端进度和审计的唯一事实源。LangGraph Checkpointer 只保存图游标、Worker 消息和 interrupt/resume 上下文。
+`RunRepository` 是运行状态、前端进度和审计的唯一事实源。LangGraph Checkpointer
+保存图游标、完整 `messages` 和 interrupt/resume 上下文。消息链依次包含用户
+`HumanMessage`、Todo List `AIMessage`、成对的 task-call `AIMessage` / Worker
+`ToolMessage`，以及最终答复 `AIMessage`。
 
 ### 3.2 Scheduler 不变量
 
 步骤只有在以下条件同时满足时才可执行：
 
 1. 状态为 `pending` 或 `ready`。
-2. 直接依赖已成功或按策略跳过。
-3. ActionCatalog 声明的前置事实成立。
-4. 没有同一步骤的活跃 ToolExecution。
-5. Run 没有尚未处理的用户中断。
+2. 直接依赖已成功。
+3. 没有同一步骤的活跃 ToolExecution。
+4. Run 没有尚未处理的用户中断。
 
 默认失败策略是阻塞依赖步骤，同时继续无依赖步骤。任一必需步骤失败时，Finalization Guard 不得返回完全成功。
 
-### 3.3 场景前置条件与续跑
+### 3.3 动态 requirement 与续跑
 
 `SceneContext` 只表示持续有效的当前环境事实：
 
@@ -103,7 +109,20 @@ revision
 verified_at
 ```
 
-当 `add_entity` 等动作缺少 `scene.opened` 时，工作流激活 `ensure_scene_context`。用户选择已有场景或新建场景后，Scheduler 自动恢复原始待办，不再次询问是否继续原目标。
+领域工具通过 `@workflow_tool` 声明固有前置事实。调用前若缺少
+`scene.opened` 等事实，中间件阻止副作用并返回标准 `WorkerRequirement`。当前
+Todo 进入 `waiting_dependency`；Graph 使用 requirement 模式 Planner 生成其他
+Worker Todo，扁平前插到当前 Todo 之前，并标记 `source=requirement`、
+`generated_for_step_id` 和 `requirement_key`。
+
+WorkerCatalog 在启动时从 Worker 绑定的工具契约自动建立 `effect → provider`
+内部索引；该索引不暴露工具给 Planner，只用于在规划前拒绝无提供者的 requirement
+并限制可选 Worker。
+
+前置 Todo 全部成功后，原 Todo 保持同一 `step_id`、清空临时 Worker 状态并从头
+重试。前置 Todo 自己需要用户选择时才进入 `waiting_user`；原 Todo 不直接等待
+用户。同一 `step_id + requirement_key` 禁止重复展开，依赖环、超过最大深度、无
+其他 Worker 或前置 Todo 失败都会确定性终止或阻塞原 Todo。
 
 同一 `thread_id` 最多有一个非终态 Run。等待期间的新输入默认续接当前 Run；显式 `replace` 才取消旧 Run 并建立新 Run。
 
@@ -112,12 +131,11 @@ verified_at
 ```mermaid
 flowchart LR
     T["前端工具回告"] --> TE["ToolExecution.result\n原始审计与幂等"]
-    T --> TM["ToolMessage\nWorker 临时上下文"]
+    T --> TM["Worker 本地 ToolMessage"]
     TM --> WR["WorkerResponse"]
     WR --> SR["PlanStep.result / StepResult"]
     SR --> UI["Snapshot / SSE"]
-    SR --> RR["ResultResolver"]
-    RR --> DS["下游步骤参数"]
+    SR --> GTM["Graph ToolMessage\nFinalizer 上下文"]
     SR --> EF["effects"]
     EF --> SC["SceneContext"]
     SR --> AF["ArtifactRef"]
@@ -130,20 +148,28 @@ flowchart LR
   不写入 LangGraph State。
 - `StepResult.data` 保存小型、规范化业务结果，是前端展示和下游绑定的来源。
 - `ToolExecution.result` 保存原始回告、重试和幂等证据，不直接作为业务输入。
+- `PlanStep.result` 是跨 Todo 可引用的业务事实源；执行器把直接依赖的结果以只读
+  自然语言上下文交给 Worker，不由全局 Planner 生成参数绑定。
+- Graph 中每个 Worker 结果 `ToolMessage` 必须有同 `tool_call_id=execution_id` 的
+  task tool-call `AIMessage`，不得写入孤立 ToolMessage。
 - `SceneContext` 只保存当前环境事实，不保存候选列表或分析结果。
 - 大型报告、图表和数据集使用 `ArtifactRef`；WorkflowRun 不保存二进制或大型正文。
-- 下游只可通过显式 `ResultRef(source_step_id, pointer)` 读取上游结果。
 - 不新增 `scenario_query_results`、`report_results` 一类业务专用 State 字段。
-
-ResultRef 使用 RFC 6901 JSON Pointer。Validator 拒绝未知、当前或后序步骤引用，自动补直接依赖，并拒绝同一参数同时出现在 `args` 与 `input_bindings`。
+- Finalization Guard 只判断 `succeeded/partially_succeeded/failed`；Finalizer 模型根据
+  原始请求、消息链和可信步骤结果生成面向用户的答复。模型异常时回退为成功与
+  失败 Todo 摘要，禁止固定返回“任务已完成”。
 
 ## 5. Worker、Skill 与工具安全
 
 ### 5.1 Worker
 
-Worker 在 `config/workers.yaml` 声明模型提示词、工具组、Skill 路径和 HITL 规则。`AgentStepExecutor` 每次只传入一个 Action 和有限上下文，并要求返回 `WorkerResponse`。
+Worker 在 `config/workers.yaml` 声明名称、能力描述、模型提示词、工具组、Skill
+路径和 HITL 规则。全局 Planner 只读取名称和能力描述，看不到工具清单。
+`AgentStepExecutor` 每次只传入一个自然语言 Todo、原始用户目标和直接依赖结果，
+并要求返回 `WorkerResponse`。
 
-ActionCatalog 是动作到 Worker、前置事实、完成证据和授权工具的可信映射。Worker 无权扩大工具范围，也不能创建后续步骤。
+Worker 可在自身工具边界内选择行为和参数，但无权调用其他 Worker 的工具、创建
+后续 Todo 或决定 Run 结束。仓库不再保留 ActionCatalog 或 `config/actions.yaml`。
 
 ### 5.2 Skill
 
@@ -157,14 +183,14 @@ Skill 使用 Markdown + YAML frontmatter，通过 SkillCatalog 校验，由 Flas
 
 ### 5.3 执行保护
 
-- 每步骤默认最多 8 次业务工具调用。
+- 每个 Todo 默认最多 20 次业务工具调用。
 - 工具名、规范化参数和场景版本组成 fingerprint。
 - 已成功副作用调用直接读取 Ledger，不重新执行。
 - 同一失败 fingerprint 连续两次且无状态变化时，以 `NO_PROGRESS` 结束步骤。
-- 满足 ActionCatalog 完成证据后强制结束 Worker 步骤。
+- Worker 工具由 `workers.yaml` 限定；Skill 路由可进一步收窄受管工具。
+- `@workflow_tool` 契约在工具调用前检查 `requires`，成功后记录 `effects` 与
+  `invalidates`。
 - 网络超时重试复用同一 `idempotency_key`；业务失败不得盲目重试。
-
-未来机械且稳定的 SOP 可下沉到 `DeterministicActionExecutor`。它是 Scheduler 的普通代码节点，不是把所有工具交给 Planner。
 
 ## 6. API 与前端协议
 
@@ -177,13 +203,14 @@ Skill 使用 Markdown + YAML frontmatter，通过 SkillCatalog 校验，由 Flas
 | 1 | 可观测性与失败恢复基础 | OTel/Langfuse NoOp 降级、RetryMiddleware | ✅ 已完成 |
 | 2 | SSE + POST 传输与 HITL | StreamBridge、interrupt/resume、同线程 409 | ✅ 已完成 |
 | 3 | Skill Package 与门禁 | CompositeBackend、SkillCatalog、3 个内置 Skill、fail-closed | ✅ 已完成 |
-| 4 | V2 确定性工作流 | Planner、Validator、Scheduler、Precondition、Ledger、Finalization Guard | ✅ 已完成（2026-08-11） |
-| 5 | V2 通用结果通道 | StepResult、ResultRef/InputBinding、ArtifactRef、删除业务专用 State | ✅ 已完成（2026-08-11） |
+| 4 | V2 确定性工作流基础 | Planner、Validator、Scheduler、Ledger、Finalization Guard | ✅ 已完成（2026-08-11） |
+| 5 | V2 通用结果通道 | StepResult、ArtifactRef、删除业务专用 State | ✅ 已完成（2026-08-11） |
 | 6 | 单一 V2 架构收敛 | 删除旧接口、自由主 Agent、WebSocket 模型和兼容中间件；Worker 语义统一 | ✅ 已完成（2026-08-11） |
-| 7 | 多模型动态路由 | Planner、Worker、Flash 路由职责可配置、可观测、可降级 | ▶ **下一任务** |
-| 8 | Backend/Policy 与脚本沙箱 | CommandGuard、Sandbox Executor、脚本执行审计 | ⏸ 首个脚本型生产 Skill 出现后 |
-| 9 | 分析与报告原子能力 | 数据查询、分析 Worker、Artifact 存储服务 | ⬜ 待开始 |
-| 10 | 系统指标与横切能力 | Prometheus、RBAC、完整审计、Skill 生命周期 | ⬜ 待开始 |
+| 7 | Worker Todo 工作流改造（第一版） | Worker-only Planner、动态 requirement 前插、Graph messages、task/ToolMessage 配对、结果型 Finalizer；`pytest` 98 passed / 2 skipped | ✅ 已完成（2026-08-20） |
+| 8 | 多模型动态路由 | Planner、Worker、Flash 路由职责可配置、可观测、可降级 | ▶ **下一任务** |
+| 9 | Backend/Policy 与脚本沙箱 | CommandGuard、Sandbox Executor、脚本执行审计 | ⏸ 首个脚本型生产 Skill 出现后 |
+| 10 | 分析与报告原子能力 | 数据查询、分析 Worker、Artifact 存储服务 | ⬜ 待开始 |
+| 11 | 系统指标与横切能力 | Prometheus、RBAC、完整审计、Skill 生命周期 | ⬜ 待开始 |
 
 维护规则：完成任务时同步状态、日期和测试证据；插队任务写明原因；受条件阻塞的任务不阻止下一个可执行项。
 
@@ -208,6 +235,11 @@ Skill 使用 Markdown + YAML frontmatter，通过 SkillCatalog 校验，由 Flas
 
 前端按 `run_id + revision` 展示 Todo，按 `seq` 去重，刷新后通过 Snapshot 恢复，并按 `idempotency_key` 缓存副作用结果。
 
+`plan_snapshot` 和 `step_update` 使用 Worker Todo 字段：`worker`、`task`、
+`source`、`generated_for_step_id`、`requirement_key`、`depends_on`、`status`、
+`result/error`、`attempt_count`。`waiting_dependency` 只显示进度；只有
+`waiting_user` 发送 `interrupt`。
+
 ## 7. 持久化与部署
 
 首版 `RunRepository` 使用独立 SQLite `workflow.db`，接口不暴露 SQLite 特性，后续可切 PostgreSQL。数据库保存 JSON payload，因此通用结果模型扩展无需为每种业务结果改表。
@@ -218,7 +250,7 @@ Skill 使用 Markdown + YAML frontmatter，通过 SkillCatalog 校验，由 Flas
 
 ## 8. 架构不变量
 
-1. Planner 不绑定领域工具。
+1. Planner 只拆 Worker Todo，不生成 action、工具或结构化参数。
 2. 跨步骤顺序不依赖模型“记得继续”。
 3. 创建实体前必须有可信 `scene.opened`。
 4. 所有 Cesium 操作必须经过 StreamBridge 和前端回告。
@@ -233,9 +265,11 @@ Skill 使用 Markdown + YAML frontmatter，通过 SkillCatalog 校验，由 Flas
 | --- | --- |
 | Planner | 生成不可信结构化计划草案的模型节点 |
 | Scheduler | 以代码控制步骤状态、依赖和调度的组件 |
-| Worker | 执行单个授权领域步骤的 DeepAgents 实例 |
+| Worker Todo | 指定 `worker + task` 的单个自然语言任务，来源为用户意图或动态 requirement |
+| Worker | 执行单个授权 Todo 的 DeepAgents 实例 |
 | Skill | Worker 命中某类动作后遵循的单步骤 SOP |
-| ActionCatalog | 动作契约、执行器、前置条件、完成证据和工具授权的可信目录 |
+| WorkerCatalog | 从 `workers.yaml` 提供给 Planner 的 Worker 名称与能力描述目录 |
+| WorkerRequirement | Worker/工具发现的跨 Worker 前置事实请求 |
 | WorkflowRun | 一次用户复合意图的持久化运行实例 |
 | StepResult | 单步骤规范化业务结果 |
 | ToolExecution | 单次工具调用的审计与幂等记录 |

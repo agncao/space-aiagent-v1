@@ -36,24 +36,17 @@ class StepStatus(StrEnum):
     READY = "ready"
     # 正在执行
     RUNNING = "running"
-    # 已经发出工具请求，等待 前端 回告
-    WAITING_TOOL = "waiting_tool"
     # 需要用户回答
     WAITING_USER = "waiting_user"
+    # 等待 Graph 动态插入的前置 Todo 完成，不直接等待用户输入
+    WAITING_DEPENDENCY = "waiting_dependency"
     SUCCEEDED = "succeeded"
     # 执行失败
     FAILED = "failed"
     # 因依赖步骤失败而无法执行。它不是自身执行失败，而是根本没有执行机会。
     BLOCKED = "blocked"
-    # 根据工作流规则主动跳过，通常用于非必需步骤或已经不需要执行的分支。
-    SKIPPED = "skipped"
     # 因整个 Run 被取消而终止。尚未完成的步骤通常都会转成这个状态。
     CANCELLED = "cancelled"
-
-
-TERMINAL_STEP_STATUSES = frozenset(
-    {StepStatus.SUCCEEDED, StepStatus.FAILED, StepStatus.BLOCKED, StepStatus.SKIPPED, StepStatus.CANCELLED}
-)
 
 
 class SceneContext(BaseModel):
@@ -89,285 +82,95 @@ class ArtifactRef(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class DraftResultRef(BaseModel):
-    """Planner 使用的本计划局部结果引用。
-
-    ``pointer`` 的作用
-    -----------------
-    ``pointer`` 是一个 JSON Pointer（RFC 6901），告诉执行引擎"从源步骤的
-    输出结果中**取哪个字段**的值"。
-
-    默认 ``"/data"`` 表示取整个 ``result.data``。
-
-    业务场景举例
-    ------------
-    用户说："搜索高分系列卫星，然后加载第一个卫星的轨道"
-
-    step_1（搜索卫星）返回结果::
-
-        {
-          "status": "success",
-          "data": [
-            {"id": "GF-1", "name": "高分一号", "orbit_type": "LEO"},
-            {"id": "GF-2", "name": "高分二号", "orbit_type": "SSO"}
-          ]
-        }
-
-    step_2（加载轨道）需要第一个卫星的 id：::
-
-        {
-          "ref": "step_2",
-          "action": "load_satellite_orbit",
-          "input_bindings": {
-            "satellite_id": {
-              "source_ref": "step_1",
-              "pointer": "/data/0/id",    // ← 从 step_1 结果中取 data[0].id → "GF-1"
-              "required": true
-            }
-          }
-        }
-
-    ``pointer`` 取值示例
-    -------------------
-    ================= ====================================
-    pointer            含义
-    ================= ====================================
-    ``"/data"``        取整个 data 字段（默认值）
-    ``"/data/0/id"``   取 data 数组第一个元素的 id
-    ``"/data/name"``   取 data 对象的 name 字段
-    ``"/data/0"``      取 data 数组的第一个元素（整个对象）
-    ================= ====================================
-    """
-
-    source_ref: str
-    pointer: str = "/data"
-    required: bool = True
-    """该数据绑定是否必需。
-
-    - ``True``（默认）：当前步骤**必须**拿到这个数据才能执行。如果源步骤失败
-      或数据缺失，当前步骤会被阻塞（BLOCKED）。
-    - ``False``：该数据是"尽力而为"的可选增强。如果源步骤失败或数据缺失，
-      当前步骤仍然可以执行（参数使用默认值或留空）。
-
-    业务场景举例
-    ------------
-    **required=True**：加载卫星轨道，必须要有 ``satellite_id``，否则无法执行::
-
-        {
-          "satellite_id": {
-            "source_ref": "step_1",
-            "pointer": "/data/0/id",
-            "required": true   // ← 没有卫星 ID 就阻塞
-          }
-        }
-
-    **required=False**：分析覆盖范围，可选传入时间范围。如果前序步骤没提供，
-    就用默认值（当前时间）::
-
-        {
-          "time_range": {
-            "source_ref": "step_1",
-            "pointer": "/data/time_range",
-            "required": false  // ← 没有时间范围也能执行，用默认值
-          }
-        }
-
-    校验规则：``required=True`` 的 binding 不能引用 ``required=False`` 的步骤
-    —— 因为非必需步骤可能被跳过，无法保证数据可用。
-    """
-
-
 class ResultRef(BaseModel):
-    """PlanValidator 解析后的可信步骤结果引用。"""
+    """等待用户上下文引用的可信步骤结果。"""
 
     source_step_id: str
     pointer: str = "/data"
-    required: bool = True
+
+
+class WorkerTodoSource(StrEnum):
+    USER_INTENT = "user_intent"
+    REQUIREMENT = "requirement"
 
 
 class DraftStep(BaseModel):
-    """Planner (AI) 可输出的非可信步骤。
+    """Planner 输出的非可信 Worker Todo 草案。"""
 
-    ``ref`` vs ``depends_on`` 的区别
-    -------------------------------
-    - ``ref``：本步骤的**身份证号**，在本计划内唯一标识自己，供其他步骤引用。
-    - ``depends_on``：本步骤**引用了哪些其他步骤的身份证号**，声明执行顺序依赖。
-
-    业务场景举例
-    ------------
-    用户说："加载高分一号的轨道，并分析它的覆盖范围"
-
-    Planner 可能生成两个步骤：::
-
-        [
-          {
-            "ref": "step_1",
-            "action": "load_satellite_orbit",
-            "title": "加载高分一号轨道",
-            "args": {"satellite_name": "高分一号"}
-          },
-          {
-            "ref": "step_2",
-            "action": "analyze_coverage",
-            "title": "分析覆盖范围",
-            "depends_on": ["step_1"]   // ← 引用 step_1 的 ref，表示"step_1 跑完我才能跑"
-          }
-        ]
-
-    这里 ``step_1`` 的 ``ref`` 是 ``"step_1"``，它是自己的标识；
-    ``step_2`` 的 ``depends_on`` 是 ``["step_1"]``，它引用了别人的标识来声明依赖。
-    """
-
-    ref: str = Field(description="本计划内唯一的短引用，例如 step_1（身份证号，供 depends_on / input_bindings 引用）")
-    action: str = Field(description="ActionCatalog 中的 action 名")
-    title: str = Field(description="给用户展示的简短步骤标题")
-    args: dict[str, Any] = Field(default_factory=dict)
-    depends_on: list[str] = Field(default_factory=list, description="依赖步骤的 ref（执行顺序约束，不涉及数据传递）")
-    input_bindings: dict[str, DraftResultRef] = Field(default_factory=dict)
+    ref: str = Field(description="本计划内唯一的短引用，供 depends_on 引用")
+    worker: str = Field(description="负责完成 Todo 的 Worker 名称")
+    task: str = Field(min_length=1, description="保留用户语义的自然语言任务")
+    source: WorkerTodoSource
+    depends_on: list[str] = Field(default_factory=list, description="依赖 Todo 的 ref")
     required: bool = True
-    missing_arguments: list[str] = Field(default_factory=list)
 
 
 class PlanDraft(BaseModel):
     goal: str
-    steps: list[DraftStep]
+    todos: list[DraftStep]
+
+
+class WorkerRequirement(BaseModel):
+    """Worker 或工具执行期间发现的跨 Worker 前置要求。"""
+
+    key: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class StepError(BaseModel):
     code: str
     message: str
-    retryable: bool = False
-    details: dict[str, Any] | None = None
 
-# 例1：用户要求“创建一个新场景”：
-# StepResult(
-#     status="success",
-#     code="SCENE_CREATED",
-#     summary="场景创建成功",
-#     data={"scene_id": "scene-001"},
-#     effects=["scene.opened"],
-#     evidence={
-#         "agent_status": "success",
-#         "tool_call_count": 1,
-#         "tool_result": {
-#             "sceneId": "scene-001",
-#             "sceneName": "测试场景",
-#         },
-#     },
-# )
+
 class StepResult(BaseModel):
-    """
-    单个步骤的执行结果。
-    """
+    """单个 Worker Todo 的规范化业务结果。"""
 
-    # status: 执行状态，取值 "success" | "failed" | "waiting_user"
-    #     - "success"      步骤执行成功，data 中包含业务数据
-    #     - "failed"       步骤执行失败，error 字段包含错误详情
-    #     - "waiting_user" 等待用户确认/输入，前端应展示交互 UI
-    status: Literal["success", "failed", "waiting_user"]
+    status: Literal["success", "failed", "waiting_user", "waiting_dependency"]
     code: str
     summary: str
     data: list[dict[str, Any]] | dict[str, Any] | None = None
-    #    artifacts: 步骤产生的产物引用列表，例如：
-    # StepResult(
-    #     status="success",
-    #     code="ANALYSIS_COMPLETED",
-    #     summary="可见性分析完成",
-    #     data={"window_count": 12},
-    #     artifacts=[
-    #         ArtifactRef(
-    #             artifact_id="report-1",
-    #             kind="report",
-    #             name="可见性分析报告",
-    #             uri="/artifacts/report-1",
-    #             media_type="application/pdf",
-    #             metadata={},
-    #         )
-    #     ],
-    # )
     artifacts: list[ArtifactRef] = Field(default_factory=list)
-    # effects: 步骤产生的副作用描述列表
     effects: list[str] = Field(default_factory=list)
-    # evidence: 步骤执行的证据/元信息字典，承载执行器内部状态，不直接面向最终用户。
+    invalidates: list[str] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
-    # retryable: 是否可重试，失败时标记前端是否展示"重试"按钮
-    retryable: bool = False
-    error: StepError | None = None
+    requirements: list[WorkerRequirement] = Field(default_factory=list)
 
 
 class PlanStep(BaseModel):
     step_id: str
-    action: str
-    title: str
-    args: dict[str, Any] = Field(default_factory=dict)
-    # 执行顺序依赖。表示"步骤 B 必须在步骤 A 之后执行"，但不关心步骤 A 的输出数据。只是因为业务逻辑上 A 必须先完成。
-    # 例子：用户说"在当前场景中加载高分一号的轨道"
-    # {
-    #     "ref": "step_1",
-    #     "action": "ensure_scene_context",
-    #     "title": "确认要使用的场景",
-    #     "args": {}
-    # }
-    # {
-    #     "ref": "step_2",
-    #     "action": "load_satellite_orbit",
-    #     "title": "加载高分一号轨道",
-    #     "args": {"satellite_name": "高分一号"},
-    #     "depends_on": ["step_1"]
-    # }
+    worker: str
+    task: str
+    source: WorkerTodoSource
+    generated_for_step_id: str | None = None
+    requirement_key: str | None = None
     depends_on: list[str] = Field(default_factory=list)
-
-    # 数据传递依赖。表示"步骤 B 的参数 X，需要从步骤 A 的输出结果中提取某个字段"。既隐含了执行顺序依赖，又指定了数据来源。
-    # 例子：用户说"搜索高分系列卫星，然后加载第一个的轨道"
-    # {
-    #   "ref": "step_1",
-    #   "action": "search_satellites",
-    #   "title": "搜索高分系列卫星",
-    #   "args": { "keyword": "高分" }
-    # }
-    # {
-    #     "ref": "step_2",
-    #     "action": "load_satellite_orbit",
-    #     "title": "加载卫星轨道",
-    #     "args": {},
-    #     "depends_on": ["step_1"],
-    #     "input_bindings": {
-    #         "satellite_id": {
-    #             "source_ref": "step_1",
-    #             "pointer": "/data/0/id",
-    #             "required": true
-    #         }
-    #     }
-    # }
-    input_bindings: dict[str, ResultRef] = Field(default_factory=dict)
-    requires: list[str] = Field(default_factory=list)
-    provides: list[str] = Field(default_factory=list)
     required: bool = True
-    executor: str
-    allowed_tools: list[str] = Field(default_factory=list)
-    missing_arguments: list[str] = Field(default_factory=list)
-    side_effect: bool = False
     status: StepStatus = StepStatus.PENDING
     result: StepResult | None = None
     error: StepError | None = None
     attempt_count: int = 0
-    created_at: datetime = Field(default_factory=utc_now)
+    dependency_depth: int = 0
+    dependency_expansion_keys: list[str] = Field(default_factory=list)
+    agent_thread_id: str | None = None
+    resume_payload: dict[str, Any] | None = None
+    resume_user_input: str | None = None
     updated_at: datetime = Field(default_factory=utc_now)
 
 
 class WaitingContext(BaseModel):
     """工作流暂停并等待用户输入时持久化的上下文。
 
-    Scheduler 在缺少前置条件或必需参数时创建该对象；Worker 也可通过
-    ``waiting_user`` 结果请求选场景、审批或处理 Agent 中断。上下文随
+    Worker Todo 可通过 ``waiting_user`` 结果请求补充参数、选择候选项、审批
+    或处理 Agent 中断。上下文随
     ``WorkflowRun`` 保存，并用于生成 SSE ``interrupt`` 事件，以及在用户
     提交恢复请求后帮助 Planner/Engine 将回答解析成结构化恢复决策。
 
-    典型场景包括：提示用户打开或新建场景、补充 action 参数、选择目标场景、
-    确认有副作用的操作，以及继续 Worker 发起的交互式中断。
+    典型场景包括：补充任务信息、选择目标场景、确认有副作用的操作，以及继续
+    Worker 发起的交互式中断。跨 Worker 前置条件不使用本对象。
     """
 
-    kind: Literal["missing_precondition", "missing_arguments", "scene_selection", "approval", "agent_interrupt"]
+    kind: Literal["missing_arguments", "agent_interrupt"]
     """等待原因；决定恢复阶段应采用的交互语义和解析策略。"""
 
     step_id: str
@@ -447,7 +250,6 @@ class ToolExecution(BaseModel):
     tool_func: str
     args: dict[str, Any] = Field(default_factory=dict)
     status: Literal["started", "succeeded", "failed"] = "started"
-    attempt: int = 1
     result: dict[str, Any] | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

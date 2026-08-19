@@ -122,6 +122,7 @@ class StreamBridge:
                         "execution_id": self._workflow_execution["execution_id"],
                     }
                 )
+        logger.info(f"发送事件:{event}, data={payload}")
         await self._queue.put({"event": event, "data": payload})
 
     async def send_tool_call(

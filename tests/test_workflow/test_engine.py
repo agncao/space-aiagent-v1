@@ -1,246 +1,425 @@
-import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
 from space_aiagent.models.workflow_schemas import (
-    DraftResultRef,
     DraftStep,
     PlanDraft,
     RunStatus,
     SceneContext,
     StepResult,
     StepStatus,
+    WorkerRequirement,
+    WorkerTodoSource,
 )
-from space_aiagent.workflow.catalog import ActionCatalog
+from space_aiagent.workflow.catalog import WorkerCatalog, WorkerDefinition
 from space_aiagent.workflow.engine import WorkflowEngine
 from space_aiagent.workflow.repository import SqliteRunRepository
 
 
+def _todo(
+    ref: str,
+    worker: str,
+    task: str,
+    *,
+    source: WorkerTodoSource = WorkerTodoSource.USER_INTENT,
+    depends_on: list[str] | None = None,
+) -> DraftStep:
+    return DraftStep(
+        ref=ref,
+        worker=worker,
+        task=task,
+        source=source,
+        depends_on=depends_on or [],
+    )
+
+
 class FakePlanner:
-    def __init__(self, draft: PlanDraft) -> None:
+    def __init__(self, draft: PlanDraft, requirement_draft: PlanDraft | None = None) -> None:
         self.draft = draft
+        self.requirement_draft = requirement_draft
+        self.final_messages = None
+        self.requirements: list[WorkerRequirement] = []
+        self.final_content = "最终回答"
+        self.raise_on_finalize = False
 
     async def plan(self, intent, scene_context):
         return self.draft
 
-    async def resolve_waiting(self, user_input, waiting):
-        raise AssertionError("测试使用显式 resume decision")
+    async def plan_requirement(
+        self,
+        requirement,
+        *,
+        blocked_worker,
+        blocked_task,
+        scene_context,
+    ):
+        self.requirements.append(requirement)
+        assert self.requirement_draft is not None
+        return self.requirement_draft
+
+    async def finalize(self, messages, run):
+        self.final_messages = messages
+        if self.raise_on_finalize:
+            raise RuntimeError("finalizer unavailable")
+        return self.final_content
 
 
 class RecordingExecutor:
-    def __init__(self, *, fail_action: str | None = None) -> None:
-        self.actions: list[str] = []
-        self.fail_action = fail_action
+    def __init__(self, *, fail_task: str | None = None) -> None:
+        self.tasks: list[str] = []
+        self.fail_task = fail_task
 
     async def execute(self, run, step, execution_id):
-        self.actions.append(step.action)
-        if step.action == self.fail_action:
+        self.tasks.append(step.task)
+        if step.task == self.fail_task:
             return StepResult(status="failed", code="FAILED", summary="模拟失败")
-        evidence = {"scene_name": step.args.get("scene_name", "新建场景")} if "scene.opened" in step.provides else {}
+        return StepResult(status="success", code="OK", summary=f"{step.task}完成")
+
+
+class RequirementExecutor:
+    def __init__(self) -> None:
+        self.tasks: list[str] = []
+        self.entity_attempts = 0
+
+    async def execute(self, run, step, execution_id):
+        self.tasks.append(step.task)
+        if step.worker == "entity-agent":
+            self.entity_attempts += 1
+            if self.entity_attempts == 1:
+                return StepResult(
+                    status="waiting_dependency",
+                    code="REQUIREMENT_UNSATISFIED",
+                    summary="需要先打开场景",
+                    requirements=[
+                        WorkerRequirement(
+                            key="scene.opened",
+                            description="请先创建场景或打开已有场景",
+                        )
+                    ],
+                )
+            return StepResult(
+                status="success",
+                code="ENTITIES_LIST",
+                summary="当前场景共有 3 个实体",
+                data={"count": 3},
+            )
         return StepResult(
             status="success",
-            code="OK",
-            summary=f"{step.action} 完成",
-            effects=step.provides,
-            evidence=evidence,
+            code="SCENE_OPENED",
+            summary="已打开火箭场景",
+            effects=["scene.opened"],
+            evidence={"scene_name": "火箭场景"},
         )
 
 
-class SceneSelectionExecutor(RecordingExecutor):
-    async def execute(self, run, step, execution_id):
-        if step.action == "open_scene" and not step.args.get("scene_name"):
-            self.actions.append(step.action)
-            candidates = [{"scene_name": "火箭场景A"}, {"scene_name": "火箭场景B"}]
-            return StepResult(
-                status="waiting_user",
-                code="SCENE_QUERIED",
-                summary="找到多个场景，请选择。",
-                data=candidates,
-                evidence={"waiting_kind": "scene_selection", "candidates": candidates},
-            )
-        return await super().execute(run, step, execution_id)
-
-
-class BindingExecutor(RecordingExecutor):
-    def __init__(self, *, missing_source_value: bool = False) -> None:
-        super().__init__()
-        self.received_args: list[dict] = []
-        self.missing_source_value = missing_source_value
-
-    async def execute(self, run, step, execution_id):
-        self.actions.append(step.action)
-        self.received_args.append(step.args)
-        if len(self.actions) == 1:
-            data = {"other": "value"} if self.missing_source_value else {"scene_name": "火箭场景"}
-            return StepResult(status="success", code="SCENE_QUERIED", summary="查询完成", data=data)
-        return StepResult(status="success", code="SCENE_QUERIED", summary="复用完成")
-
-
-async def _engine(tmp_path, draft, executor):
+async def _engine(tmp_path, planner, executor, catalog=None):
     repository = SqliteRunRepository(tmp_path / "workflow.db")
-    catalog = ActionCatalog.from_yaml()
-    engine = WorkflowEngine(repository, catalog, FakePlanner(draft), executor, checkpointer=None)
+    saver = InMemorySaver()
+    engine = WorkflowEngine(
+        repository,
+        catalog or WorkerCatalog.from_yaml(),
+        planner,
+        executor,
+        checkpointer=saver,
+    )
     return engine, repository
 
 
-async def test_engine_executes_compound_steps_in_deterministic_order(tmp_path) -> None:
+async def test_engine_executes_worker_todos_in_dependency_order(tmp_path) -> None:
     draft = PlanDraft(
         goal="打开再添加",
-        steps=[
-            DraftStep(ref="open", action="open_scene", title="打开", args={"scene_name": "火箭场景"}),
-            DraftStep(ref="add", action="add_entity", title="添加", depends_on=["open"]),
+        todos=[
+            _todo("open", "scene-agent", "打开火箭场景"),
+            _todo("add", "entity-agent", "添加文昌地面站", depends_on=["open"]),
         ],
     )
+    planner = FakePlanner(draft)
     executor = RecordingExecutor()
-    engine, _ = await _engine(tmp_path, draft, executor)
+    engine, _ = await _engine(tmp_path, planner, executor)
+
     run = await engine.create_run(
         thread_id="thread_1",
         intent="打开火箭场景再添加文昌地面站",
         scene_context=SceneContext(status="none"),
     )
 
-    assert executor.actions == ["open_scene", "add_entity"]
+    assert executor.tasks == ["打开火箭场景", "添加文昌地面站"]
     assert run.status == RunStatus.SUCCEEDED
     assert all(step.status == StepStatus.SUCCEEDED for step in run.steps)
+    assert run.final_result is not None
+    assert run.final_result.summary == "最终回答"
 
 
-async def test_engine_resumes_original_intent_after_scene_creation(tmp_path) -> None:
-    draft = PlanDraft(goal="添加", steps=[DraftStep(ref="add", action="add_entity", title="添加文昌地面站")])
-    executor = RecordingExecutor()
-    engine, _ = await _engine(tmp_path, draft, executor)
-    waiting = await engine.create_run(
-        thread_id="thread_1",
-        intent="添加文昌地面站",
-        scene_context=SceneContext(status="none"),
+async def test_engine_inserts_requirement_todo_and_retries_original_todo(tmp_path) -> None:
+    initial = PlanDraft(
+        goal="统计实体数",
+        todos=[_todo("count", "entity-agent", "统计当前场景中的实体数量")],
     )
-    assert waiting.status == RunStatus.WAITING_USER
-    assert executor.actions == []
-
-    completed = await engine.resume_run(
-        waiting.run_id,
-        user_input="新建场景",
-        data={"decision": "create_scene", "args": {"scene_name": "自动场景"}},
-    )
-    assert executor.actions == ["create_scene", "add_entity"]
-    assert completed.status == RunStatus.SUCCEEDED
-
-
-async def test_engine_blocks_dependent_after_required_failure(tmp_path) -> None:
-    draft = PlanDraft(
-        goal="打开再添加",
-        steps=[
-            DraftStep(ref="open", action="open_scene", title="打开"),
-            DraftStep(ref="add", action="add_entity", title="添加", depends_on=["open"]),
+    requirement = PlanDraft(
+        goal="满足场景前置条件",
+        todos=[
+            _todo(
+                "scene",
+                "scene-agent",
+                "请先创建场景或者打开已有场景",
+                source=WorkerTodoSource.REQUIREMENT,
+            )
         ],
     )
-    executor = RecordingExecutor(fail_action="open_scene")
-    engine, _ = await _engine(tmp_path, draft, executor)
+    planner = FakePlanner(initial, requirement)
+    planner.final_content = "当前场景共有 3 个实体。"
+    executor = RequirementExecutor()
+    engine, _ = await _engine(tmp_path, planner, executor)
+
     run = await engine.create_run(
-        thread_id="thread_1",
-        intent="复合失败",
+        thread_id="thread_requirement",
+        intent="请统计场景的实体数",
         scene_context=SceneContext(status="none"),
     )
-    assert executor.actions == ["open_scene"]
+
+    assert executor.tasks == [
+        "统计当前场景中的实体数量",
+        "请先创建场景或者打开已有场景",
+        "统计当前场景中的实体数量",
+    ]
+    assert [step.worker for step in run.steps] == ["scene-agent", "entity-agent"]
+    assert run.steps[0].source == WorkerTodoSource.REQUIREMENT
+    assert run.steps[0].generated_for_step_id == run.steps[1].step_id
+    assert run.steps[0].requirement_key == "scene.opened"
+    assert run.steps[1].attempt_count == 2
+    assert run.status == RunStatus.SUCCEEDED
+    assert run.final_result is not None
+    assert run.final_result.summary == "当前场景共有 3 个实体。"
+
+
+async def test_repeated_requirement_for_same_todo_fails_as_no_progress(tmp_path) -> None:
+    initial = PlanDraft(
+        goal="统计实体数",
+        todos=[_todo("count", "entity-agent", "统计实体数量")],
+    )
+    requirement = PlanDraft(
+        goal="打开场景",
+        todos=[
+            _todo(
+                "open",
+                "scene-agent",
+                "打开一个场景",
+                source=WorkerTodoSource.REQUIREMENT,
+            )
+        ],
+    )
+    planner = FakePlanner(initial, requirement)
+
+    class RepeatingExecutor:
+        async def execute(self, run, step, execution_id):
+            if step.worker == "scene-agent":
+                return StepResult(
+                    status="success",
+                    code="SCENE_OPENED",
+                    summary="已打开场景",
+                    effects=["scene.opened"],
+                )
+            return StepResult(
+                status="waiting_dependency",
+                code="REQUIREMENT_UNSATISFIED",
+                summary="仍然缺少场景",
+                requirements=[WorkerRequirement(key="scene.opened", description="需要打开场景")],
+            )
+
+    engine, _ = await _engine(tmp_path, planner, RepeatingExecutor())
+    run = await engine.create_run(
+        thread_id="thread_repeat_requirement",
+        intent="统计实体数量",
+        scene_context=SceneContext(status="none"),
+    )
+
+    original = next(step for step in run.steps if step.source == WorkerTodoSource.USER_INTENT)
+    assert original.status == StepStatus.FAILED
+    assert original.error is not None
+    assert original.error.code == "REQUIREMENT_PLANNING_FAILED"
+    assert "重复 requirement 无进展" in original.error.message
+
+
+async def test_requirement_cycle_blocks_original_todo(tmp_path) -> None:
+    initial = PlanDraft(
+        goal="统计实体数",
+        todos=[_todo("count", "entity-agent", "统计实体数量")],
+    )
+    requirement = PlanDraft(
+        goal="打开场景",
+        todos=[
+            _todo(
+                "open",
+                "scene-agent",
+                "打开一个场景",
+                source=WorkerTodoSource.REQUIREMENT,
+            )
+        ],
+    )
+    planner = FakePlanner(initial, requirement)
+
+    class CyclicExecutor:
+        async def execute(self, run, step, execution_id):
+            return StepResult(
+                status="waiting_dependency",
+                code="REQUIREMENT_UNSATISFIED",
+                summary="需要打开场景",
+                requirements=[WorkerRequirement(key="scene.opened", description="需要打开场景")],
+            )
+
+    engine, _ = await _engine(tmp_path, planner, CyclicExecutor())
+    run = await engine.create_run(
+        thread_id="thread_requirement_cycle",
+        intent="统计实体数量",
+        scene_context=SceneContext(status="none"),
+    )
+
+    requirement_step, original = run.steps
+    assert requirement_step.status == StepStatus.FAILED
+    assert requirement_step.error is not None
+    assert "requirement 依赖环" in requirement_step.error.message
+    assert original.status == StepStatus.BLOCKED
+
+
+async def test_requirement_without_other_worker_fails_deterministically(tmp_path) -> None:
+    initial = PlanDraft(
+        goal="统计实体数",
+        todos=[_todo("count", "entity-agent", "统计实体数量")],
+    )
+    planner = FakePlanner(initial)
+
+    class MissingDependencyExecutor:
+        async def execute(self, run, step, execution_id):
+            return StepResult(
+                status="waiting_dependency",
+                code="REQUIREMENT_UNSATISFIED",
+                summary="需要其他 Worker",
+                requirements=[WorkerRequirement(key="scene.opened", description="需要打开场景")],
+            )
+
+    catalog = WorkerCatalog([WorkerDefinition(name="entity-agent", description="实体能力")])
+    engine, _ = await _engine(tmp_path, planner, MissingDependencyExecutor(), catalog=catalog)
+    run = await engine.create_run(
+        thread_id="thread_no_provider",
+        intent="统计实体数量",
+        scene_context=SceneContext(status="none"),
+    )
+
+    assert run.steps[0].status == StepStatus.FAILED
+    assert run.steps[0].error is not None
+    assert "没有 Worker 能提供 requirement" in run.steps[0].error.message
+
+
+async def test_graph_messages_pair_task_calls_with_worker_results(tmp_path) -> None:
+    draft = PlanDraft(
+        goal="查询",
+        todos=[_todo("count", "entity-agent", "统计实体数量")],
+    )
+    planner = FakePlanner(draft)
+    executor = RecordingExecutor()
+    engine, _ = await _engine(tmp_path, planner, executor)
+    run = await engine.create_run(
+        thread_id="thread_messages",
+        intent="统计实体数量",
+        scene_context=SceneContext(status="opened", scene_name="场景A"),
+    )
+
+    snapshot = await engine._graph.aget_state({"configurable": {"thread_id": f"workflow:{run.run_id}"}})
+    messages = snapshot.values["messages"]
+
+    assert [type(message) for message in messages] == [
+        HumanMessage,
+        AIMessage,
+        AIMessage,
+        ToolMessage,
+        AIMessage,
+    ]
+    assert isinstance(messages[0], HumanMessage)
+    assert messages[0].content == "统计实体数量"
+    assert isinstance(messages[1], AIMessage)
+    assert messages[1].additional_kwargs["message_kind"] == "worker_todo_list"
+    dispatch = next(message for message in messages if isinstance(message, AIMessage) and message.tool_calls)
+    result = next(message for message in messages if isinstance(message, ToolMessage))
+    assert dispatch.tool_calls[0]["name"] == "task"
+    assert dispatch.tool_calls[0]["id"] == result.tool_call_id
+    assert isinstance(messages[-1], AIMessage)
+    assert messages[-1].additional_kwargs["message_kind"] == "final_answer"
+
+
+async def test_engine_blocks_dependent_todo_after_failure(tmp_path) -> None:
+    draft = PlanDraft(
+        goal="复合失败",
+        todos=[
+            _todo("open", "scene-agent", "打开场景"),
+            _todo("count", "entity-agent", "统计实体", depends_on=["open"]),
+        ],
+    )
+    planner = FakePlanner(draft)
+    executor = RecordingExecutor(fail_task="打开场景")
+    engine, _ = await _engine(tmp_path, planner, executor)
+
+    run = await engine.create_run(
+        thread_id="thread_failure",
+        intent="打开后统计",
+        scene_context=SceneContext(status="none"),
+    )
+
+    assert executor.tasks == ["打开场景"]
     assert run.status == RunStatus.FAILED
     assert run.steps[1].status == StepStatus.BLOCKED
 
 
-async def test_engine_resumes_scene_selection_then_continues_entity(tmp_path) -> None:
+async def test_finalizer_failure_falls_back_to_worker_summary(tmp_path) -> None:
     draft = PlanDraft(
-        goal="选择火箭场景后添加实体",
-        steps=[
-            DraftStep(ref="open", action="open_scene", title="打开火箭场景"),
-            DraftStep(ref="add", action="add_entity", title="添加文昌", depends_on=["open"]),
-        ],
+        goal="统计",
+        todos=[_todo("count", "entity-agent", "统计实体")],
     )
-    executor = SceneSelectionExecutor()
-    engine, _ = await _engine(tmp_path, draft, executor)
-    waiting = await engine.create_run(
-        thread_id="thread_select",
-        intent="打开火箭场景再添加文昌地面站",
-        scene_context=SceneContext(status="none"),
-    )
-    assert waiting.status == RunStatus.WAITING_USER
-    assert waiting.waiting_context is not None
-    assert waiting.waiting_context.kind == "scene_selection"
+    planner = FakePlanner(draft)
+    planner.raise_on_finalize = True
 
-    completed = await engine.resume_run(
-        waiting.run_id,
-        user_input="火箭场景B",
-        data={"scene_name": "火箭场景B"},
-    )
-    assert executor.actions == ["open_scene", "open_scene", "add_entity"]
-    assert completed.status == RunStatus.SUCCEEDED
-    assert completed.scene_context.scene_name == "火箭场景B"
+    class CountExecutor:
+        async def execute(self, run, step, execution_id):
+            return StepResult(
+                status="success",
+                code="ENTITIES_LIST",
+                summary="当前场景共有 3 个实体",
+                data={"count": 3},
+            )
 
-
-async def test_engine_rejects_scene_selection_outside_candidates(tmp_path) -> None:
-    draft = PlanDraft(goal="选择场景", steps=[DraftStep(ref="open", action="open_scene", title="打开")])
-    executor = SceneSelectionExecutor()
-    engine, _ = await _engine(tmp_path, draft, executor)
-    waiting = await engine.create_run(
-        thread_id="thread_invalid_select",
-        intent="打开火箭场景",
-        scene_context=SceneContext(status="none"),
-    )
-
-    with pytest.raises(ValueError, match="不在候选列表"):
-        await engine.resume_run(
-            waiting.run_id,
-            user_input="火箭场景C",
-            data={"scene_name": "火箭场景C"},
-        )
-
-
-async def test_engine_resolves_explicit_step_result_binding(tmp_path) -> None:
-    draft = PlanDraft(
-        goal="查询后复用结果",
-        steps=[
-            DraftStep(ref="source", action="query_scene", title="查询"),
-            DraftStep(
-                ref="consumer",
-                action="query_scene",
-                title="按真实名称查询",
-                input_bindings={"scene_name": DraftResultRef(source_ref="source", pointer="/data/scene_name")},
-            ),
-        ],
-    )
-    executor = BindingExecutor()
-    engine, _ = await _engine(tmp_path, draft, executor)
-
+    engine, _ = await _engine(tmp_path, planner, CountExecutor())
     run = await engine.create_run(
-        thread_id="thread_binding",
-        intent="查询后复用",
-        scene_context=SceneContext(status="none"),
+        thread_id="thread_fallback",
+        intent="统计实体数",
+        scene_context=SceneContext(status="opened", scene_name="场景A"),
     )
 
-    assert run.status == RunStatus.SUCCEEDED
-    assert executor.received_args == [{}, {"scene_name": "火箭场景"}]
-    assert run.steps[1].args == {}
+    assert run.final_result is not None
+    assert run.final_result.summary == "当前场景共有 3 个实体"
 
 
-async def test_engine_marks_missing_required_binding_as_non_retryable_failure(tmp_path) -> None:
+async def test_generic_finalizer_answer_is_rejected(tmp_path) -> None:
     draft = PlanDraft(
-        goal="缺失结果",
-        steps=[
-            DraftStep(ref="source", action="query_scene", title="查询"),
-            DraftStep(
-                ref="consumer",
-                action="query_scene",
-                title="消费",
-                input_bindings={"scene_name": DraftResultRef(source_ref="source", pointer="/data/scene_name")},
-            ),
-        ],
+        goal="统计",
+        todos=[_todo("count", "entity-agent", "统计实体")],
     )
-    executor = BindingExecutor(missing_source_value=True)
-    engine, _ = await _engine(tmp_path, draft, executor)
+    planner = FakePlanner(draft)
+    planner.final_content = "任务已完成。"
 
+    class CountExecutor:
+        async def execute(self, run, step, execution_id):
+            return StepResult(
+                status="success",
+                code="ENTITIES_LIST",
+                summary="当前场景共有 3 个实体",
+                data={"count": 3},
+            )
+
+    engine, _ = await _engine(tmp_path, planner, CountExecutor())
     run = await engine.create_run(
-        thread_id="thread_missing_binding",
-        intent="缺失结果",
-        scene_context=SceneContext(status="none"),
+        thread_id="thread_generic_finalizer",
+        intent="统计实体数",
+        scene_context=SceneContext(status="opened", scene_name="场景A"),
     )
 
-    assert executor.actions == ["query_scene"]
-    assert run.status == RunStatus.PARTIALLY_SUCCEEDED
-    assert run.steps[1].status == StepStatus.FAILED
-    assert run.steps[1].result is not None
-    assert run.steps[1].result.code == "INPUT_BINDING_ERROR"
+    assert run.final_result is not None
+    assert run.final_result.summary == "当前场景共有 3 个实体"

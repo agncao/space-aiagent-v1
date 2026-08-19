@@ -3,6 +3,7 @@
 
 用法: python scripts/gen_requirements.py
 """
+
 import tomllib
 from pathlib import Path
 
@@ -18,7 +19,11 @@ def main() -> None:
     dependencies = pyproject["project"].get("dependencies", [])
     dev_deps = pyproject["project"].get("optional-dependencies", {}).get("dev", [])
 
-    lines = ["# Auto-generated from pyproject.toml - DO NOT EDIT MANUALLY", "# Run: python scripts/gen_requirements.py", ""]
+    lines = [
+        "# Auto-generated from pyproject.toml - DO NOT EDIT MANUALLY",
+        "# Run: python scripts/gen_requirements.py",
+        "",
+    ]
 
     lines.append("# === Runtime Dependencies ===")
     lines.extend(dependencies)

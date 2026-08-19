@@ -20,15 +20,13 @@ from space_aiagent.models.sse_schemas import (
     ToolResultRequest,
 )
 from space_aiagent.models.workflow_schemas import RunStatus, SceneContext, WorkflowRun
-from space_aiagent.workflow.engine import WorkflowEngine, get_engine
+from space_aiagent.workflow.engine import get_engine
 from space_aiagent.workflow.presentation import waiting_context_snapshot, workflow_run_snapshot
 from space_aiagent.workflow.repository import get_run_repository
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v2/space", tags=["space-v2"])
-
-_engine: WorkflowEngine | None = None
 
 
 def _ensure_enabled() -> None:
@@ -64,8 +62,12 @@ async def _finish_workflow_stream(bridge: StreamBridge, run: WorkflowRun) -> Non
         # 生成 waiting_context 快照，解析关联的前序步骤结果
         waiting_payload = waiting_context_snapshot(run) or {}
         # 推送 INTERRUPT 事件，前端据此展示等待提示（如确认框、参数输入等）
-        logger.debug(f"发送一条INTERRUPT消息,interrupt_type={run.interrupt_type}",
-                     thread_id=run.thread_id, run_id=run.run_id)
+        logger.debug(
+            "发送一条 INTERRUPT 消息",
+            interrupt_type=waiting.kind,
+            thread_id=run.thread_id,
+            run_id=run.run_id,
+        )
         await bridge._emit(
             SSEEventType.INTERRUPT,
             {
@@ -92,8 +94,7 @@ async def _finish_workflow_stream(bridge: StreamBridge, run: WorkflowRun) -> Non
         content = run.final_result.summary
     else:
         content = "任务已结束。"
-    logger.debug(f"发送一条DONE事件，content: {content}",
-                 thread_id=run.thread_id, run_id=run.run_id)
+    logger.debug(f"发送一条DONE事件，content: {content}", thread_id=run.thread_id, run_id=run.run_id)
     await bridge._emit(
         SSEEventType.DONE,
         {"content": content, "status": run.status.value, "result": result},
@@ -177,7 +178,7 @@ async def chat(req: ChatRequest) -> StreamingResponse:
     # 用户回复: "确认删除"                                       →  恢复 Run，注入 "确认删除"
     if active:
         bridge = session_manager.register(req.thread_id, run_id=active.run_id)
-        logger.info("通过/chat 端用户的中断恢复",thread_id=active.thread_id, run_id=active.run_id)
+        logger.info("通过/chat 端用户的中断恢复", thread_id=active.thread_id, run_id=active.run_id)
         return _streaming_response(
             _stream_workflow_response(
                 bridge,
