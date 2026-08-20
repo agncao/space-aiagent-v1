@@ -183,7 +183,9 @@ class WorkflowEngine:
     async def _plan_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
         history = await self._thread_history(run.thread_id, exclude_run_id=run.run_id)
+        logger.debug(f"workflow._plan_node",thread_id=run.thread_id, run_id=run.run_id,history=history)
         draft = await self._planner.plan(run.original_intent, run.scene_context, history=history)
+        logger.debug(f"workflow._plan_node",thread_id=run.thread_id, run_id=run.run_id,tasks=[todo.task for todo in draft.todos])
         return {
             "plan_draft": draft.model_dump(mode="json"),
             "messages": [self._todo_list_message(draft, WorkerTodoSource.USER_INTENT)],
@@ -202,6 +204,7 @@ class WorkflowEngine:
 
     async def _validate_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
+        logger.debug(f"workflow.validate_node",thread_id=run.thread_id, run_id=run.run_id)
         draft = PlanDraft.model_validate(state["plan_draft"])
         steps = self._validator.validate(draft, expected_source=WorkerTodoSource.USER_INTENT)
         expected = run.revision
@@ -215,6 +218,7 @@ class WorkflowEngine:
         run = await self._required_run(state["run_id"])
         before = run.model_dump(mode="json")
         decision = self._scheduler.decide(run)
+        logger.debug(f"workflow._schedule_node, decision={decision.outcome}",thread_id=run.thread_id, run_id=run.run_id)
         if run.model_dump(mode="json") != before:
             expected = run.revision
             await self._repository.save_run(run, expected_revision=expected)
@@ -247,6 +251,7 @@ class WorkflowEngine:
                 scene_revision=run.scene_context.revision,
                 repository=self._repository,
             )
+        logger.debug(f"workflow._execute_node", thread_id=run.thread_id,run_id=run.run_id)
         await self._emit(SSEEventType.STEP_UPDATE, run, {"step": step.model_dump(mode="json")})
 
         dispatch_message = AIMessage(
