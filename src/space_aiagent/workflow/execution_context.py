@@ -20,6 +20,14 @@ class StepAlreadyCompletedError(RuntimeError):
         self.result = result
 
 
+class StepNoSceneError(RuntimeError):
+    """工具要求 scene.opened 但当前无场景，步骤确定性短路。"""
+
+    def __init__(self, tool_name: str) -> None:
+        super().__init__(f"工具 {tool_name} 需要先打开或新建场景")
+        self.tool_name = tool_name
+
+
 @dataclass
 class StepExecutionContext:
     """一个 Worker Todo 执行期间的工具契约与无进展保护状态。"""

@@ -13,6 +13,7 @@ from langgraph.types import Checkpointer, Command
 from space_aiagent.agents.workers import load_workers
 from space_aiagent.infrastructure.backend import build_agent_backend
 from space_aiagent.infrastructure.logging import get_logger
+from space_aiagent.models.response_schema.response_constants import SHORTCUT_RESPONSES
 from space_aiagent.models.response_schema.worker_response import ResponseCode, WorkerResponse
 from space_aiagent.models.workflow_schemas import (
     PlanStep,
@@ -25,6 +26,7 @@ from space_aiagent.workflow.execution_context import (
     StepAlreadyCompletedError,
     StepExecutionContext,
     StepExecutionLimitError,
+    StepNoSceneError,
     step_execution_context_var,
 )
 
@@ -147,6 +149,14 @@ class AgentStepExecutor:
                 code="NO_PROGRESS",
                 summary=str(exc),
             )
+        except StepNoSceneError as exc:
+            shortcut = SHORTCUT_RESPONSES[ResponseCode.NO_SCENE]
+            return StepResult(
+                status="failed",
+                code=shortcut.code.value,
+                summary=shortcut.summary,
+                evidence={"tool_name": exc.tool_name, "agent_status": "shortcut"},
+            )
         finally:
             step_execution_context_var.reset(token)
 
@@ -188,14 +198,6 @@ class AgentStepExecutor:
             WorkerRequirement.model_validate(item) for item in execution_context.missing_requirements.values()
         ]
         requirements.extend(response.requirements)
-        if response.code == ResponseCode.NO_SCENE and not any(item.key == "scene.opened" for item in requirements):
-            requirements.append(
-                WorkerRequirement(
-                    key="scene.opened",
-                    description="当前 Todo 需要先创建场景或打开已有场景",
-                    context={"worker": step.worker, "task": step.task},
-                )
-            )
         requirements = list({item.key: item for item in requirements}.values())
         if requirements or response.status == "requires":
             logger.info(

@@ -1,4 +1,3 @@
-import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,6 +13,7 @@ from space_aiagent.workflow.execution_context import (
     StepAlreadyCompletedError,
     StepExecutionContext,
     StepExecutionLimitError,
+    StepNoSceneError,
     step_execution_context_var,
 )
 
@@ -27,11 +27,12 @@ def _request(tool_name: str = "open_scenario") -> SimpleNamespace:
     )
 
 
-def _context(*, scene_opened: bool = True) -> StepExecutionContext:
+def _context(*, scene_opened: bool = True, allowed_tools: frozenset[str] | None = None) -> StepExecutionContext:
     return StepExecutionContext(
         run_id="run_1",
         step_id="step_1",
-        allowed_tools=frozenset({"query_scenario", "open_scenario", "add_point_entity"}),
+        allowed_tools=allowed_tools
+        or frozenset({"query_scenario", "open_scenario", "add_point_entity"}),
         scene_revision=1,
         facts=frozenset({"scene.opened"} if scene_opened else set()),
     )
@@ -98,19 +99,52 @@ async def test_worker_tool_allowlist_is_enforced(monkeypatch) -> None:
         bridge_var.reset(bridge_token)
 
 
-async def test_missing_fact_returns_worker_requirement(monkeypatch) -> None:
+async def test_missing_scene_fact_short_circuits_with_no_scene(monkeypatch) -> None:
+    """requires scene.opened 且 facts 缺失时确定性短路，不再与 LLM 协商 requirement。"""
     monkeypatch.setattr(worker_tool_validation, "get_config", lambda: {"configurable": {"thread_id": "t1"}})
     middleware = WorkerToolValidationMiddleware(agent_name="entity-agent")
     handler = AsyncMock()
     bridge_token = bridge_var.set(SimpleNamespace())
     context_token = step_execution_context_var.set(_context(scene_opened=False))
     try:
-        result = await middleware.awrap_tool_call(_request("add_point_entity"), handler)
-        assert isinstance(result, ToolMessage)
-        payload = json.loads(result.content)
-        assert payload["code"] == "REQUIREMENT_UNSATISFIED"
-        assert payload["requirements"][0]["key"] == "scene.opened"
+        with pytest.raises(StepNoSceneError) as exc_info:
+            await middleware.awrap_tool_call(_request("add_point_entity"), handler)
+        assert exc_info.value.tool_name == "add_point_entity"
         handler.assert_not_awaited()
+    finally:
+        step_execution_context_var.reset(context_token)
+        bridge_var.reset(bridge_token)
+
+
+async def test_scene_fact_present_executes_tool_normally(monkeypatch) -> None:
+    """facts 含 scene.opened 时 requires scene.opened 的工具正常执行。"""
+    monkeypatch.setattr(worker_tool_validation, "get_config", lambda: {"configurable": {"thread_id": "t1"}})
+    middleware = WorkerToolValidationMiddleware(agent_name="entity-agent")
+    handler = AsyncMock(return_value={"success": True, "code": "ENTITIES_ADDED"})
+    bridge_token = bridge_var.set(SimpleNamespace())
+    context_token = step_execution_context_var.set(_context(scene_opened=True))
+    try:
+        result = await middleware.awrap_tool_call(_request("add_point_entity"), handler)
+        assert result["success"] is True
+        handler.assert_awaited_once()
+    finally:
+        step_execution_context_var.reset(context_token)
+        bridge_var.reset(bridge_token)
+
+
+async def test_tool_without_scene_require_executes_without_scene(monkeypatch) -> None:
+    """不要求 scene.opened 的工具（如 create_scenario）在无场景时正常执行。"""
+    monkeypatch.setattr(worker_tool_validation, "get_config", lambda: {"configurable": {"thread_id": "t1"}})
+    middleware = WorkerToolValidationMiddleware(agent_name="scene-agent")
+    handler = AsyncMock(return_value={"success": True, "code": "SCENE_CREATED"})
+    bridge_token = bridge_var.set(SimpleNamespace())
+    context_token = step_execution_context_var.set(
+        _context(scene_opened=False, allowed_tools=frozenset({"create_scenario"}))
+    )
+    try:
+        result = await middleware.awrap_tool_call(_request("create_scenario"), handler)
+        assert result["success"] is True
+        handler.assert_awaited_once()
     finally:
         step_execution_context_var.reset(context_token)
         bridge_var.reset(bridge_token)

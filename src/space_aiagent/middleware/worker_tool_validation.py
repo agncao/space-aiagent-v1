@@ -34,6 +34,7 @@ from space_aiagent.tools.contracts import get_workflow_tool_contract
 from space_aiagent.workflow.execution_context import (
     StepAlreadyCompletedError,
     StepExecutionLimitError,
+    StepNoSceneError,
     step_execution_context_var,
 )
 
@@ -127,6 +128,21 @@ class WorkerToolValidationMiddleware(AgentMiddleware):
                     ),
                     tool_call_id=tool_call_id,
                 )
+
+            # 缺场景是确定性用户前置条件：直接短路终止步骤，提示用户打开或新建场景，
+            # 不与 LLM 协商 requirement（避免引擎自动插入建场景步骤替用户做选择）。
+            if (
+                tool_contract is not None
+                and "scene.opened" in tool_contract.requires
+                and "scene.opened" not in execution_context.facts
+            ):
+                logger.warning(
+                    "workflow.no_scene_shortcut",
+                    run_id=execution_context.run_id,
+                    step_id=execution_context.step_id,
+                    tool_name=tool_name,
+                )
+                raise StepNoSceneError(tool_name)
 
             missing_facts = sorted((tool_contract.requires if tool_contract else set()) - execution_context.facts)
             if missing_facts:
