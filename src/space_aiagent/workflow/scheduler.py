@@ -77,6 +77,20 @@ class Scheduler:
 
 class FinalizationGuard:
     def finalize(self, run: WorkflowRun) -> WorkflowRun:
+        """结束守卫：校验所有 Todo 均已终结后，汇总生成 Run 的最终结果。
+
+        流程：
+        1. 校验不存在未终结（待调度/执行中/等待中）的 Todo，否则拒绝结束；
+        2. 依据「必需 Todo」的成功/失败情况推导 Run 的最终状态；
+        3. 汇总各 Todo 的摘要与失败信息，组装 RunResult 并写回 Run。
+
+        Returns:
+            写入最终状态与 RunResult 后的 WorkflowRun。
+
+        Raises:
+            RuntimeError: 仍存在未终结的 Todo 时抛出。
+        """
+        # 终结守卫：收集所有仍处于非终态的 Todo，存在则禁止结束 Run
         nonterminal = [
             step
             for step in run.steps
@@ -92,12 +106,14 @@ class FinalizationGuard:
         if nonterminal:
             raise RuntimeError("仍有未终结 Todo，禁止结束 Run")
 
+        # 统计必需 Todo 中的失败项（失败/被阻塞/被取消）与全部成功项
         failures = [
             step
             for step in run.steps
             if step.required and step.status in {StepStatus.FAILED, StepStatus.BLOCKED, StepStatus.CANCELLED}
         ]
         successes = [step for step in run.steps if step.status == StepStatus.SUCCEEDED]
+        # 推导 Run 最终状态：有成功也有失败 → 部分成功；仅失败 → 失败；否则全部成功
         if failures and successes:
             status = RunStatus.PARTIALLY_SUCCEEDED
         elif failures:
@@ -105,6 +121,7 @@ class FinalizationGuard:
         else:
             status = RunStatus.SUCCEEDED
 
+        # 组装兜底摘要：成功项取结果摘要，失败项优先取错误信息，无任何内容时使用默认文案
         summaries = [step.result.summary for step in successes if step.result and step.result.summary]
         failure_summaries = [
             step.error.message if step.error else (step.result.summary if step.result else step.task)
@@ -112,6 +129,7 @@ class FinalizationGuard:
         ]
         fallback_summary = "；".join([*summaries, *failure_summaries]) or "未产生可展示的执行结果。"
 
+        # 写回最终状态，清空等待上下文，并生成含步骤明细/副作用/失败清单的 RunResult
         run.status = status
         run.waiting_context = None
         run.final_result = RunResult(

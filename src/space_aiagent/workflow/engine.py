@@ -110,7 +110,7 @@ class WorkflowEngine:
         await self._repository.create_run(run)
         await self._emit(SSEEventType.RUN_UPDATE, run, {"run": self._run_summary(run)})
         try:
-            logger.debug("开始执行工作流",thread_id=run.thread_id,run_id=run.run_id)
+            logger.debug("开始执行工作流", thread_id=run.thread_id, run_id=run.run_id)
             await self._graph.ainvoke(
                 {
                     "run_id": run.run_id,
@@ -182,11 +182,23 @@ class WorkflowEngine:
 
     async def _plan_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
-        draft = await self._planner.plan(run.original_intent, run.scene_context)
+        history = await self._thread_history(run.thread_id, exclude_run_id=run.run_id)
+        draft = await self._planner.plan(run.original_intent, run.scene_context, history=history)
         return {
             "plan_draft": draft.model_dump(mode="json"),
             "messages": [self._todo_list_message(draft, WorkerTodoSource.USER_INTENT)],
         }
+
+    async def _thread_history(self, thread_id: str, *, exclude_run_id: str) -> list[str]:
+        """从业务事实源组装会话级摘要，供 Planner 消解指代与省略。"""
+        recent = await self._repository.list_recent_runs_by_thread(thread_id, limit=5)
+        history: list[str] = []
+        for run in reversed(recent):
+            if run.run_id == exclude_run_id or run.final_result is None:
+                continue
+            history.append(f"用户：{run.original_intent}")
+            history.append(f"助手：{run.final_result.summary}")
+        return history
 
     async def _validate_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
@@ -295,6 +307,7 @@ class WorkflowEngine:
                 data={
                     "code": result.code,
                     **{key: value for key, value in result.evidence.items() if key != "waiting_kind"},
+                    **(result.data if isinstance(result.data, dict) else {}),
                 },
             )
         elif result.status == "waiting_dependency":
@@ -385,8 +398,10 @@ class WorkflowEngine:
     async def _finalize_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
         expected = run.revision
+        logger.info("工作流Todo List是否完成",thread_id=run.thread_id,run_id=run.run_id)
         self._finalizer.finalize(run)
         try:
+            logger.info("工作流为本轮次生成总结", thread_id=run.thread_id, run_id=run.run_id)
             final_content = await self._planner.finalize(list(state.get("messages", [])), run)
             if self._is_generic_final_answer(final_content):
                 logger.warning("workflow.generic_final_answer_rejected", run_id=run.run_id)
@@ -422,7 +437,7 @@ class WorkflowEngine:
             step.resume_payload = data or {"content": user_input}
             step.resume_user_input = None
         else:
-            step.resume_payload = data
+            step.resume_payload = {**waiting.data, **data} if waiting.data else (data or None)
             step.resume_user_input = user_input
             step.agent_thread_id = None
         step.status = StepStatus.PENDING

@@ -2,8 +2,11 @@
 
 import uuid
 
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.models.workflow_schemas import PlanDraft, PlanStep, WorkerTodoSource
 from space_aiagent.workflow.catalog import WorkerCatalog
+
+logger = get_logger(__name__)
 
 
 class PlanValidationError(ValueError):

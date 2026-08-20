@@ -61,6 +61,21 @@ class RunRepository(Protocol):
         """
         ...
 
+    async def list_recent_runs_by_thread(self, thread_id: str, *, limit: int = 5) -> list[WorkflowRun]:
+        """按更新时间倒序返回指定 thread 下的近期运行记录。
+
+        用于为新 Run 的 Planner 组装会话级历史摘要；返回的每个 Run
+        携带 original_intent 与 final_result 等业务事实。
+
+        Args:
+            thread_id: 会话线程标识。
+            limit: 最多返回的记录数。
+
+        Returns:
+            近期 WorkflowRun 列表，newest-first。
+        """
+        ...
+
     async def save_run(self, run: WorkflowRun, *, expected_revision: int) -> WorkflowRun:
         """乐观锁更新运行记录。
 
@@ -284,6 +299,14 @@ class SqliteRunRepository:
         async with aiosqlite.connect(self._db_path) as db:
             row = await (await db.execute(query, (thread_id, *terminals))).fetchone()
         return WorkflowRun.model_validate_json(row[0]) if row else None
+
+    async def list_recent_runs_by_thread(self, thread_id: str, *, limit: int = 5) -> list[WorkflowRun]:
+        await self.initialize()
+        query = "SELECT payload FROM workflow_runs WHERE thread_id=? ORDER BY updated_at DESC LIMIT ?"
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(query, (thread_id, limit))
+            rows = await cursor.fetchall()
+        return [WorkflowRun.model_validate_json(row[0]) for row in rows]
 
     async def save_run(self, run: WorkflowRun, *, expected_revision: int) -> WorkflowRun:
         await self.initialize()

@@ -68,6 +68,28 @@ async def test_planner_only_exposes_workers_and_disables_streaming() -> None:
     assert "query_scenario" not in runnable.messages[0].content
 
 
+async def test_planner_injects_conversation_history_into_human_prompt() -> None:
+    model = RecordingModel(_draft())
+    planner = StructuredPlanner(WorkerCatalog.from_yaml(), model=model)
+    history = [
+        "用户：查询包含火箭的场景",
+        "助手：找到 4 个场景：1.场景0942_ 1个火箭_1个卫星关节动画 2.火箭测试",
+    ]
+
+    await planner.plan(
+        "打开第二个，然后统计它的实体数量",
+        SceneContext(status="none"),
+        history=history,
+    )
+
+    runnable = model.runnables[PlanDraft]
+    human = runnable.messages[1].content
+    assert "查询包含火箭的场景" in human
+    assert "打开第二个，然后统计它的实体数量" in human
+    # 规则必须约束历史用途，防止 Planner 从历史生成 Todo
+    assert "历史仅用于消解指代" in runnable.messages[0].content or "历史仅用于消解指代" in human
+
+
 async def test_requirement_planner_marks_requirement_source() -> None:
     model = RecordingModel(_draft(WorkerTodoSource.REQUIREMENT))
     planner = StructuredPlanner(WorkerCatalog.from_yaml(), model=model)

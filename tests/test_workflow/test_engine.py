@@ -41,8 +41,10 @@ class FakePlanner:
         self.requirements: list[WorkerRequirement] = []
         self.final_content = "最终回答"
         self.raise_on_finalize = False
+        self.plan_history: list[str] | None = None
 
-    async def plan(self, intent, scene_context):
+    async def plan(self, intent, scene_context, *, history=None):
+        self.plan_history = history
         return self.draft
 
     async def plan_requirement(
@@ -344,6 +346,134 @@ async def test_graph_messages_pair_task_calls_with_worker_results(tmp_path) -> N
     assert dispatch.tool_calls[0]["id"] == result.tool_call_id
     assert isinstance(messages[-1], AIMessage)
     assert messages[-1].additional_kwargs["message_kind"] == "final_answer"
+
+
+async def test_waiting_user_context_keeps_candidate_data(tmp_path) -> None:
+    draft = PlanDraft(
+        goal="打开场景",
+        todos=[_todo("open", "scene-agent", "打开火箭场景")],
+    )
+    planner = FakePlanner(draft)
+
+    class ClarifyExecutor:
+        async def execute(self, run, step, execution_id):
+            return StepResult(
+                status="waiting_user",
+                code="MISSING_REQUIRED_INFO",
+                summary="查询到 4 个包含“火箭”的场景，请指定要打开的场景。",
+                data={"candidates": ["场景0942_ 1个火箭_1个卫星关节动画", "火箭测试"]},
+            )
+
+    engine, _ = await _engine(tmp_path, planner, ClarifyExecutor())
+    run = await engine.create_run(
+        thread_id="thread_clarify",
+        intent="打开火箭场景",
+        scene_context=SceneContext(status="none"),
+    )
+
+    assert run.status == RunStatus.WAITING_USER
+    assert run.waiting_context is not None
+    assert run.waiting_context.data["candidates"] == [
+        "场景0942_ 1个火箭_1个卫星关节动画",
+        "火箭测试",
+    ]
+
+
+async def test_resume_missing_arguments_injects_waiting_data_into_task(tmp_path) -> None:
+    draft = PlanDraft(
+        goal="打开场景",
+        todos=[_todo("open", "scene-agent", "打开火箭场景")],
+    )
+    planner = FakePlanner(draft)
+
+    candidates = {"candidates": ["场景0942_ 1个火箭_1个卫星关节动画", "火箭测试"]}
+
+    class ClarifyThenOpenExecutor:
+        def __init__(self) -> None:
+            self.tasks: list[str] = []
+
+        async def execute(self, run, step, execution_id):
+            self.tasks.append(step.task)
+            if len(self.tasks) == 1:
+                return StepResult(
+                    status="waiting_user",
+                    code="MISSING_REQUIRED_INFO",
+                    summary="查询到 2 个包含“火箭”的场景，请指定要打开的场景。",
+                    data=candidates,
+                )
+            return StepResult(
+                status="success",
+                code="SCENE_OPENED",
+                summary="已打开场景",
+                effects=["scene.opened"],
+            )
+
+    executor = ClarifyThenOpenExecutor()
+    engine, _ = await _engine(tmp_path, planner, executor)
+    run = await engine.create_run(
+        thread_id="thread_clarify_resume",
+        intent="打开火箭场景",
+        scene_context=SceneContext(status="none"),
+    )
+    assert run.status == RunStatus.WAITING_USER
+
+    resumed = await engine.resume_run(run.run_id, user_input="1")
+
+    assert resumed.status == RunStatus.SUCCEEDED
+    assert executor.tasks == ["打开火箭场景", "打开火箭场景"]
+    # 恢复后的 step 携带用户补充与候选数据，供执行器拼装进重发任务文本
+    step = resumed.steps[0]
+    assert step.resume_user_input == "1"
+    assert step.resume_payload is not None
+    assert step.resume_payload["candidates"] == candidates["candidates"]
+    assert step.resume_payload["code"] == "MISSING_REQUIRED_INFO"
+
+
+async def test_plan_node_passes_thread_history_to_planner(tmp_path) -> None:
+    # 第 1 轮：查询类 Run 正常完成，留下 final_result 摘要
+    first_draft = PlanDraft(
+        goal="查询场景",
+        todos=[_todo("query", "scene-agent", "查询包含火箭的场景")],
+    )
+    first_planner = FakePlanner(first_draft)
+    first_planner.final_content = "找到 4 个场景：1.场景0942_ 1个火箭_1个卫星关节动画 2.火箭测试"
+
+    class QueryExecutor:
+        async def execute(self, run, step, execution_id):
+            return StepResult(
+                status="success",
+                code="SCENE_QUERIED",
+                summary="找到 4 个场景：1.场景0942_ 1个火箭_1个卫星关节动画 2.火箭测试",
+                data={"count": 4},
+            )
+
+    engine, _ = await _engine(tmp_path, first_planner, QueryExecutor())
+    first_run = await engine.create_run(
+        thread_id="thread_history",
+        intent="查询包含火箭的场景",
+        scene_context=SceneContext(status="none"),
+    )
+    assert first_run.status == RunStatus.SUCCEEDED
+
+    # 第 2 轮：同 thread 新 Run，Planner 应收到上一轮的 intent + 摘要
+    second_draft = PlanDraft(
+        goal="打开并统计",
+        todos=[_todo("open", "scene-agent", "打开场景 火箭测试")],
+    )
+    second_planner = FakePlanner(second_draft)
+    engine._planner = second_planner
+    await engine.create_run(
+        thread_id="thread_history",
+        intent="打开第二个",
+        scene_context=SceneContext(status="none"),
+    )
+
+    assert second_planner.plan_history is not None
+    history_text = "\n".join(second_planner.plan_history)
+    assert "查询包含火箭的场景" in history_text
+    assert "找到 4 个场景" in history_text
+    # 本轮请求不应出现在历史里
+    assert "打开第二个" not in history_text
 
 
 async def test_engine_blocks_dependent_todo_after_failure(tmp_path) -> None:

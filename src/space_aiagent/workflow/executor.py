@@ -159,7 +159,13 @@ class AgentStepExecutor:
                 summary="Todo 需要用户确认后继续。",
                 evidence={"waiting_kind": "agent_interrupt", "interrupts": values},
             )
-            logger.info(f"子智能体{step.worker} Interrupt, 任务:{step.task}",thread_id=run.thread_id,run_id=run.run_id,status=step_result.status)
+            logger.info(
+                f"子智能体{step.worker} Interrupt, 任务:{step.task}",
+                thread_id=run.thread_id,
+                run_id=run.run_id,
+                status=step_result.status,
+                evidence=step_result.evidence,
+            )
             return step_result
 
         response = result.get("structured_response") if isinstance(result, dict) else None
@@ -192,8 +198,12 @@ class AgentStepExecutor:
             )
         requirements = list({item.key: item for item in requirements}.values())
         if requirements or response.status == "requires":
-
-            logger.info(f"子智能体{step.worker} {response.summary}",thread_id=run.thread_id,run_id=run.run_id,status="waiting_dependency")
+            logger.info(
+                f"子智能体{step.worker} {response.summary}",
+                thread_id=run.thread_id,
+                run_id=run.run_id,
+                status="waiting_dependency",
+            )
             return StepResult(
                 status="waiting_dependency",
                 code="REQUIREMENT_UNSATISFIED",
@@ -205,15 +215,21 @@ class AgentStepExecutor:
 
         code = response.code.value
         if response.code == ResponseCode.MISSING_REQUIRED_INFO or response.status == "confirm":
-            logger.info(f"子智能体{step.worker} {response.summary}",thread_id=run.thread_id,run_id=run.run_id,status="waiting_user")
-
-            return StepResult(
+            step_result = StepResult(
                 status="waiting_user",
                 code=code,
                 summary=response.summary,
                 data=response.data,
                 evidence={**evidence, "waiting_kind": "missing_arguments"},
             )
+            logger.info(
+                f"子智能体{step.worker}执行结果:{response.summary}",
+                thread_id=run.thread_id,
+                run_id=run.run_id,
+                status=step_result.status,
+                evidence=step_result.evidence,
+            )
+            return step_result
 
         if response.status in {"success", "info"}:
             return StepResult(

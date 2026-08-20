@@ -9,12 +9,15 @@ from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, mes
 from pydantic import BaseModel, Field
 
 from space_aiagent.infrastructure.llm import build_model
+from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.models.workflow_schemas import (
     PlanDraft,
     SceneContext,
     WorkerRequirement,
     WorkflowRun,
 )
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -23,7 +26,13 @@ if TYPE_CHECKING:
 
 
 class Planner(Protocol):
-    async def plan(self, intent: str, scene_context: SceneContext) -> PlanDraft: ...
+    async def plan(
+        self,
+        intent: str,
+        scene_context: SceneContext,
+        *,
+        history: list[str] | None = None,
+    ) -> PlanDraft: ...
 
     async def plan_requirement(
         self,
@@ -48,7 +57,13 @@ class StructuredPlanner:
         self._catalog = catalog
         self._model = model or build_model()
 
-    async def plan(self, intent: str, scene_context: SceneContext) -> PlanDraft:
+    async def plan(
+        self,
+        intent: str,
+        scene_context: SceneContext,
+        *,
+        history: list[str] | None = None,
+    ) -> PlanDraft:
         system = f"""你是航天 GIS 助手的全局任务拆解器。
 你只按 Worker 维度把用户目标拆成 Todo DAG，不执行任务，也不选择 action、工具或结构化参数。
 
@@ -63,8 +78,11 @@ class StructuredPlanner:
 5. 不要自行补充用户未提出的前置任务；运行时 requirement 由 Graph 另行规划。
 6. ref 唯一；depends_on 只能引用前面的 ref，禁止环和前向引用。
 7. 不生成 step_id、状态、执行证据、场景事实或幂等键。
+8. 历史仅用于消解指代与省略（如“它”“第二个”指向的具体对象）；用户本次请求才是唯一任务来源，禁止从历史生成新 Todo。
 """
         human = f"当前场景上下文：{scene_context.model_dump(mode='json')}\n用户原始请求：{intent}"
+        if history:
+            human = "近期会话摘要（newest-last）：\n" + "\n".join(history) + "\n" + human
         return await self._invoke_plan(system, human)
 
     async def plan_requirement(
