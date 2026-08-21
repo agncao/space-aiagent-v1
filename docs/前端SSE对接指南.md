@@ -96,6 +96,10 @@ data: {"thread_id":"thread-1","run_id":"run_x","seq":3,"revision":2,"timestamp":
 前端按 `seq` 去重，按 `run_id + revision` 更新 TodoList。断线或刷新后使用
 GET Run Snapshot 恢复，不根据帧数量推测进度。
 
+后端标记 `deduplicated=true` 的工具生命周期来自 Execution Ledger 回放，仅用于
+更新工具展示。前端不得再次执行 Cesium 工具，也不得为该回放再次提交
+`/tool-result`；后续未标记去重的新 `tool_args` 才是需要执行并回告的调用。
+
 `waiting_dependency` 只是 Todo 的内部进度状态，不发送 `interrupt`。只有
 `waiting_user` 才发送 `interrupt` 并用 `done {interrupted:true}` 结束当前流。
 

@@ -233,6 +233,7 @@ async def tool_result(req: ToolResultRequest) -> dict[str, Any]:
         "tool_func": req.tool_func,
     }
     if actual != expected:
+        logger.error(f"工具回告关联字段不匹配, 期望值:\n {expected} \n 实际值: {actual}")
         raise HTTPException(status_code=409, detail={"message": "工具回告关联字段不匹配", "expected": expected})
 
     run = await repository.get_run(req.run_id)
