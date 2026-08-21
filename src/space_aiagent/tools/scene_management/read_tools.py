@@ -12,7 +12,7 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 
 from space_aiagent.bridge import bridge_var
 from space_aiagent.infrastructure.utils import string_util
@@ -20,6 +20,23 @@ from space_aiagent.models.biz_schemas import ScenarioInfo
 from space_aiagent.tools.contracts import workflow_tool
 
 _NAMESPACE = "scene_tools"
+
+def _parse_decision(value: Any) -> bool | None:
+    """把 interrupt resume 值收敛为bool值"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"yes", "true", "是"}:
+            return True
+        if normalized in {"no", "false", "否"}:
+            return False
+        return None
+    if isinstance(value, dict):
+        for key in ("decision", "value", "content", "user_input"):
+            if key in value:
+                return _parse_decision(value[key])
+    return None
 
 
 def _normalize_scenario_query_result(
@@ -94,17 +111,12 @@ async def query_scenario(runtime: ToolRuntime, scene_name: str | None = None) ->
 @tool
 async def open_scenario(
     runtime: ToolRuntime,
-    is_save_on_change: bool | None = None,
     scene_name: str | None = None,
 ) -> Command:
     """
     打开场景
 
     args:
-        is_save_on_change(bool|None): 如果存在已打开的场景，且存在为保存的变更是否需要保存
-            is_save_on_change=true 表示用户确定要保存变更
-            is_save_on_change=false 表示用户确定不需要保存变更
-            is_save_on_change=None 表示未知用户是否需要保存变更
         scene_name: 想打开的场景
     """
     tool_func = inspect.currentframe().f_code.co_name
@@ -116,6 +128,22 @@ async def open_scenario(
         tool_func=string_util.snake_to_camel(tool_func),
         args=args,
     )
+
+    if result.get("code") == "SCENE_UNSAVED_CHANGES":
+        prompt = {
+            "description": result.get("message") or "当前场景有未保存的改动，是否保存？",
+            "options": ["yes", "no"],
+        }
+        decision = _parse_decision(interrupt(prompt))
+        while decision is None:
+            decision = _parse_decision(interrupt(prompt))
+        resumed_args = {**args, "isSaveOnChange": decision}
+        result = await bridge.send_tool_call(
+            namespace=_NAMESPACE,
+            tool_func=string_util.snake_to_camel(tool_func),
+            args=resumed_args,
+        )
+
     return Command(
         update={
             "messages": [

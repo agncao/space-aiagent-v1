@@ -63,6 +63,18 @@ Cesium，应直接回告原结果。
 - `POST /api/v2/space/runs/{run_id}/resume`：提交 `{"user_input":"...","data":{...}}`。
 - `POST /api/v2/space/runs/{run_id}/cancel`：取消非终态 Run。
 
+打开场景遇到未保存变更时，后端发送 `interrupt` 事件，且
+`interrupt_type=agent_interrupt`。其中原始中断数据包含：
+
+```json
+{"description":"当前场景有未保存的改动，请确认是否需要保存","options":["yes","no"]}
+```
+
+前端将 `yes/no` 分别渲染为“是/否”按钮，并通过 resume 的 `data.decision`
+原样提交机器值，例如 `{"user_input":"是","data":{"decision":"yes"}}`。后端恢复到
+原工具中断点，将选择转换成 `isSaveOnChange: true/false` 后再次调用前端
+`openScenario`。前端不得自行默认选择。
+
 ## 2. SSE 帧
 
 ```text
