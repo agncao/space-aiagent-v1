@@ -42,6 +42,9 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 _MAX_DEPENDENCY_DEPTH = 5
+# 跨 Run 恢复：可恢复的失败码。NO_SCENE=确定性短路；DEPENDENCY_FAILED=被上游
+# 阻塞从未执行的用户意图，链式继承（下轮只看本轮）语义下必须纳入，否则断链。
+_RECOVERABLE_ERROR_CODES = frozenset({"NO_SCENE", "DEPENDENCY_FAILED"})
 
 
 class WorkflowGraphState(TypedDict, total=False):
@@ -183,9 +186,15 @@ class WorkflowEngine:
     async def _plan_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
         history = await self._thread_history(run.thread_id, exclude_run_id=run.run_id)
-        logger.debug(f"workflow._plan_node",thread_id=run.thread_id, run_id=run.run_id,history=history)
-        draft = await self._planner.plan(run.original_intent, run.scene_context, history=history)
-        logger.debug(f"workflow._plan_node",thread_id=run.thread_id, run_id=run.run_id,tasks=[todo.task for todo in draft.todos])
+        recovered_tasks = await self._recoverable_tasks(run.thread_id, exclude_run_id=run.run_id)
+        logger.debug("workflow._plan_node",thread_id=run.thread_id, run_id=run.run_id,history=history,recovered_tasks=recovered_tasks)
+        draft = await self._planner.plan(
+            run.original_intent,
+            run.scene_context,
+            history=history,
+            recovered_tasks=recovered_tasks or None,
+        )
+        logger.debug("workflow._plan_node",thread_id=run.thread_id, run_id=run.run_id,tasks=[todo.task for todo in draft.todos])
         return {
             "plan_draft": draft.model_dump(mode="json"),
             "messages": [self._todo_list_message(draft, WorkerTodoSource.USER_INTENT)],
@@ -202,9 +211,42 @@ class WorkflowEngine:
             history.append(f"助手：{run.final_result.summary}")
         return history
 
+    async def _recoverable_tasks(self, thread_id: str, *, exclude_run_id: str) -> list[str]:
+        """筛选上一次 Run 中未完成或可恢复失败的步骤 task，供跨 Run 意图续接。
+
+        只看上一 Run：恢复步骤并入本次计划后即成为本次的正式步骤，链式继承，
+        下轮只需扫描本次。筛选：非终态成功/取消，且无错误或错误码可恢复
+        （NO_SCENE 短路、DEPENDENCY_FAILED 阻塞）。去重由 Planner 合并语义完成。
+        """
+        recent = await self._repository.list_recent_runs_by_thread(thread_id, limit=2)
+        previous = next(
+            (run for run in recent if run.run_id != exclude_run_id),
+            None,
+        )
+        if previous is None:
+            return []
+        tasks = [
+            step.task
+            for step in previous.steps
+            if step.status not in {StepStatus.SUCCEEDED, StepStatus.CANCELLED}
+            and (
+                step.error is None
+                or step.error.code is None
+                or step.error.code in _RECOVERABLE_ERROR_CODES
+            )
+        ]
+        if tasks:
+            logger.debug(
+                "workflow.recover_unfinished_todos",
+                thread_id=thread_id,
+                previous_run_id=previous.run_id,
+                recovered_tasks=tasks,
+            )
+        return tasks
+
     async def _validate_node(self, state: WorkflowGraphState) -> dict[str, Any]:
         run = await self._required_run(state["run_id"])
-        logger.debug(f"workflow.validate_node",thread_id=run.thread_id, run_id=run.run_id)
+        logger.debug("workflow.validate_node",thread_id=run.thread_id, run_id=run.run_id)
         draft = PlanDraft.model_validate(state["plan_draft"])
         steps = self._validator.validate(draft, expected_source=WorkerTodoSource.USER_INTENT)
         expected = run.revision
@@ -251,7 +293,7 @@ class WorkflowEngine:
                 scene_revision=run.scene_context.revision,
                 repository=self._repository,
             )
-        logger.debug(f"workflow._execute_node", thread_id=run.thread_id,run_id=run.run_id)
+        logger.debug("workflow._execute_node", thread_id=run.thread_id,run_id=run.run_id)
         await self._emit(SSEEventType.STEP_UPDATE, run, {"step": step.model_dump(mode="json")})
 
         dispatch_message = AIMessage(

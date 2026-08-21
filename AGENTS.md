@@ -21,6 +21,7 @@ POST /api/v2/space/chat
 - 系统只提供 `/api/v2/space`；不恢复 V1 路由、自由主 Agent 或兼容中间件。
 - Planner 只按 Worker 拆分自然语言 Todo，不生成 action、工具、参数或运行状态。
 - Scheduler、动态前置依赖、失败传播和结束判断必须是代码，不交给模型。
+- 跨 Run 恢复：引擎确定性筛选上一 Run 可恢复步骤（非 succeeded/cancelled，且无错误或错误码为 NO_SCENE/DEPENDENCY_FAILED），以 recovered_tasks 清单注入 Planner 提示词，由 Planner 并入计划并做语义去重；Planner 不得自行从会话历史生成 Todo。
 - 领域知识放在 `config/workers.yaml`、Skills 或工具契约，通用工作流内核不硬编码航天业务。
 - Agent 不直接操作 Cesium；所有前端副作用必须经 StreamBridge 并等待 HTTP 回告。
 - `RunRepository` 是 Run、Step、WaitingContext 和 Execution Ledger 的业务事实源。

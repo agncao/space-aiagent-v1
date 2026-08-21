@@ -32,6 +32,7 @@ class Planner(Protocol):
         scene_context: SceneContext,
         *,
         history: list[str] | None = None,
+        recovered_tasks: list[str] | None = None,
     ) -> PlanDraft: ...
 
     async def plan_requirement(
@@ -41,7 +42,21 @@ class Planner(Protocol):
         blocked_worker: str,
         blocked_task: str,
         scene_context: SceneContext,
-    ) -> PlanDraft: ...
+    ) -> PlanDraft:
+        """运行时前置需求规划：当某个 Worker 的 Todo 在执行时声明了一个未满足的
+        requirement（必须由其他 Worker 提供的前置条件）时，为该 requirement
+        生成一个仅包含前置 Todo 的 PlanDraft（source 均为 requirement），
+        供 Graph 合并到原计划中、并作为被阻塞 Todo 的依赖。
+
+        典型业务场景：
+        用户请求"查询场景中卫星 X 的轨道参数"。satellite_query Worker 执行时
+        发现场景里没有实体"卫星 X"，于是声明 requirement：
+        key="scene_entity"，value="卫星 X"。Graph 调用本方法（排除
+        blocked_worker=satellite_query）后，生成由 scene_manager Worker
+        承担的前置 Todo——"在当前场景中加载/打开卫星 X 对应的场景或实体"，
+        其 ref 被 satellite_query 原 Todo 的 depends_on 引用，从而先补齐
+        场景上下文、再重放原查询。
+        """
 
     async def finalize(self, messages: list[AnyMessage], run: WorkflowRun) -> str: ...
 
@@ -63,13 +78,29 @@ class StructuredPlanner:
         scene_context: SceneContext,
         *,
         history: list[str] | None = None,
+        recovered_tasks: list[str] | None = None,
     ) -> PlanDraft:
+        # 有待恢复步骤时放开规则 8 的"禁止从历史生成新 Todo"，改由下方显式清单提供。
+        extra_rule8 = "禁止从历史生成新 Todo。"
+        rule8 = (
+            "8. 历史仅用于消解指代与省略（如“它”“第二个”指向的具体对象）；"
+            "用户本次请求才是唯一任务来源"
+            + (extra_rule8 if not recovered_tasks else "。")
+        )
+        recovered_section = ""
+        if recovered_tasks:
+            recovered_lines = "\n".join(f"- {task}" for task in recovered_tasks)
+            recovered_section = f"""
+需要额外完成的步骤（来自上一轮未完成或失败的计划，必须并入本次计划）：
+{recovered_lines}
+若其中某项与本次请求语义重复，合并为一个 Todo，不要重复生成。
+"""
         system = f"""你是航天 GIS 助手的全局任务拆解器。
 你只按 Worker 维度把用户目标拆成 Todo DAG，但不执行任务。
 
 可用 Worker：
 {self._catalog.planner_context()}
-
+{recovered_section}
 规则：
 1. 每个 Todo 只写 worker、自然语言 task、source、depends_on 和 required。
 2. 所有 Todo 的 source 必须是 user_intent。
@@ -78,7 +109,7 @@ class StructuredPlanner:
 5. 不要自行补充用户未提出的前置任务；运行时 requirement 由 Graph 另行规划。
 6. ref 唯一；depends_on 只能引用前面的 ref，禁止环和前向引用。
 7. 不生成 step_id、状态、执行证据、场景事实或幂等键。
-8. 历史仅用于消解指代与省略（如“它”“第二个”指向的具体对象）；用户本次请求才是唯一任务来源，禁止从历史生成新 Todo。
+{rule8}
 """
         human = f"用户原始请求：{intent}"
         if history:

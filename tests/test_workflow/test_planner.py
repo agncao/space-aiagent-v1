@@ -90,6 +90,36 @@ async def test_planner_injects_conversation_history_into_human_prompt() -> None:
     assert "历史仅用于消解指代" in runnable.messages[0].content or "历史仅用于消解指代" in human
 
 
+async def test_planner_prompt_without_recovered_tasks_keeps_full_rule8() -> None:
+    model = RecordingModel(_draft())
+    planner = StructuredPlanner(WorkerCatalog.from_yaml(), model=model)
+
+    await planner.plan("打开火箭场景", SceneContext(status="none"))
+
+    system = model.runnables[PlanDraft].messages[0].content
+    assert "禁止从历史生成新 Todo" in system
+    assert "需要额外完成的步骤" not in system
+
+
+async def test_planner_prompt_with_recovered_tasks_lists_extra_todos() -> None:
+    model = RecordingModel(_draft())
+    planner = StructuredPlanner(WorkerCatalog.from_yaml(), model=model)
+
+    await planner.plan(
+        "那就打开场景吧",
+        SceneContext(status="none"),
+        recovered_tasks=["添加文昌地面站"],
+    )
+
+    system = model.runnables[PlanDraft].messages[0].content
+    assert "需要额外完成的步骤" in system
+    assert "添加文昌地面站" in system
+    # 恢复项进入计划后，规则 8 必须放开"禁止从历史生成新 Todo"的限制
+    assert "禁止从历史生成新 Todo" not in system
+    # 去重指令必须显式存在
+    assert "合并为一个 Todo" in system
+
+
 async def test_requirement_planner_marks_requirement_source() -> None:
     model = RecordingModel(_draft(WorkerTodoSource.REQUIREMENT))
     planner = StructuredPlanner(WorkerCatalog.from_yaml(), model=model)

@@ -42,9 +42,11 @@ class FakePlanner:
         self.final_content = "最终回答"
         self.raise_on_finalize = False
         self.plan_history: list[str] | None = None
+        self.recovered_tasks: list[str] | None = None
 
-    async def plan(self, intent, scene_context, *, history=None):
+    async def plan(self, intent, scene_context, *, history=None, recovered_tasks=None):
         self.plan_history = history
+        self.recovered_tasks = recovered_tasks
         return self.draft
 
     async def plan_requirement(
@@ -67,14 +69,15 @@ class FakePlanner:
 
 
 class RecordingExecutor:
-    def __init__(self, *, fail_task: str | None = None) -> None:
+    def __init__(self, *, fail_task: str | None = None, fail_code: str = "FAILED") -> None:
         self.tasks: list[str] = []
         self.fail_task = fail_task
+        self.fail_code = fail_code
 
     async def execute(self, run, step, execution_id):
         self.tasks.append(step.task)
         if step.task == self.fail_task:
-            return StepResult(status="failed", code="FAILED", summary="模拟失败")
+            return StepResult(status="failed", code=self.fail_code, summary="模拟失败")
         return StepResult(status="success", code="OK", summary=f"{step.task}完成")
 
 
@@ -553,3 +556,128 @@ async def test_generic_finalizer_answer_is_rejected(tmp_path) -> None:
 
     assert run.final_result is not None
     assert run.final_result.summary == "当前场景共有 3 个实体"
+
+
+async def test_plan_node_passes_recovered_tasks_from_previous_run(tmp_path) -> None:
+    """上一 Run 存在 NO_SCENE 失败步骤时，其 task 注入新 Run 的 planner。"""
+    first = PlanDraft(goal="添加", todos=[_todo("add", "entity-agent", "添加文昌地面站")])
+    first_executor = RecordingExecutor(fail_task="添加文昌地面站", fail_code="NO_SCENE")
+    first_planner = FakePlanner(first)
+    engine, _ = await _engine(tmp_path, first_planner, first_executor)
+    await engine.create_run(
+        thread_id="thread_recover",
+        intent="添加文昌地面站",
+        scene_context=SceneContext(status="none"),
+    )
+
+    second = PlanDraft(goal="打开", todos=[_todo("open", "scene-agent", "打开场景")])
+    second_planner = FakePlanner(second)
+    engine2 = WorkflowEngine(
+        engine._repository,
+        WorkerCatalog.from_yaml(),
+        second_planner,
+        RecordingExecutor(),
+        checkpointer=InMemorySaver(),
+    )
+    await engine2.create_run(
+        thread_id="thread_recover",
+        intent="那就打开场景吧",
+        scene_context=SceneContext(status="none"),
+    )
+
+    assert second_planner.recovered_tasks == ["添加文昌地面站"]
+
+
+async def test_no_recovery_when_previous_run_succeeded(tmp_path) -> None:
+    first = PlanDraft(goal="添加", todos=[_todo("add", "entity-agent", "添加文昌地面站")])
+    first_planner = FakePlanner(first)
+    engine, _ = await _engine(tmp_path, first_planner, RecordingExecutor())
+    await engine.create_run(
+        thread_id="thread_no_recover",
+        intent="添加文昌地面站",
+        scene_context=SceneContext(status="opened", scene_name="场景A"),
+    )
+
+    second = PlanDraft(goal="查询", todos=[_todo("q", "entity-agent", "查询实体")])
+    second_planner = FakePlanner(second)
+    engine2 = WorkflowEngine(
+        engine._repository,
+        WorkerCatalog.from_yaml(),
+        second_planner,
+        RecordingExecutor(),
+        checkpointer=InMemorySaver(),
+    )
+    await engine2.create_run(
+        thread_id="thread_no_recover",
+        intent="查询实体",
+        scene_context=SceneContext(status="opened", scene_name="场景A"),
+    )
+
+    assert not second_planner.recovered_tasks
+
+
+async def test_no_recovery_for_non_recoverable_failure(tmp_path) -> None:
+    first = PlanDraft(goal="添加", todos=[_todo("add", "entity-agent", "添加文昌地面站")])
+    first_planner = FakePlanner(first)
+    engine, _ = await _engine(tmp_path, first_planner, RecordingExecutor(fail_task="添加文昌地面站", fail_code="OTHER_ERROR"))
+    await engine.create_run(
+        thread_id="thread_other_error",
+        intent="添加文昌地面站",
+        scene_context=SceneContext(status="opened", scene_name="场景A"),
+    )
+
+    second = PlanDraft(goal="查询", todos=[_todo("q", "entity-agent", "查询实体")])
+    second_planner = FakePlanner(second)
+    engine2 = WorkflowEngine(
+        engine._repository,
+        WorkerCatalog.from_yaml(),
+        second_planner,
+        RecordingExecutor(),
+        checkpointer=InMemorySaver(),
+    )
+    await engine2.create_run(
+        thread_id="thread_other_error",
+        intent="查询实体",
+        scene_context=SceneContext(status="opened", scene_name="场景A"),
+    )
+
+    assert not second_planner.recovered_tasks
+
+
+async def test_blocked_step_is_recovered_for_chain(tmp_path) -> None:
+    """BLOCKED（DEPENDENCY_FAILED）步骤从未执行，链式恢复时必须纳入。"""
+    first = PlanDraft(
+        goal="添加并统计",
+        todos=[
+            _todo("open", "scene-agent", "打开火箭场景"),
+            _todo("add", "entity-agent", "添加文昌地面站", depends_on=["open"]),
+        ],
+    )
+    first_planner = FakePlanner(first)
+    engine, _ = await _engine(
+        tmp_path,
+        first_planner,
+        RecordingExecutor(fail_task="打开火箭场景", fail_code="NO_SCENE"),
+    )
+    await engine.create_run(
+        thread_id="thread_chain",
+        intent="打开火箭场景并添加文昌地面站",
+        scene_context=SceneContext(status="none"),
+    )
+
+    second = PlanDraft(goal="打开", todos=[_todo("open", "scene-agent", "打开场景")])
+    second_planner = FakePlanner(second)
+    engine2 = WorkflowEngine(
+        engine._repository,
+        WorkerCatalog.from_yaml(),
+        second_planner,
+        RecordingExecutor(),
+        checkpointer=InMemorySaver(),
+    )
+    await engine2.create_run(
+        thread_id="thread_chain",
+        intent="那就打开场景吧",
+        scene_context=SceneContext(status="none"),
+    )
+
+    assert second_planner.recovered_tasks == ["打开火箭场景", "添加文昌地面站"]
