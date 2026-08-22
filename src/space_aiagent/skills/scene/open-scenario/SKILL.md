@@ -113,7 +113,7 @@ query_scenario(scene_name="502")
 
 - `0` 条：告知用户未找到对应场景，结束。最终查询返回 `SCENE_NOT_FOUND` 同样表示场景不存在。
 - `1` 条：使用该条结果中原始、完整的 `scene_name` 调用 `open_scenario`。
-- 多条：**必须**返回 `status=info`、`code=MISSING_REQUIRED_INFO`，让工作流进入等待用户状态；
+- 多条：**必须**返回 `status=info`、`code=SELECTION_REQUIRED`，让工作流进入等待用户状态；
   `summary` 使用下面的固定候选格式，`data` 携带查询结果数组。不要自行选择或打开。
 
 不要把工具的原始 JSON 直接展示给用户。
@@ -173,7 +173,7 @@ open_scenario(scene_name="<唯一匹配结果的真实场景名>")
 - 只有匹配结果唯一时才打开。
 - `open_scenario` 不接受保存决策参数；未保存变更必须由工具中断后取得用户决定。
 - 使用查询结果中的真实 `scene_name`，不要使用用户输入拼接出的名称调用打开工具。
-- 匹配多条时返回 `status=info`、`code=MISSING_REQUIRED_INFO` 并在 `data`
+- 匹配多条时返回 `status=info`、`code=SELECTION_REQUIRED` 并在 `data`
   携带完整候选，等待用户指定；匹配不到或收到 `SCENE_NOT_FOUND` 时明确告知不存在。
 - 用户补充序号或名称后，直接使用补充数据中的真实 `scene_name` 打开，不再查询。
 - `scene_name` 是不透明标识符；展示和传参时逐字符复制，禁止增删空格或改动任何字符。

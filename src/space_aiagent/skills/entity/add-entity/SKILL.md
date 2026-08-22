@@ -15,7 +15,7 @@ metadata:
 
 ## 流程
 
-1. **参数检查**（见下）。不通过则以 `MISSING_REQUIRED_INFO` 返回一次性补充问题后结束本轮，**不得调用工具**。
+1. **参数检查**（见下）。不通过则以 `MISSING_ARGUMENTS` 返回一次性补充问题后结束本轮，**不得调用工具**。
 2. **调用工具**（二选一，互斥；同一实体只能调用其中一个）：
    - 实体类型为 `satellite`（卫星）→ 调用 `create_sgp4_orbit`；
    - 其他所有允许类型 → 调用 `add_point_entity`。
@@ -47,7 +47,7 @@ metadata:
 
 ### 2. 类型识别
 
-- 用户只说「添加实体」「加一个实体」等、**未说明类型** → 以 `MISSING_REQUIRED_INFO` 询问要添加何种实体类型，结束本轮，不调用工具。
+- 用户只说「添加实体」「加一个实体」等、**未说明类型** → 以 `MISSING_ARGUMENTS` 询问要添加何种实体类型，结束本轮，不调用工具。
 - 用户说出表中类型词（如「添加卫星」「加一个地面站」）→ 直接按上表识别 `entity_type`，不再询问类型。
 - 用户提供 TLE 两行根数并要求添加 → 识别为 `satellite`。
 
@@ -69,7 +69,7 @@ metadata:
 ### 4. 必需参数
 
 - **卫星**（`satellite`）：必需两行 TLE（`tles`，去掉空行后必须恰好两行，按原顺序原样传入，不得修改或编造）。`name`、`satellite_number`、`start`、`end` 可选。TLE 缺失或不是两行 → 请用户补充正确的两行 TLE，结束本轮。
-- **其他类型**：必需 `entity_type`、`name`、`position.longitude`、`position.latitude`；`height` 未提供时用默认值 `0`。名称或经纬度缺失 → 以 `MISSING_REQUIRED_INFO` **一次性**询问所有缺失项，结束本轮。
+- **其他类型**：必需 `entity_type`、`name`、`position.longitude`、`position.latitude`；`height` 未提供时用默认值 `0`。名称或经纬度缺失 → 以 `MISSING_ARGUMENTS` **一次性**询问所有缺失项，结束本轮。
 - 类型、名称以及字符串形式的必需参数均不得为空白。**不得猜测**经纬度、TLE、名称等没有默认值的参数。示例中的值只用于说明调用格式，不是业务默认值。
 
 ## 调用示例

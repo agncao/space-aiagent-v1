@@ -39,3 +39,28 @@ def test_data_normalizes_json_encoded_object_from_tool_calling() -> None:
 def test_data_rejects_non_structured_json_strings(invalid_data: str) -> None:
     with pytest.raises(ValidationError):
         WorkerResponse(status="info", code="SCENE_QUERIED", summary="查询完成", data=invalid_data)
+
+
+def test_data_treats_empty_string_as_none() -> None:
+    """LLM 在无结构化数据时可能输出空串（实测案例：data=''），应归一为 None。
+
+    空串若原样透传会触发 pydantic 联合类型校验失败，进而陷入
+    langchain ToolStrategy 的结构化输出解析重试死循环。
+    """
+    response = WorkerResponse(
+        status="success",
+        code="ENTITIES_CLEARED",
+        summary="已清除所有实体",
+        data="",
+    )
+    assert response.data is None
+
+
+def test_data_treats_whitespace_string_as_none() -> None:
+    response = WorkerResponse(
+        status="success",
+        code="ENTITIES_CLEARED",
+        summary="已清除所有实体",
+        data="   ",
+    )
+    assert response.data is None

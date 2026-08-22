@@ -38,7 +38,8 @@ class ResponseCode(StrEnum):
     ENTITIES_CLEARED = auto(), "成功清除所有实体"
 
     OUT_OF_SCOPE = auto(), "用户请求超出能力范围"
-    MISSING_REQUIRED_INFO = auto(), "执行用户目标所需的参数不完整，需要用户补充"
+    MISSING_ARGUMENTS = auto(), "执行用户目标缺少所需参数"
+    SELECTION_REQUIRED=auto(), "需要选择一行数据"
     LLM_UNAVAILABLE = auto(), "LLM 调用重试耗尽或发生不可重试错误，AI 服务暂时不可用"
     SKILL_ROUTING_FAILED = auto(), "Skill 路由不明确、调用失败或 Skill 内容无法加载"
 
@@ -76,6 +77,10 @@ class WorkerResponse(BaseModel):
     def _normalize_json_encoded_data(cls, data: Any) -> Any:
         if not isinstance(data, str):
             return data
+        # LLM 无结构化数据时常输出空串而非 null；空串无法通过联合类型校验，
+        # 会触发结构化输出解析重试循环，这里归一为 None。
+        if not data.strip():
+            return None
         try:
             parsed = json.loads(data)
         except json.JSONDecodeError:

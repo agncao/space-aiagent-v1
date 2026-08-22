@@ -362,7 +362,7 @@ async def test_waiting_user_context_keeps_candidate_data(tmp_path) -> None:
         async def execute(self, run, step, execution_id):
             return StepResult(
                 status="waiting_user",
-                code="MISSING_REQUIRED_INFO",
+                code="MISSING_ARGUMENTS",
                 summary="查询到 4 个包含“火箭”的场景，请指定要打开的场景。",
                 data={"candidates": ["场景0942_ 1个火箭_1个卫星关节动画", "火箭测试"]},
             )
@@ -400,7 +400,7 @@ async def test_resume_missing_arguments_injects_waiting_data_into_task(tmp_path)
             if len(self.tasks) == 1:
                 return StepResult(
                     status="waiting_user",
-                    code="MISSING_REQUIRED_INFO",
+                    code="MISSING_ARGUMENTS",
                     summary="查询到 2 个包含“火箭”的场景，请指定要打开的场景。",
                     data=candidates,
                 )
@@ -429,7 +429,7 @@ async def test_resume_missing_arguments_injects_waiting_data_into_task(tmp_path)
     assert step.resume_user_input == "1"
     assert step.resume_payload is not None
     assert step.resume_payload["candidates"] == candidates["candidates"]
-    assert step.resume_payload["code"] == "MISSING_REQUIRED_INFO"
+    assert step.resume_payload["code"] == "MISSING_ARGUMENTS"
 
 
 async def test_plan_node_passes_thread_history_to_planner(tmp_path) -> None:
@@ -681,3 +681,73 @@ async def test_blocked_step_is_recovered_for_chain(tmp_path) -> None:
     )
 
     assert second_planner.recovered_tasks == ["打开火箭场景", "添加文昌地面站"]
+
+
+def _hitl_waiting_run(planner, executor):
+    """构造一个首步即触发 HITL agent_interrupt 的工作流并运行到 WAITING_USER。"""
+
+    class InterruptExecutor:
+        async def execute(self, run, step, execution_id):
+            return StepResult(
+                status="waiting_user",
+                code="AGENT_INTERRUPT",
+                summary="Todo 需要用户确认后继续。",
+                evidence={
+                    "waiting_kind": "agent_interrupt",
+                    "interrupts": [
+                        {
+                            "action_requests": [
+                                {"name": "clear_entities", "args": {}},
+                            ],
+                        },
+                    ],
+                },
+            )
+
+    return InterruptExecutor()
+
+
+async def test_resume_agent_interrupt_translates_simple_decision_to_hitl_decisions(tmp_path) -> None:
+    """前端 {"decision": "yes"} 必须被翻译成 HITL 中间件要求的 decisions 列表。"""
+    draft = PlanDraft(
+        goal="清除实体",
+        todos=[_todo("clear", "entity-agent", "清除所有实体")],
+    )
+    planner = FakePlanner(draft)
+    executor = _hitl_waiting_run(planner, None)
+    engine, _ = await _engine(tmp_path, planner, executor)
+    run = await engine.create_run(
+        thread_id="thread_hitl_resume",
+        intent="清除所有实体",
+        scene_context=SceneContext(status="opened", scene_name="火箭场景"),
+    )
+    assert run.status == RunStatus.WAITING_USER
+
+    resumed = await engine.resume_run(run.run_id, user_input="", data={"decision": "yes"})
+
+    step = resumed.steps[0]
+    assert step.resume_payload is not None
+    assert step.resume_payload == {"decisions": [{"type": "approve"}]}
+
+
+async def test_resume_agent_interrupt_passes_through_decisions_format(tmp_path) -> None:
+    """已符合 HITL 格式的数据原样透传，不做二次包装。"""
+    draft = PlanDraft(
+        goal="清除实体",
+        todos=[_todo("clear", "entity-agent", "清除所有实体")],
+    )
+    planner = FakePlanner(draft)
+    executor = _hitl_waiting_run(planner, None)
+    engine, _ = await _engine(tmp_path, planner, executor)
+    run = await engine.create_run(
+        thread_id="thread_hitl_passthrough",
+        intent="清除所有实体",
+        scene_context=SceneContext(status="opened", scene_name="火箭场景"),
+    )
+    assert run.status == RunStatus.WAITING_USER
+
+    payload = {"decisions": [{"type": "approve"}]}
+    resumed = await engine.resume_run(run.run_id, user_input="", data=payload)
+
+    step = resumed.steps[0]
+    assert step.resume_payload == payload

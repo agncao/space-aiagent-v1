@@ -170,7 +170,7 @@ class WaitingContext(BaseModel):
     Worker 发起的交互式中断。跨 Worker 前置条件不使用本对象。
     """
 
-    kind: Literal["missing_arguments", "agent_interrupt"]
+    kind: Literal["missing_arguments", "agent_interrupt","selection_required"]
     """等待原因；决定恢复阶段应采用的交互语义和解析策略。"""
 
     step_id: str

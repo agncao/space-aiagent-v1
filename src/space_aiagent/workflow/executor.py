@@ -153,7 +153,7 @@ class AgentStepExecutor:
             shortcut = SHORTCUT_RESPONSES[ResponseCode.NO_SCENE]
             return StepResult(
                 status="failed",
-                code=shortcut.code.value,
+                code=shortcut.code.name,
                 summary=shortcut.summary,
                 evidence={"tool_name": exc.tool_name, "agent_status": "shortcut"},
             )
@@ -216,13 +216,23 @@ class AgentStepExecutor:
             )
 
         code = response.code.value
-        if response.code == ResponseCode.MISSING_REQUIRED_INFO or response.status == "confirm":
+        if response.code in {
+            ResponseCode.MISSING_ARGUMENTS,
+        }:
+            return StepResult(
+                status="failed",
+                code=code,
+                summary=response.summary,
+                data=response.data,
+                evidence={**evidence, "waiting_kind": response.code.name.lower()},
+            )
+        if response.code in {ResponseCode.SELECTION_REQUIRED,} or response.status == "confirm":
             step_result = StepResult(
                 status="waiting_user",
                 code=code,
                 summary=response.summary,
                 data=response.data,
-                evidence={**evidence, "waiting_kind": "missing_arguments"},
+                evidence={**evidence, "waiting_kind": response.code.name.lower()},
             )
             logger.info(
                 f"子智能体{step.worker}执行结果:{response.summary}",

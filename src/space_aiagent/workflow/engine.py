@@ -45,6 +45,40 @@ _MAX_DEPENDENCY_DEPTH = 5
 # 跨 Run 恢复：可恢复的失败码。NO_SCENE=确定性短路；DEPENDENCY_FAILED=被上游
 # 阻塞从未执行的用户意图，链式继承（下轮只看本轮）语义下必须纳入，否则断链。
 _RECOVERABLE_ERROR_CODES = frozenset({"NO_SCENE", "DEPENDENCY_FAILED"})
+# HITL 中间件要求的 resume 格式是 {"decisions": [...]},且数量须与被拦截的
+# 工具调用数一致；前端发送的简化决定值需按下表翻译。
+_HITL_APPROVE_VALUES = frozenset({"yes", "approve", "true", "ok", "是", "确认"})
+_HITL_REJECT_VALUES = frozenset({"no", "reject", "false", "否"})
+
+
+def _translate_agent_interrupt_resume(data: dict[str, Any], waiting: WaitingContext) -> dict[str, Any]:
+    """把前端简化决定格式翻译成 HITL 中间件要求的 ``decisions`` 列表。
+
+    工具级 interrupt（如场景确认）的 resume 值由 ``_parse_decision`` 宽容
+    解析，原样透传即可；仅当等待证据表明中断来自 HITL 中间件
+    （interrupts 携带 ``action_requests``）时才做翻译，否则透传。
+    """
+    if "decisions" in data:
+        return data
+    decision = data.get("decision", data.get("value"))
+    if decision is None:
+        return data
+    interrupts = (waiting.data or {}).get("interrupts") or []
+    action_count = sum(
+        len(item.get("action_requests") or [])
+        for item in interrupts
+        if isinstance(item, dict) and item.get("action_requests") is not None
+    )
+    if action_count == 0:
+        return data
+    normalized = str(decision).strip().lower()
+    if normalized in _HITL_APPROVE_VALUES:
+        decision_type = "approve"
+    elif normalized in _HITL_REJECT_VALUES:
+        decision_type = "reject"
+    else:
+        return data
+    return {"decisions": [{"type": decision_type} for _ in range(action_count)]}
 
 
 class WorkflowGraphState(TypedDict, total=False):
@@ -481,7 +515,7 @@ class WorkflowEngine:
         step = run.step(waiting.step_id)
         expected = run.revision
         if waiting.kind == "agent_interrupt":
-            step.resume_payload = data or {"content": user_input}
+            step.resume_payload = _translate_agent_interrupt_resume(data, waiting) or {"content": user_input}
             step.resume_user_input = None
         else:
             step.resume_payload = {**waiting.data, **data} if waiting.data else (data or None)
