@@ -42,13 +42,31 @@ def test_builtin_skills_have_valid_required_tool_contract():
     entity = SkillCatalog.from_backend(
         backend,
         ["/entity/"],
-        {"add_point_entity", "create_sgp4_orbit", "query_entities", "clear_entities", "update_sgp4_orbit"},
+        {
+            "add_point_entity",
+            "create_sgp4_orbit",
+            "query_entities",
+            "zoom_to",
+            "clear_entities",
+            "update_sgp4_orbit",
+        },
+    )
+    analysis = SkillCatalog.from_backend(
+        backend,
+        ["/analysis/"],
+        {"query_analysis_item", "analyze_entity_data"},
     )
 
     assert scene.names == {"open-scenario", "query-scenario"}
     assert scene.governed_tools == {"query_scenario", "open_scenario"}
-    assert entity.names == {"add-entity"}
-    assert entity.governed_tools == {"add_point_entity", "create_sgp4_orbit"}
+    assert entity.names == {"add-entity", "zoom-to"}
+    assert entity.governed_tools == {
+        "add_point_entity",
+        "create_sgp4_orbit",
+        "zoom_to",
+    }
+    assert analysis.names == {"analyze-entity-data"}
+    assert analysis.governed_tools == {"query_analysis_item", "analyze_entity_data"}
 
 
 @pytest.mark.parametrize(

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from string import Template
 from typing import TYPE_CHECKING, Any, Protocol
 
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, message_to_dict
@@ -18,6 +20,9 @@ from space_aiagent.models.workflow_schemas import (
 )
 
 logger = get_logger(__name__)
+
+_PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+_PLANNER_PROMPT = Template((_PROMPTS_DIR / "planner.md").read_text(encoding="utf-8"))
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -82,10 +87,10 @@ class StructuredPlanner:
     ) -> PlanDraft:
         # 有待恢复步骤时放开规则 8 的"禁止从历史生成新 Todo"，改由下方显式清单提供。
         extra_rule8 = "禁止从历史生成新 Todo。"
+        history_restriction = extra_rule8 if not recovered_tasks else "。"
         rule8 = (
             "8. 历史仅用于消解指代与省略（如“它”“第二个”指向的具体对象）；"
-            "用户本次请求才是唯一任务来源"
-            + (extra_rule8 if not recovered_tasks else "。")
+            f"用户本次请求才是唯一任务来源{history_restriction}"
         )
         recovered_section = ""
         if recovered_tasks:
@@ -95,22 +100,11 @@ class StructuredPlanner:
 {recovered_lines}
 若其中某项与本次请求语义重复，合并为一个 Todo，不要重复生成。
 """
-        system = f"""你是航天 GIS 助手的全局任务拆解器。
-你只按 Worker 维度把用户目标拆成 Todo DAG，但不执行任务。
-
-可用 Worker：
-{self._catalog.planner_context()}
-{recovered_section}
-规则：
-1. 每个 Todo 只写 worker、自然语言 task、source、depends_on 和 required。
-2. 所有 Todo 的 source 必须是 user_intent。
-3. task 保留用户明确提供的名称、数值和先后语义，但不得提取成 args，不得出现工具名。
-4. 复合请求按用户表达的先后顺序拆分；同一 Worker 在不同顺序位置可以出现多次。
-5. 不要自行补充用户未提出的前置任务；运行时 requirement 由 Graph 另行规划。
-6. ref 唯一；depends_on 只能引用前面的 ref，禁止环和前向引用。
-7. 不生成 step_id、状态、执行证据、场景事实或幂等键。
-{rule8}
-"""
+        system = _PLANNER_PROMPT.substitute(
+            worker_catalog=self._catalog.planner_context(),
+            recovered_tasks_section=recovered_section,
+            history_rule=rule8,
+        )
         human = f"用户原始请求：{intent}"
         if history:
             human = "近期会话摘要（newest-last）：\n" + "\n".join(history) + "\n" + human

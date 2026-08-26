@@ -9,9 +9,12 @@
 前置条件: 场景必须已打开（由 @workflow_tool 契约和 WorkerToolValidationMiddleware 校验）
 """
 
+import inspect
+
 from langchain_core.tools import tool
 
 from space_aiagent.bridge import bridge_var
+from space_aiagent.infrastructure.utils import string_util
 from space_aiagent.models.biz_schemas import EntityConfig, EntityPosition
 from space_aiagent.models.enums import EntityType
 from space_aiagent.tools.contracts import workflow_tool
@@ -63,15 +66,24 @@ async def add_point_entity(
 
 @workflow_tool(requires={"scene.opened"})
 @tool
-async def query_entities() -> dict:
+async def query_entities(entity_name: str = "") -> dict:
+    """按名称模糊匹配，查询并统计当前已打开场景中的实体及总数。
+
+    Args:
+        entity_name: 模糊匹配的实体名，传空字符串表示查询全部实体。
+
+    Returns:
+        匹配到的实体名称列表及实体总数。
     """
-    查询/统计当前场景中的所有实体名称列表及总数。
-    """
+
+    tool_func = inspect.currentframe().f_code.co_name
+    args: dict = string_util.args_to_camel(query_entities, locals())
+
     bridge = bridge_var.get()
     return await bridge.send_tool_call(
         namespace=_NAMESPACE,
-        tool_func="queryEntities",
-        args={},
+        tool_func=string_util.snake_to_camel(tool_func),
+        args=args,
     )
 
 
@@ -89,4 +101,26 @@ async def clear_entities() -> dict:
         namespace=_NAMESPACE,
         tool_func="clearEntities",
         args={},
+    )
+
+
+@workflow_tool(requires={"scene.opened"})
+@tool
+async def zoom_to(entity_name: str) -> dict:
+    """将 Cesium 视图定位到当前场景中名称完全匹配的实体。
+
+    Args:
+        entity_name: 从 query_entities 返回候选中选定的真实实体名称。
+
+    Returns:
+        前端定位实体后的执行结果。
+    """
+    tool_func = inspect.currentframe().f_code.co_name
+    args: dict = string_util.args_to_camel(zoom_to, locals())
+
+    bridge = bridge_var.get()
+    return await bridge.send_tool_call(
+        namespace=_NAMESPACE,
+        tool_func=string_util.snake_to_camel(tool_func),
+        args=args,
     )

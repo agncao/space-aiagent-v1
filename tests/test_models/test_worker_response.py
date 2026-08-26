@@ -20,6 +20,7 @@ def test_response_code_descriptions_are_exposed_to_llm_tool_schema() -> None:
 
 def test_response_code_keeps_uppercase_string_values() -> None:
     assert ResponseCode.NO_SCENE == "NO_SCENE"
+    assert ResponseCode.ZOOM_TO_SUCCESS == "ZOOM_TO_SUCCESS"
     assert WorkerResponse(status="info", code="SCENE_OPENED", summary="已打开").code is ResponseCode.SCENE_OPENED
 
 

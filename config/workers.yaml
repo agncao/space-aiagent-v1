@@ -1,6 +1,9 @@
 workers:
   - name: scene-agent
-    description: 处理场景相关单步骤操作：创建、打开、删除、查询、修改场景。
+    description: >-
+      处理场景本身的单步骤操作：创建、打开、删除、查询、修改场景。
+      用户明确要打开场景，或“打开”的对象名称本身以“场景”结尾时归此 Worker，
+      例如“打开火箭测试场景”。不处理在当前场景内打开或展示数据分析结果。
     tools:
       - scene_management
     skills:
@@ -26,3 +29,14 @@ workers:
         allowed_decisions: ["approve", "reject"]
         description: "即将清除场景内所有实体且不可撤销，请确认是否继续。"
     prompt_file: entity_agent.md
+
+  - name: analysis-agent
+    description: >-
+      处理当前场景内的数据分析与分析结果展示：查询分析项，打开、展示、显示或隐藏
+      数据报表、图表及分析结果。例如“在场景内打开光照数据分析结果”归此 Worker，
+      不得将“光照数据分析结果”改写成场景名。
+    tools:
+      - analysis_management
+    skills:
+      - /skills/analysis/
+    prompt_file: analysis_agent.md

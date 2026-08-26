@@ -36,10 +36,14 @@ class ResponseCode(StrEnum):
     ENTITIES_ADDED = auto(), "已成功添加一个或者多个实体"
     ENTITY_CREATED = auto(), "已成功创建并添加实体到当前场景"
     ENTITIES_CLEARED = auto(), "成功清除所有实体"
+    ZOOM_TO_SUCCESS = auto(), "成功将视图定位到指定实体"
+    ENTITY_NOT_FOUND = auto(), "指定实体不存在或已被移除"
+    NO_VIEWER = auto(), "Cesium 视图尚未初始化"
+    ZOOM_TO_FAILED = auto(), "定位实体失败"
 
     OUT_OF_SCOPE = auto(), "用户请求超出能力范围"
     MISSING_ARGUMENTS = auto(), "执行用户目标缺少所需参数"
-    SELECTION_REQUIRED=auto(), "需要选择一行数据"
+    SELECTION_REQUIRED = auto(), "需要选择一行数据"
     LLM_UNAVAILABLE = auto(), "LLM 调用重试耗尽或发生不可重试错误，AI 服务暂时不可用"
     SKILL_ROUTING_FAILED = auto(), "Skill 路由不明确、调用失败或 Skill 内容无法加载"
 

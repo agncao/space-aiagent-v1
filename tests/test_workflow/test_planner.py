@@ -68,6 +68,22 @@ async def test_planner_only_exposes_workers_and_disables_streaming() -> None:
     assert "query_scenario" not in runnable.messages[0].content
 
 
+async def test_planner_prompt_routes_by_target_instead_of_open_verb() -> None:
+    model = RecordingModel(_draft())
+    planner = StructuredPlanner(WorkerCatalog.from_yaml(), model=model)
+
+    await planner.plan("在场景内打开光照数据分析结果", SceneContext(status="opened"))
+
+    system = model.runnables[PlanDraft].messages[0].content
+    assert "不得只根据“打开”" in system
+    assert "打开火箭测试场景" in system
+    assert "打开『天地往返运输场景』" in system
+    assert "打开名为『光照数据分析结果』的场景" in system
+    assert "在场景内打开光照数据分析结果" in system
+    assert "不得将“光照数据分析结果”改写成场景名" in system
+    assert "再生成依赖前者的 `analysis-agent` Todo" in system
+
+
 async def test_planner_injects_conversation_history_into_human_prompt() -> None:
     model = RecordingModel(_draft())
     planner = StructuredPlanner(WorkerCatalog.from_yaml(), model=model)
