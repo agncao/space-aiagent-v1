@@ -57,7 +57,12 @@ def _normalize_scenario_query_result(
 
     raw_data = result.get("data")
     if isinstance(raw_data, dict):
-        raw_items = [raw_data]
+        # 前端查询结果统一为 {"list": [...], "count": N}；兼容旧的单对象返回
+        inner_list = raw_data.get("list")
+        if isinstance(inner_list, list):
+            raw_items = inner_list
+        else:
+            raw_items = [raw_data]
     elif isinstance(raw_data, list):
         raw_items = raw_data
     else:

@@ -59,7 +59,7 @@ query_entities(entity_name="LEO2LTO")
 
 ```json
 {
-  "entities": [
+  "list": [
     {"entity_type": "satellite", "entity_name": "LEO2LTO", "entity_id": "satellite/LEO2LTO"}
   ],
   "count": 1
@@ -77,8 +77,8 @@ query_entities(entity_name="LEO2LTO")
 
 `SELECTION_REQUIRED.data` 必须是对象，并完整保留有效候选：
 
-- 工具 `data` 已是包含 `entities` 的对象时，原样携带其候选和 `count`。
-- 工具 `data` 是数组时，包装成 `{"entities": <原数组>, "count": <实际数量>}`。
+- 工具 `data` 已是包含 `list` 的对象时，原样携带其候选和 `count`。
+- 工具 `data` 是数组时，包装成 `{"list": <原数组>, "count": <实际数量>}`。
 - 不得遗漏、改写、重新排序候选，也不得只返回候选摘要。
 
 ```json
@@ -87,7 +87,7 @@ query_entities(entity_name="LEO2LTO")
   "code": "SELECTION_REQUIRED",
   "summary": "找到 1 个匹配实体，请在前端选择要定位的实体后继续。",
   "data": {
-    "entities": [
+    "list": [
       {"entity_type": "satellite", "entity_name": "LEO2LTO", "entity_id": "satellite/LEO2LTO"}
     ],
     "count": 1
@@ -104,8 +104,8 @@ query_entities(entity_name="LEO2LTO")
 中的一项时继续：
 
 - 补充数据直接携带唯一选中行；
-- 补充数据携带唯一选中的 `entity_id`，且能在原 `entities` 中精确匹配一项；
-- 用户补充是序号或实体名称，且能在原 `entities` 中精确匹配一项。
+- 补充数据携带唯一选中的 `entity_id`，且能在原候选列表中精确匹配一项；
+- 用户补充是序号或实体名称，且能在原候选列表中精确匹配一项。
 
 字段使用 snake_case；如果恢复协议给出 camelCase，可对应读取 `entityName`、`entityId`。
 最终的 `entity_name` 必须逐字符来自原候选，不能直接用模糊查询关键词或根据 ID 拼接名称。

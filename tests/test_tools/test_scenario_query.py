@@ -70,6 +70,42 @@ def test_query_result_normalization_keeps_every_valid_scenario() -> None:
     assert normalized["data"] == scenarios
 
 
+def test_query_result_normalization_unpacks_frontend_list_payload() -> None:
+    """前端查询结果统一为 data:{list, count}，归一化层应解包 list 而非当作单场景。"""
+    normalized, scenarios = _normalize_scenario_query_result(
+        {
+            "success": True,
+            "code": "SCENE_QUERIED",
+            "message": "查询场景成功",
+            "data": {
+                "list": [
+                    {"name": "场景1001", "updateTime": "2026-07-15", "fileUrl": "a.czml", "uploader": {"name": "甲"}},
+                    {"name": "场景0942", "updateTime": "2024-11-22", "fileUrl": "c.czml", "uploader": {"name": "丙"}},
+                ],
+                "count": 2,
+            },
+        }
+    )
+
+    assert scenarios is not None
+    assert [item["scene_name"] for item in scenarios] == ["场景1001", "场景0942"]
+    assert normalized["data"] == scenarios
+
+
+def test_query_result_normalization_treats_empty_list_as_empty() -> None:
+    normalized, scenarios = _normalize_scenario_query_result(
+        {
+            "success": True,
+            "code": "SCENE_QUERIED",
+            "message": "查询场景成功",
+            "data": {"list": [], "count": 0},
+        }
+    )
+
+    assert scenarios == []
+    assert normalized["data"] == []
+
+
 def test_query_result_normalization_preserves_scene_name_verbatim() -> None:
     normalized, scenarios = _normalize_scenario_query_result(
         {

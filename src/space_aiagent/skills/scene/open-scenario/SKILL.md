@@ -138,9 +138,17 @@ query_scenario(scene_name="502")
 
 ```json
 {
-  "data": [
-    {"scene_name": "场景0942_ 1个火箭_1个卫星关节动画", "update_time": "2024-11-22", "uploader_name": "-"}
-  ]
+  "data":
+  {
+    "list":[
+      {
+        "scene_name": "场景0942_ 1个火箭_1个卫星关节动画",
+        "update_time": "2024-11-22",
+        "uploader_name": "-"
+      }
+    ],
+    "count": 1
+  }
 }
 ```
 

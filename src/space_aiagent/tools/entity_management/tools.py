@@ -66,7 +66,7 @@ async def add_point_entity(
 
 @workflow_tool(requires={"scene.opened"})
 @tool
-async def query_entities(entity_name: str = "") -> dict:
+async def query_entities(entity_name: str = "",entity_type:EntityType=EntityType.SATELLITE) -> dict:
     """按名称模糊匹配，查询并统计当前已打开场景中的实体及总数。
 
     Args:
@@ -77,7 +77,7 @@ async def query_entities(entity_name: str = "") -> dict:
     """
 
     tool_func = inspect.currentframe().f_code.co_name
-    args: dict = string_util.args_to_camel(query_entities, locals())
+    args: dict = {"entityType": entity_type.value, "entityName": entity_name}
 
     bridge = bridge_var.get()
     return await bridge.send_tool_call(
@@ -85,7 +85,6 @@ async def query_entities(entity_name: str = "") -> dict:
         tool_func=string_util.snake_to_camel(tool_func),
         args=args,
     )
-
 
 @workflow_tool(
     requires={"scene.opened"},

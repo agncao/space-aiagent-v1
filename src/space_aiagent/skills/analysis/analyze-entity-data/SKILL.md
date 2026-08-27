@@ -82,20 +82,20 @@ query_analysis_item(
 ```json
 {
   "entity_id": "satellite/LEO2LTO",
-  "count": 2,
-  "data": [
+  "list": [
     {"analysisName": "光照时间", "type": "Graph", "is_show": false},
     {"analysisName": "光照强度", "type": "Graph", "is_show": false}
-  ]
+  ],
+  "count": 2
 }
 ```
 
 按结果分流：
 
-- `QUERY_SUCCESS` 且 `items` 非空：无论候选是一项还是多项，都不得自行选择或调用
+- `QUERY_SUCCESS` 且 `list` 非空：无论候选是一项还是多项，都不得自行选择或调用
   `analyze_entity_data`。必须返回 `status=info`、`code=SELECTION_REQUIRED`，让工作流
   中断并等待用户在前端勾选一行。
-- `QUERY_SUCCESS` 且 `items` 为空，或 `RESULT_EMPTY`：说明当前选中实体没有符合条件的
+- `QUERY_SUCCESS` 且 `list` 为空，或 `RESULT_EMPTY`：说明当前选中实体没有符合条件的
   分析项，结束，不调用分析工具。
 - `NO_SCENE`：返回场景前置条件未满足，不自行打开或创建场景。
 - `MISSING_ARGUMENTS`：使用 `message` 提示用户在场景中选择实体。
@@ -103,7 +103,7 @@ query_analysis_item(
 - 未知返回码：按 `success` 和 `message` 如实处理，不重试。
 
 `SELECTION_REQUIRED` 必须在 `data` 中携带查询工具返回的完整候选结构，不得只写候选摘要，
-不得遗漏、改写或重新排序 `items`。示例：
+不得遗漏、改写或重新排序 `list`。示例：
 
 ```json
 {
@@ -112,11 +112,11 @@ query_analysis_item(
   "summary": "找到 2 个符合条件的数据分析项，请在前端勾选一项后继续。",
   "data": {
     "entity_id": "satellite/LEO2LTO",
-    "count": 2,
-    "items": [
+    "list": [
       {"analysisName": "光照时间", "type": "Graph", "is_show": false},
       {"analysisName": "光照强度", "type": "Graph", "is_show": false}
-    ]
+    ],
+    "count": 2
   }
 }
 ```
