@@ -26,8 +26,8 @@ workers:
       - /skills/entity/
     interrupt_on:
       delete_entities:
+        # 中断文案按 entity_name 动态生成（见 tools.py delete_entities_interrupt_description）
         allowed_decisions: ["approve", "reject"]
-        description: "即将删除名称匹配的实体；名称为空时将清空场景内全部实体。此操作不可撤销，请确认是否继续。"
     prompt_file: entity_agent.md
 
   - name: analysis-agent

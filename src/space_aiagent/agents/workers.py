@@ -11,6 +11,7 @@ from space_aiagent.infrastructure.llm import build_flash_model, build_model
 from space_aiagent.infrastructure.logging import get_logger
 from space_aiagent.infrastructure.skill.catalog import SkillCatalog
 from space_aiagent.middleware import RetryMiddleware, SkillRoutingMiddleware, WorkerToolValidationMiddleware
+from space_aiagent.tools.entity_management.tools import delete_entities_interrupt_description
 from space_aiagent.tools.registry import get_tools
 
 logger = get_logger(__name__)
@@ -18,6 +19,12 @@ logger = get_logger(__name__)
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 _SKILL_USAGE_PROMPT = (_PROMPTS_DIR / "skill_usage.md").read_text(encoding="utf-8")
 _WORKERS_CONFIG = CONFIG_DIR / "workers.yaml"
+
+# YAML 无法表达 callable；需按工具入参动态生成中断文案的工具在此注册，
+# load_workers 时覆盖 workers.yaml 中的静态 description。
+_DYNAMIC_INTERRUPT_DESCRIPTIONS = {
+    "delete_entities": delete_entities_interrupt_description,
+}
 
 
 def _load_worker_config() -> dict:
@@ -69,6 +76,9 @@ def load_workers(backend: BackendProtocol | None = None) -> list[dict]:
             "middleware": middleware,
         }
         if interrupt_on := worker_config.get("interrupt_on"):
+            for tool_name, tool_config in interrupt_on.items():
+                if factory := _DYNAMIC_INTERRUPT_DESCRIPTIONS.get(tool_name):
+                    tool_config["description"] = factory
             worker["interrupt_on"] = interrupt_on
         if skills_paths:
             worker["skills"] = skills_paths

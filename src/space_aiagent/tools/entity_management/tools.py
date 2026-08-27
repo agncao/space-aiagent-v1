@@ -87,6 +87,15 @@ async def query_entities(entity_name: str = "", entity_type: EntityType = Entity
     )
 
 
+def delete_entities_interrupt_description(tool_call: dict, state: dict, runtime: dict) -> str:
+    """HITL 中断文案：``entity_name`` 为空提示全量清空，非空提示按名删除。"""
+
+    entity_name = str((tool_call.get("args") or {}).get("entity_name") or "").strip()
+    if entity_name:
+        return f"你确认要删除名称匹配「{entity_name}」的实体吗？此操作不可撤销。"
+    return "你确认要删除当前场景内的全部实体吗？此操作不可撤销。"
+
+
 @workflow_tool(
     requires={"scene.opened"},
     effects={"entity.deleted"},
