@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 from space_aiagent.bridge import bridge_var
 from space_aiagent.tools.contracts import get_workflow_tool_contract
-from space_aiagent.tools.entity_management.tools import query_entities, zoom_to
+from space_aiagent.tools.entity_management.tools import delete_entities, query_entities, zoom_to
 from space_aiagent.tools.registry import get_tools
 
 
@@ -13,6 +13,36 @@ def test_zoom_to_is_discoverable_and_requires_open_scene() -> None:
 
     assert tools["zoom_to"] is zoom_to
     assert get_workflow_tool_contract(zoom_to).requires == {"scene.opened"}
+
+
+def test_delete_entities_is_discoverable_and_declares_selective_delete_effect() -> None:
+    tools = {item.name: item for item in get_tools(["entity_management"])}
+
+    assert tools["delete_entities"] is delete_entities
+    contract = get_workflow_tool_contract(delete_entities)
+    assert contract.requires == {"scene.opened"}
+    assert contract.effects == {"entity.deleted"}
+
+
+async def test_delete_entities_forwards_name_filter_to_frontend() -> None:
+    bridge = AsyncMock()
+    bridge.send_tool_call.return_value = {
+        "success": True,
+        "code": "ENTITIES_DELETED",
+        "data": {"count": 2},
+    }
+    token = bridge_var.set(bridge)
+    try:
+        result = await delete_entities.coroutine(entity_name="LEO")
+    finally:
+        bridge_var.reset(token)
+
+    assert result["code"] == "ENTITIES_DELETED"
+    bridge.send_tool_call.assert_awaited_once_with(
+        namespace="entity_tools",
+        tool_func="deleteEntities",
+        args={"entityName": "LEO"},
+    )
 
 
 async def test_query_entities_forwards_name_filter_to_frontend() -> None:
@@ -32,7 +62,7 @@ async def test_query_entities_forwards_name_filter_to_frontend() -> None:
     bridge.send_tool_call.assert_awaited_once_with(
         namespace="entity_tools",
         tool_func="queryEntities",
-        args={"entityName": "LEO2LTO"},
+        args={"entityType": "satellite", "entityName": "LEO2LTO"},
     )
 
 

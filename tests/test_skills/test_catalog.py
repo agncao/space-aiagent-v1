@@ -47,7 +47,7 @@ def test_builtin_skills_have_valid_required_tool_contract():
             "create_sgp4_orbit",
             "query_entities",
             "zoom_to",
-            "clear_entities",
+            "delete_entities",
             "update_sgp4_orbit",
         },
     )
@@ -59,10 +59,11 @@ def test_builtin_skills_have_valid_required_tool_contract():
 
     assert scene.names == {"open-scenario", "query-scenario"}
     assert scene.governed_tools == {"query_scenario", "open_scenario"}
-    assert entity.names == {"add-entity", "zoom-to"}
+    assert entity.names == {"add-entity", "delete-entities", "zoom-to"}
     assert entity.governed_tools == {
         "add_point_entity",
         "create_sgp4_orbit",
+        "delete_entities",
         "zoom_to",
     }
     assert analysis.names == {"analyze-entity-data"}

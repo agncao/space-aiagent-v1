@@ -1,7 +1,7 @@
 """
 实体管理工具
 
-在场景中添加实体。
+在场景中添加、查询、删除和定位实体。
 工具通过远程桥接发送指令到前端 Cesium 执行。
 
 桥接注入: V2 SSE handler 在启动 WorkflowRun 前设置 bridge_var，Worker 工具通过 get() 获取。
@@ -66,7 +66,7 @@ async def add_point_entity(
 
 @workflow_tool(requires={"scene.opened"})
 @tool
-async def query_entities(entity_name: str = "",entity_type:EntityType=EntityType.SATELLITE) -> dict:
+async def query_entities(entity_name: str = "", entity_type: EntityType = EntityType.SATELLITE) -> dict:
     """按名称模糊匹配，查询并统计当前已打开场景中的实体及总数。
 
     Args:
@@ -86,20 +86,34 @@ async def query_entities(entity_name: str = "",entity_type:EntityType=EntityType
         args=args,
     )
 
+
 @workflow_tool(
     requires={"scene.opened"},
-    effects={"entity.empty"},
+    effects={"entity.deleted"},
 )
 @tool
-async def clear_entities() -> dict:
-    """
-    清除当前场景中的所有实体，但保留场景本身。
+async def delete_entities(entity_name: str = "") -> dict:
+    """按名称删除当前场景中的实体，保留场景本身。
+
+    ``entity_name`` 非空时，删除名称模糊匹配的所有实体；仅当用户明确要求
+    “删除全部实体”或“清空场景实体”时才传空字符串。不得因缺少实体名称而默认
+    传空字符串，以免误删场景中的全部实体。
+
+    Args:
+        entity_name: 用于模糊匹配的实体名称；空字符串表示删除当前场景中的全部实体。
+
+    Returns:
+        删除操作的执行结果。
     """
     bridge = bridge_var.get()
+
+    tool_func = inspect.currentframe().f_code.co_name
+    args: dict = string_util.args_to_camel(delete_entities, locals())
+
     return await bridge.send_tool_call(
         namespace=_NAMESPACE,
-        tool_func="clearEntities",
-        args={},
+        tool_func=string_util.snake_to_camel(tool_func),
+        args=args,
     )
 
 

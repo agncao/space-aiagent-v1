@@ -57,6 +57,15 @@
 前端必须按 `idempotency_key` 缓存已成功的副作用调用。重复请求不得再操作
 Cesium，应直接回告原结果。
 
+实体删除统一使用 `deleteEntities`：
+
+```json
+{"tool_func":"deleteEntities","args":{"entityName":"LEO2LTO"}}
+```
+
+`entityName` 非空时，前端删除名称模糊匹配的所有实体；空字符串表示清空当前
+场景内的全部实体，但保留场景本身。旧的 `clearEntities` 不再使用。
+
 ### Run 管理
 
 - `GET /api/v2/space/runs/{run_id}`：获取权威快照。

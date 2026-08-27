@@ -697,7 +697,7 @@ def _hitl_waiting_run(planner, executor):
                     "interrupts": [
                         {
                             "action_requests": [
-                                {"name": "clear_entities", "args": {}},
+                                {"name": "delete_entities", "args": {"entity_name": ""}},
                             ],
                         },
                     ],
